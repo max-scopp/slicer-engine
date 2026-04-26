@@ -1,4 +1,5 @@
 import { Injectable, inject, signal, effect } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { DEFAULT_SETTINGS, SliceSettings } from '../models/slice-settings.model';
 import { WebSocketService } from './websocket.service';
 import { ServerMessage } from '../generated/ws-protocol';
@@ -16,7 +17,7 @@ export class SlicerService {
 
   constructor() {
     // Pipe all WebSocket server messages into local state
-    this.ws.messages$.subscribe(msg => this.handleMessage(msg));
+    this.ws.messages$.pipe(takeUntilDestroyed()).subscribe(msg => this.handleMessage(msg));
 
     // Reflect WebSocket connection status in the log
     effect(() => {

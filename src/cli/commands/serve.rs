@@ -194,18 +194,28 @@ async fn handle_slice(
     let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
 
     tokio::task::spawn_blocking(move || {
+        /// Serializes `msg` to JSON; returns a hard-coded error frame on failure.
+        fn to_json(msg: &ServerMessage) -> String {
+            serde_json::to_string(msg).unwrap_or_else(|_| {
+                r#"{"type":"error","message":"Internal error: failed to serialize message"}"#
+                    .to_owned()
+            })
+        }
+
         let mesh = match crate::mesh::io::read_stl_from_bytes(&stl_bytes) {
             Ok(m) => m,
             Err(e) => {
-                let msg = ServerMessage::error(format!("Failed to parse STL: {e}"));
-                let _ = tx.blocking_send(serde_json::to_string(&msg).unwrap_or_default());
+                let msg = ServerMessage::error(format!(
+                    "Failed to parse STL (unsupported format or corrupted file): {e}"
+                ));
+                let _ = tx.blocking_send(to_json(&msg));
                 return;
             }
         };
 
         let face_count = mesh.faces.len();
         let log = ServerMessage::log_info(format!("Mesh loaded: {face_count} triangles. Slicing…"));
-        let _ = tx.blocking_send(serde_json::to_string(&log).unwrap_or_default());
+        let _ = tx.blocking_send(to_json(&log));
 
         let layers = crate::core::slice_mesh(&mesh, params.layer_height);
         let layer_count = layers.len();
@@ -214,11 +224,11 @@ async fn handle_slice(
             current_layer: layer_count,
             total_layers: layer_count,
         };
-        let _ = tx.blocking_send(serde_json::to_string(&progress).unwrap_or_default());
+        let _ = tx.blocking_send(to_json(&progress));
 
         let gcode = crate::gcode::generate_gcode(&layers, &params);
         let complete = ServerMessage::SliceComplete { gcode, layer_count };
-        let _ = tx.blocking_send(serde_json::to_string(&complete).unwrap_or_default());
+        let _ = tx.blocking_send(to_json(&complete));
     });
 
     // Forward channel messages to the WebSocket until the task finishes
@@ -230,11 +240,17 @@ async fn handle_slice(
 }
 
 /// Serialize a [`ServerMessage`] to JSON and send it as a WebSocket text frame.
+///
+/// Falls back to a hard-coded error JSON string in the (very unlikely) event
+/// that serialization itself fails, ensuring the client always receives valid
+/// JSON rather than an empty frame.
 async fn send_msg(
     session: &mut actix_ws::Session,
     msg: &crate::ws_protocol::ServerMessage,
 ) -> Result<(), actix_ws::Closed> {
-    let json = serde_json::to_string(msg).unwrap_or_default();
+    const SERIALIZATION_ERROR: &str =
+        r#"{"type":"error","message":"Internal error: failed to serialize message"}"#;
+    let json = serde_json::to_string(msg).unwrap_or_else(|_| SERIALIZATION_ERROR.to_owned());
     session.text(json).await
 }
 
