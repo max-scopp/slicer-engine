@@ -5,6 +5,7 @@ use crate::cli::output::{EmitPayload, OutputFormat};
 use crate::mesh::analysis::{calculate_aabb, calculate_surface_area, calculate_volume};
 use crate::mesh::io::read_stl;
 use crate::mesh::transforms::{center_mesh, drop_to_floor};
+use crate::settings::load_settings;
 use clap::Parser;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -78,6 +79,10 @@ impl SliceCommand {
 
         let emitter = Emitter::new(format);
 
+        // Load persisted settings and get default layer height
+        let settings = load_settings().unwrap_or_else(|_| Default::default());
+        let default_layer_height = settings.params.layer_height;
+
         // Validate input file exists
         if !self.input.exists() {
             return Err(format!("Input file not found: {}", self.input.display()).into());
@@ -134,7 +139,7 @@ impl SliceCommand {
             ));
             emitter.log_debug(&format!(
                 "layer height: {:.3} mm",
-                self.layer_height.unwrap_or(0.2)
+                self.layer_height.unwrap_or(default_layer_height)
             ));
         }
 
@@ -146,7 +151,7 @@ impl SliceCommand {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned(),
-            layer_height: self.layer_height.unwrap_or(0.2),
+            layer_height: self.layer_height.unwrap_or(default_layer_height),
         };
 
         emitter.emit(&result);
