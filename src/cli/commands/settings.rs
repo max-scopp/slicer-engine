@@ -360,7 +360,7 @@ fn set_json_path(
     let last_key = last
         .first()
         .copied()
-        .ok_or("Setting path must not be empty")?;
+        .ok_or("Setting key path must not be empty (expected dot-separated path like 'params.layer_height')")?;
 
     let mut current = val;
     for seg in parents {
