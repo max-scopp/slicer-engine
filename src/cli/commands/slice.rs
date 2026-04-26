@@ -224,10 +224,28 @@ impl SliceCommand {
         if self.verbose {
             emitter.log_debug("slicing mesh…");
         }
-        let layers = slice_mesh(&mesh, layer_height);
+        let mut layers = slice_mesh(&mesh, layer_height);
 
         if self.verbose {
             emitter.log_debug(&format!("sliced into {} layers", layers.len()));
+        }
+
+        // Generate top and bottom surfaces
+        let top_layers = slice_params.top_layers;
+        let bottom_layers = slice_params.bottom_layers;
+        if top_layers > 0 || bottom_layers > 0 {
+            if self.verbose {
+                emitter.log_debug(&format!(
+                    "generating surfaces (top: {}, bottom: {})",
+                    top_layers, bottom_layers
+                ));
+            }
+            crate::core::generate_top_bottom_surfaces(
+                &mut layers,
+                top_layers,
+                bottom_layers,
+                layer_height,
+            );
         }
 
         // Resolve per-flavor lifecycle marker config from settings.

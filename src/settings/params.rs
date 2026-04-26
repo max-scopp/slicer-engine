@@ -21,6 +21,12 @@ pub struct SlicingParams {
     pub nozzle_temp: f64,
     /// Heated bed temperature in °C.
     pub bed_temp: f64,
+    /// Number of solid top layers (horizontal surfaces facing up).
+    #[serde(default = "SlicingParams::default_top_layers")]
+    pub top_layers: usize,
+    /// Number of solid bottom layers (horizontal surfaces facing down).
+    #[serde(default = "SlicingParams::default_bottom_layers")]
+    pub bottom_layers: usize,
 }
 
 impl Default for SlicingParams {
@@ -33,7 +39,19 @@ impl Default for SlicingParams {
             print_speed: 60.0,
             nozzle_temp: 210.0,
             bed_temp: 60.0,
+            top_layers: Self::default_top_layers(),
+            bottom_layers: Self::default_bottom_layers(),
         }
+    }
+}
+
+impl SlicingParams {
+    fn default_top_layers() -> usize {
+        3
+    }
+
+    fn default_bottom_layers() -> usize {
+        3
     }
 }
 
@@ -349,5 +367,37 @@ mod tests {
         let klipper_cfg = back.lifecycle_markers.get("klipper").unwrap();
         assert!(klipper_cfg.enabled);
         assert_eq!(klipper_cfg.layer_change.as_deref(), Some(";LAYER_CHANGE"));
+    }
+
+    #[test]
+    fn test_slicing_params_top_bottom_layers_defaults() {
+        let params = SlicingParams::default();
+        assert_eq!(params.top_layers, 3, "Default top layers should be 3");
+        assert_eq!(params.bottom_layers, 3, "Default bottom layers should be 3");
+    }
+
+    #[test]
+    fn test_slicing_params_top_bottom_layers_serialization() {
+        let params = SlicingParams {
+            top_layers: 5,
+            bottom_layers: 4,
+            ..SlicingParams::default()
+        };
+        let json = serde_json::to_string(&params).expect("serialize");
+        let back: SlicingParams = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.top_layers, 5);
+        assert_eq!(back.bottom_layers, 4);
+    }
+
+    #[test]
+    fn test_slicing_params_legacy_json_without_surface_layers() {
+        // Test that old JSON without top_layers/bottom_layers still deserializes
+        let json = r#"{"layer_height":0.2,"wall_thickness":1.2,"infill_density":0.2,"print_speed":60.0,"nozzle_temp":210.0,"bed_temp":60.0}"#;
+        let params: SlicingParams = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(params.top_layers, 3, "Should default to 3 for legacy JSON");
+        assert_eq!(
+            params.bottom_layers, 3,
+            "Should default to 3 for legacy JSON"
+        );
     }
 }

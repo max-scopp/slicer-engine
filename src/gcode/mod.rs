@@ -532,11 +532,7 @@ impl GcodeGenerator {
                 out.push_str(&render_marker(layer_change, &z_str, &height_str, "", ""));
                 out.push('\n');
 
-                let z_marker = self
-                    .marker_config
-                    .z_marker
-                    .as_deref()
-                    .unwrap_or(";Z:{z}");
+                let z_marker = self.marker_config.z_marker.as_deref().unwrap_or(";Z:{z}");
                 out.push_str(&render_marker(z_marker, &z_str, &height_str, "", ""));
                 out.push('\n');
 
@@ -608,7 +604,13 @@ impl GcodeGenerator {
                             .type_annotation
                             .as_deref()
                             .unwrap_or(";TYPE:{type}");
-                        out.push_str(&render_marker(type_ann, &z_str, &height_str, type_name, &width));
+                        out.push_str(&render_marker(
+                            type_ann,
+                            &z_str,
+                            &height_str,
+                            type_name,
+                            &width,
+                        ));
                         out.push('\n');
 
                         let width_ann = self
@@ -616,7 +618,13 @@ impl GcodeGenerator {
                             .width_annotation
                             .as_deref()
                             .unwrap_or(";WIDTH:{width}mm");
-                        out.push_str(&render_marker(width_ann, &z_str, &height_str, type_name, &width));
+                        out.push_str(&render_marker(
+                            width_ann,
+                            &z_str,
+                            &height_str,
+                            type_name,
+                            &width,
+                        ));
                         out.push('\n');
 
                         last_role = Some(role);
@@ -1353,7 +1361,13 @@ mod tests {
 
     #[test]
     fn test_render_marker_substitutes_all_placeholders() {
-        let result = render_marker(";z={z} h={height} t={type} w={width}", "0.200", "0.200", "Perimeter", "0.40");
+        let result = render_marker(
+            ";z={z} h={height} t={type} w={width}",
+            "0.200",
+            "0.200",
+            "Perimeter",
+            "0.40",
+        );
         assert_eq!(result, ";z=0.200 h=0.200 t=Perimeter w=0.40");
     }
 
