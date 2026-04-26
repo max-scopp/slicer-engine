@@ -1,0 +1,21 @@
+[package]
+name = "slicer-engine"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+clipper2 = "0.5"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+[profile.wasm]
+inherits = "release"
+opt-level = "z"
+lto = true

@@ -1,0 +1,13 @@
+/target
+**/*.rs.bk
+*.pdb
+.DS_Store
+.vscode/
+*.swp
+*.swo
+*~
+Cargo.lock
+.idea/
+*.iml
+wasm-pack-*
+
