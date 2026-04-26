@@ -1,10 +1,12 @@
 //! Settings command — validate and diff printer/slicing settings.
 
 use clap::{Parser, Subcommand};
+use serde_json::Value;
 use std::path::PathBuf;
 
+use crate::cli::emit::Emitter;
 use crate::cli::error::CliError;
-use crate::cli::output::{OutputFormat, OutputFormatter, SuccessOutput};
+use crate::cli::output::{EmitPayload, OutputFormat};
 use crate::settings::diff::compare_settings;
 use crate::settings::params::{GlobalSettings, ObjectSettings};
 use crate::settings::validator::SettingValidator;
@@ -68,6 +70,60 @@ impl SettingsCommand {
     }
 }
 
+// ── Payload types ─────────────────────────────────────────────────────────────
+
+struct ValidateResult {
+    message: &'static str,
+}
+
+impl EmitPayload for ValidateResult {
+    fn schema(&self) -> &'static str {
+        "slicer-engine/settings-validate-result-v1"
+    }
+
+    fn display_human(&self) -> String {
+        format!("✓ {}", self.message)
+    }
+
+    fn to_json(&self) -> Value {
+        serde_json::json!({
+            "status": "valid",
+            "message": self.message,
+        })
+    }
+}
+
+struct DiffResult<'a> {
+    object_name: &'a str,
+    diffs: &'a [crate::settings::diff::SettingsDiff],
+}
+
+impl EmitPayload for DiffResult<'_> {
+    fn schema(&self) -> &'static str {
+        "slicer-engine/settings-diff-result-v1"
+    }
+
+    fn display_human(&self) -> String {
+        let mut lines = vec![
+            format!("Settings diff for object '{}':", self.object_name),
+            format!("{:<20} {:<15} {:<15} Override", "Field", "Global", "Object"),
+            "-".repeat(60),
+        ];
+        for d in self.diffs {
+            let marker = if d.is_override { "✓" } else { "" };
+            lines.push(format!(
+                "{:<20} {:<15} {:<15} {}",
+                d.field_name, d.global_value, d.object_value, marker
+            ));
+        }
+        lines.join("\n")
+    }
+
+    fn to_json(&self) -> Value {
+        serde_json::to_value(self.diffs).unwrap_or(serde_json::json!([]))
+    }
+}
+
 fn load_global(path: &PathBuf) -> Result<GlobalSettings, CliError> {
     let content = std::fs::read_to_string(path).map_err(|e| {
         CliError::invalid(format!(
@@ -108,6 +164,8 @@ fn execute_validate(args: &ValidateArgs) -> Result<(), Box<dyn std::error::Error
         .parse::<OutputFormat>()
         .map_err(|e| format!("Invalid output format: {}", e))?;
 
+    let emitter = Emitter::new(format);
+
     let global = load_global(&args.global)?;
     let object = load_object(&args.object)?;
 
@@ -131,24 +189,12 @@ fn execute_validate(args: &ValidateArgs) -> Result<(), Box<dyn std::error::Error
     }
 
     if all_errors.is_empty() {
-        let output = SuccessOutput {
-            message: "Settings are valid".to_string(),
-            details: None,
-        };
-        output.print(format);
+        emitter.emit(&ValidateResult {
+            message: "Settings are valid",
+        });
     } else {
-        match format {
-            OutputFormat::Json => {
-                let json = serde_json::json!({ "status": "invalid", "errors": all_errors });
-                println!("{}", json);
-            }
-            _ => {
-                eprintln!("✗ Settings validation failed:");
-                for e in &all_errors {
-                    eprintln!("  - {}", e);
-                }
-            }
-        }
+        let errors_text = all_errors.join("; ");
+        emitter.error("Settings validation failed", Some(&errors_text));
         return Err(CliError::failed("Settings validation failed").into());
     }
 
@@ -161,29 +207,17 @@ fn execute_diff(args: &DiffArgs) -> Result<(), Box<dyn std::error::Error>> {
         .parse::<OutputFormat>()
         .map_err(|e| format!("Invalid output format: {}", e))?;
 
+    let emitter = Emitter::new(format);
+
     let global = load_global(&args.global)?;
     let object = load_object(&args.object)?;
 
     let diffs = compare_settings(&global, &object);
 
-    match format {
-        OutputFormat::Json => {
-            let json = serde_json::to_string_pretty(&diffs)?;
-            println!("{}", json);
-        }
-        _ => {
-            println!("Settings diff for object '{}':", object.object_name);
-            println!("{:<20} {:<15} {:<15} Override", "Field", "Global", "Object");
-            println!("{}", "-".repeat(60));
-            for d in &diffs {
-                let marker = if d.is_override { "✓" } else { "" };
-                println!(
-                    "{:<20} {:<15} {:<15} {}",
-                    d.field_name, d.global_value, d.object_value, marker
-                );
-            }
-        }
-    }
+    emitter.emit(&DiffResult {
+        object_name: &object.object_name,
+        diffs: &diffs,
+    });
 
     Ok(())
 }
@@ -231,5 +265,22 @@ mod tests {
             .find(|d| d.field_name == "layer_height")
             .unwrap();
         assert!(lh.is_override);
+    }
+
+    #[test]
+    fn test_validate_result_schema() {
+        let r = ValidateResult {
+            message: "Settings are valid",
+        };
+        assert_eq!(r.schema(), "slicer-engine/settings-validate-result-v1");
+    }
+
+    #[test]
+    fn test_diff_result_schema() {
+        let r = DiffResult {
+            object_name: "cube",
+            diffs: &[],
+        };
+        assert_eq!(r.schema(), "slicer-engine/settings-diff-result-v1");
     }
 }

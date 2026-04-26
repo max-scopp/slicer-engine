@@ -1,10 +1,12 @@
 //! Slice command - performs 3D model slicing
 
-use crate::cli::output::{OutputFormat, OutputFormatter, SuccessOutput};
+use crate::cli::emit::Emitter;
+use crate::cli::output::{EmitPayload, OutputFormat};
 use crate::mesh::analysis::{calculate_aabb, calculate_surface_area, calculate_volume};
 use crate::mesh::io::read_stl;
 use crate::mesh::transforms::{center_mesh, drop_to_floor};
 use clap::Parser;
+use serde_json::{json, Value};
 use std::path::PathBuf;
 
 /// Slice a 3D model into layers
@@ -22,7 +24,7 @@ pub struct SliceCommand {
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
-    /// Output format (json, human, csv)
+    /// Output format (json, human)
     #[arg(long, default_value = "human")]
     pub output_format: String,
 
@@ -39,6 +41,33 @@ pub struct SliceCommand {
     pub drop_to_floor: bool,
 }
 
+/// Result payload emitted by the `slice` command.
+struct SliceResult {
+    input_name: String,
+    layer_height: f64,
+}
+
+impl EmitPayload for SliceResult {
+    fn schema(&self) -> &'static str {
+        "slicer-engine/slice-result-v1"
+    }
+
+    fn display_human(&self) -> String {
+        format!(
+            "✓ Sliced {} into layers\n  Layer height: {} mm",
+            self.input_name, self.layer_height
+        )
+    }
+
+    fn to_json(&self) -> Value {
+        json!({
+            "status": "success",
+            "input": self.input_name,
+            "layer_height": self.layer_height,
+        })
+    }
+}
+
 impl SliceCommand {
     /// Execute the slice command
     pub fn execute(&self) -> Result<(), Box<dyn std::error::Error>> {
@@ -47,13 +76,15 @@ impl SliceCommand {
             .parse::<OutputFormat>()
             .map_err(|e| format!("Invalid output format: {}", e))?;
 
+        let emitter = Emitter::new(format);
+
         // Validate input file exists
         if !self.input.exists() {
             return Err(format!("Input file not found: {}", self.input.display()).into());
         }
 
         if self.verbose {
-            eprintln!("[DEBUG] Loading mesh: {:?}", self.input);
+            emitter.log_debug(&format!("loading mesh: {:?}", self.input));
         }
 
         // Load the STL mesh
@@ -64,62 +95,61 @@ impl SliceCommand {
         if self.center {
             mesh = center_mesh(&mesh);
             if self.verbose {
-                eprintln!("[DEBUG] Applied center transform");
+                emitter.log_debug("applied center transform");
             }
         }
         if self.drop_to_floor {
             mesh = drop_to_floor(&mesh);
             if self.verbose {
-                eprintln!("[DEBUG] Applied drop-to-floor transform");
+                emitter.log_debug("applied drop-to-floor transform");
             }
         }
 
         if self.verbose {
             // Compute and log geometry
             let aabb = calculate_aabb(&mesh);
-            eprintln!(
-                "[DEBUG] AABB: ({:.3}, {:.3}, {:.3}) → ({:.3}, {:.3}, {:.3})",
+            emitter.log_debug(&format!(
+                "AABB: ({:.3}, {:.3}, {:.3}) → ({:.3}, {:.3}, {:.3})",
                 aabb.min.x, aabb.min.y, aabb.min.z, aabb.max.x, aabb.max.y, aabb.max.z
-            );
-            eprintln!(
-                "[DEBUG] Dimensions: {:.3} × {:.3} × {:.3} mm",
+            ));
+            emitter.log_debug(&format!(
+                "dimensions: {:.3} × {:.3} × {:.3} mm",
                 aabb.width(),
                 aabb.depth(),
                 aabb.height()
-            );
+            ));
 
             match calculate_volume(&mesh) {
-                Ok(vol) => eprintln!("[DEBUG] Volume: {:.3} mm³", vol),
-                Err(e) => eprintln!("[DEBUG] Volume: {}", e),
+                Ok(vol) => emitter.log_debug(&format!("volume: {:.3} mm³", vol)),
+                Err(e) => emitter.log_debug(&format!("volume: {}", e)),
             }
 
             let area = calculate_surface_area(&mesh);
-            eprintln!("[DEBUG] Surface area: {:.3} mm²", area);
+            emitter.log_debug(&format!("surface area: {:.3} mm²", area));
 
-            eprintln!(
-                "[DEBUG] Faces: {}, Vertices: {}",
+            emitter.log_debug(&format!(
+                "faces: {}, vertices: {}",
                 mesh.faces.len(),
                 mesh.vertices.len()
-            );
-            eprintln!(
-                "[DEBUG] Layer height: {:.3} mm",
+            ));
+            emitter.log_debug(&format!(
+                "layer height: {:.3} mm",
                 self.layer_height.unwrap_or(0.2)
-            );
+            ));
         }
 
         // TODO: Implement actual slicing logic
-        let output = SuccessOutput {
-            message: format!(
-                "Sliced {} into layers",
-                self.input.file_name().unwrap_or_default().to_string_lossy()
-            ),
-            details: Some(format!(
-                "Layer height: {} mm",
-                self.layer_height.unwrap_or(0.2)
-            )),
+        let result = SliceResult {
+            input_name: self
+                .input
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            layer_height: self.layer_height.unwrap_or(0.2),
         };
 
-        output.print(format);
+        emitter.emit(&result);
         Ok(())
     }
 }
@@ -140,5 +170,48 @@ mod tests {
             drop_to_floor: false,
         };
         assert_eq!(cmd.layer_height, Some(0.2));
+    }
+
+    #[test]
+    fn test_slice_result_schema() {
+        let r = SliceResult {
+            input_name: "model.stl".to_string(),
+            layer_height: 0.2,
+        };
+        assert_eq!(r.schema(), "slicer-engine/slice-result-v1");
+    }
+
+    #[test]
+    fn test_slice_result_human() {
+        let r = SliceResult {
+            input_name: "model.stl".to_string(),
+            layer_height: 0.2,
+        };
+        let s = r.display_human();
+        assert!(s.contains("model.stl"));
+        assert!(s.contains("0.2"));
+    }
+
+    #[test]
+    fn test_slice_result_json_fields() {
+        let r = SliceResult {
+            input_name: "model.stl".to_string(),
+            layer_height: 0.2,
+        };
+        let v = r.to_json();
+        assert_eq!(v["status"], "success");
+        assert_eq!(v["input"], "model.stl");
+        assert_eq!(v["layer_height"], 0.2);
+    }
+
+    #[test]
+    fn test_success_result_still_compiles() {
+        use crate::cli::emit::SuccessResult;
+        // Verify the built-in SuccessResult is still usable
+        let r = SuccessResult {
+            message: "ok".to_string(),
+            details: None,
+        };
+        assert_eq!(r.schema(), "slicer-engine/result-v1");
     }
 }

@@ -4,6 +4,7 @@
 //! Uses clap v4 for argument parsing with derive macros.
 
 pub mod commands;
+pub mod emit;
 pub mod error;
 pub mod io;
 pub mod output;

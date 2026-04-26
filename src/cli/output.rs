@@ -1,27 +1,24 @@
-//! Output formatting for CLI operations
+//! Output format types and the `EmitPayload` trait.
 
-use serde_json::json;
+use std::str::FromStr;
 
-/// Output format types
+/// Supported output formats for CLI operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OutputFormat {
-    /// JSON format
+    /// Structured JSON output (results include a `$schema` field).
     Json,
-    /// Human-readable format
+    /// Human-readable text output.
     #[default]
     Human,
-    /// CSV format (future)
-    Csv,
 }
 
-impl std::str::FromStr for OutputFormat {
+impl FromStr for OutputFormat {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "json" => Ok(OutputFormat::Json),
             "human" | "text" => Ok(OutputFormat::Human),
-            "csv" => Ok(OutputFormat::Csv),
             _ => Err(format!("Unknown output format: {}", s)),
         }
     }
@@ -32,75 +29,26 @@ impl std::fmt::Display for OutputFormat {
         match self {
             OutputFormat::Json => write!(f, "json"),
             OutputFormat::Human => write!(f, "human"),
-            OutputFormat::Csv => write!(f, "csv"),
         }
     }
 }
 
-/// Output formatter trait
-pub trait OutputFormatter {
-    /// Format and print output
-    fn print(&self, format: OutputFormat);
-}
+/// A typed result that can be emitted by [`crate::cli::emit::Emitter`].
+///
+/// Implement this trait on each result type so the emitter can render it in
+/// both human-readable and JSON formats, and so JSON consumers can derive the
+/// concrete type from the `$schema` field.
+pub trait EmitPayload {
+    /// JSON Schema identifier embedded as `"$schema"` in JSON output.
+    ///
+    /// Use a URL-style path, e.g. `"slicer-engine/info-result-v1"`.
+    fn schema(&self) -> &'static str;
 
-/// Success message output
-pub struct SuccessOutput {
-    pub message: String,
-    pub details: Option<String>,
-}
+    /// One or more lines of human-readable output for this result.
+    fn display_human(&self) -> String;
 
-impl OutputFormatter for SuccessOutput {
-    fn print(&self, format: OutputFormat) {
-        match format {
-            OutputFormat::Json => {
-                let output = json!({
-                    "status": "success",
-                    "message": self.message,
-                    "details": self.details
-                });
-                println!("{}", output);
-            }
-            OutputFormat::Human => {
-                println!("✓ {}", self.message);
-                if let Some(details) = &self.details {
-                    println!("  {}", details);
-                }
-            }
-            OutputFormat::Csv => {
-                println!("{}", self.message);
-            }
-        }
-    }
-}
-
-/// Error output
-pub struct ErrorOutput {
-    pub error: String,
-    pub context: Option<String>,
-}
-
-impl OutputFormatter for ErrorOutput {
-    fn print(&self, format: OutputFormat) {
-        match format {
-            OutputFormat::Json => {
-                let output = json!({
-                    "status": "error",
-                    "error": self.error,
-                    "context": self.context
-                });
-                eprintln!("{}", output);
-            }
-            OutputFormat::Human => {
-                eprintln!("✗ Error: {}", self.error);
-                if let Some(context) = &self.context {
-                    eprintln!("  Context: {}", context);
-                }
-            }
-            OutputFormat::Csv => {
-                eprintln!("{}", self.error);
-            }
-        }
-    }
+    /// JSON representation of this result's data fields (without `$schema`).
+    fn to_json(&self) -> serde_json::Value;
 }
 
 #[cfg(test)]
@@ -115,7 +63,7 @@ mod tests {
             OutputFormat::from_str("human").unwrap(),
             OutputFormat::Human
         );
-        assert_eq!(OutputFormat::from_str("csv").unwrap(), OutputFormat::Csv);
+        assert_eq!(OutputFormat::from_str("text").unwrap(), OutputFormat::Human);
         assert_eq!(OutputFormat::from_str("JSON").unwrap(), OutputFormat::Json);
     }
 
@@ -128,5 +76,10 @@ mod tests {
     fn test_output_format_display() {
         assert_eq!(OutputFormat::Json.to_string(), "json");
         assert_eq!(OutputFormat::Human.to_string(), "human");
+    }
+
+    #[test]
+    fn test_output_format_default() {
+        assert_eq!(OutputFormat::default(), OutputFormat::Human);
     }
 }
