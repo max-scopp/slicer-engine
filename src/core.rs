@@ -556,8 +556,8 @@ mod tests {
         
         // After infill: should have both perimeter and infill paths
         for layer in &layers {
-            let has_perimeter = layer.path_roles.iter().any(|r| *r == ExtrusionRole::Perimeter);
-            let has_infill = layer.path_roles.iter().any(|r| *r == ExtrusionRole::Infill);
+            let has_perimeter = layer.path_roles.contains(&ExtrusionRole::Perimeter);
+            let has_infill = layer.path_roles.contains(&ExtrusionRole::Infill);
             assert!(has_perimeter, "Layer at z={} missing perimeter", layer.z);
             assert!(has_infill, "Layer at z={} missing infill", layer.z);
         }
