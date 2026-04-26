@@ -3,6 +3,7 @@ name = "slicer-engine"
 version = "0.1.0"
 edition = "2021"
 build = "build.rs"
+default-run = "slicer-engine"
 
 [dependencies]
 clipper2 = "0.5"

@@ -2,7 +2,7 @@ import { Injectable, inject, signal, effect } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { DEFAULT_SETTINGS, SliceSettings } from '../models/slice-settings.model';
 import { WebSocketService } from './websocket.service';
-import { ServerMessage } from '../generated/ws-protocol';
+import { ServerMessage } from '../../generated/ws-protocol';
 
 export type SlicerStatus = 'idle' | 'ready' | 'slicing' | 'done' | 'error';
 

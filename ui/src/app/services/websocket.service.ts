@@ -2,7 +2,7 @@ import { Injectable, signal } from '@angular/core';
 import { Observable, Subject, EMPTY } from 'rxjs';
 import { catchError, share } from 'rxjs/operators';
 import { WebSocketSubject, webSocket } from 'rxjs/webSocket';
-import { ClientMessage, ServerMessage } from '../generated/ws-protocol';
+import { ClientMessage, ServerMessage } from '../../generated/ws-protocol';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 
@@ -19,7 +19,8 @@ export class WebSocketService {
   constructor() {
     this.subject = this.createSubject();
     this.messages$ = this.subject.pipe(
-      catchError(() => {
+      // @ts-ignore
+      catchError<any>(() => {
         this.status.set('error');
         return EMPTY;
       }),
