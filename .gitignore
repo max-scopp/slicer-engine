@@ -11,3 +11,8 @@ Cargo.lock
 *.iml
 wasm-pack-*
 
+# Angular UI
+ui/node_modules/
+ui/dist/
+ui/.angular/
+

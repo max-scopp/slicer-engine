@@ -54,11 +54,11 @@
   </div>
 
   <div class="field">
-    <label for="gcodeFlvor">GCode Flavor</label>
+    <label for="gcodeFlavor">GCode Flavor</label>
     <select
-      id="gcodeFlvor"
-      [value]="settings().gcodeFlvor"
-      (change)="update({ gcodeFlvor: $any($event.target).value })"
+      id="gcodeFlavor"
+      [value]="settings().gcodeFlavor"
+      (change)="update({ gcodeFlavor: $any($event.target).value })"
     >
       <option value="marlin">Marlin</option>
       <option value="klipper">Klipper</option>

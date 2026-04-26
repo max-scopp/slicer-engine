@@ -3,7 +3,7 @@ export interface SliceSettings {
   printSpeed: number;
   nozzleTemp: number;
   bedTemp: number;
-  gcodeFlvor: 'marlin' | 'klipper';
+  gcodeFlavor: 'marlin' | 'klipper';
 }
 
 export const DEFAULT_SETTINGS: SliceSettings = {
@@ -11,5 +11,5 @@ export const DEFAULT_SETTINGS: SliceSettings = {
   printSpeed: 60,
   nozzleTemp: 215,
   bedTemp: 60,
-  gcodeFlvor: 'marlin',
+  gcodeFlavor: 'marlin',
 };

@@ -10,7 +10,7 @@ pub mod io;
 pub mod output;
 
 use clap::Parser;
-use commands::{InfoCommand, SettingsCommand, SliceCommand};
+use commands::{InfoCommand, ServeCommand, SettingsCommand, SliceCommand};
 
 /// Slicer Engine CLI
 #[derive(Parser, Debug)]
@@ -35,6 +35,9 @@ pub enum Commands {
 
     /// Validate or diff slicing settings
     Settings(SettingsCommand),
+
+    /// Serve the Angular UI over a local HTTP server
+    Serve(ServeCommand),
 }
 
 impl CliArgs {
@@ -50,6 +53,7 @@ impl CliArgs {
             Commands::Slice(cmd) => cmd.execute(),
             Commands::Info(cmd) => cmd.execute(),
             Commands::Settings(cmd) => cmd.execute(),
+            Commands::Serve(cmd) => cmd.execute(),
         }
     }
 }

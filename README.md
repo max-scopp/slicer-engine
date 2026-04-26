@@ -68,6 +68,42 @@ cargo test --release    # Run tests
 cargo fmt && cargo clippy -- -D warnings
 ```
 
+## Web UI
+
+A minimal Angular 21 single-page application lives in the `ui/` directory.
+It uses **signals**, standalone components, and the `@if`/`@for` control-flow
+syntax throughout — no NgModules.
+
+### Development
+
+```bash
+cd ui
+npm install          # first time only
+npm start            # Angular dev server → http://localhost:4200
+```
+
+### Production build
+
+```bash
+cd ui && npm run build   # output → ui/dist/slicer-ui/browser/
+```
+
+### Serve via CLI
+
+After building, launch the bundled UI with the Rust CLI:
+
+```bash
+# Default: http://127.0.0.1:4200, ui dir = ./ui/dist/slicer-ui/browser
+cargo run --release -- serve
+
+# Custom port / directory
+cargo run --release -- serve --port 8080 --ui-dir /path/to/dist
+```
+
+The `serve` command starts an **actix-web** static-file server with SPA
+fallback (all unknown routes return `index.html`), so Angular client-side
+routing works out of the box.
+
 ## Features
 
 - ✓ Cross-platform (Windows, macOS, WASM)
@@ -76,6 +112,7 @@ cargo fmt && cargo clippy -- -D warnings
 - ✓ G-code generation with temperature control
 - ✓ Settings validation & per-object overrides
 - ✓ Powered by [Clipper2](https://github.com/AngusJohnson/Clipper2)
+- ✓ Angular 21 web UI with signals & standalone components
 
 ---
 

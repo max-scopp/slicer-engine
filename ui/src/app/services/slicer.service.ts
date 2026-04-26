@@ -35,7 +35,7 @@ export class SlicerService {
         `Print speed: ${s.printSpeed}mm/s`,
         `Nozzle temp: ${s.nozzleTemp}°C`,
         `Bed temp: ${s.bedTemp}°C`,
-        `GCode flavor: ${s.gcodeFlvor}`,
+        `GCode flavor: ${s.gcodeFlavor}`,
         'Slice complete.',
       ]);
       this.status.set('done');
