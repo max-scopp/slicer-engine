@@ -1,7 +1,7 @@
 //! CLI command implementations
 
-pub mod slice;
 pub mod info;
+pub mod slice;
 
-pub use slice::SliceCommand;
 pub use info::InfoCommand;
+pub use slice::SliceCommand;

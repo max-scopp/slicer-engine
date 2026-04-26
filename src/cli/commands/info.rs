@@ -1,13 +1,15 @@
 //! Info command - displays build and library information
 
 use clap::Parser;
-use crate::cli::output::OutputFormat;
-use serde_json::json;
+use serde_json::{json, Value};
+
+use crate::cli::emit::Emitter;
+use crate::cli::output::{EmitPayload, OutputFormat};
 
 /// Display build and library information
 #[derive(Parser, Debug)]
 pub struct InfoCommand {
-    /// Output format (json, human, csv)
+    /// Output format (json, human)
     #[arg(long, default_value = "human")]
     pub output_format: String,
 
@@ -16,40 +18,62 @@ pub struct InfoCommand {
     pub verbose: bool,
 }
 
+/// Result payload emitted by the `info` command.
+struct InfoResult {
+    name: &'static str,
+    version: &'static str,
+    edition: &'static str,
+    features: Option<&'static str>,
+}
+
+impl EmitPayload for InfoResult {
+    fn schema(&self) -> &'static str {
+        "slicer-engine/info-result-v1"
+    }
+
+    fn display_human(&self) -> String {
+        let mut s = format!(
+            "Slicer Engine\n  Version: {}\n  Edition: {}",
+            self.version, self.edition
+        );
+        if let Some(f) = self.features {
+            s.push_str(&format!("\n  Features: {}", f));
+        }
+        s
+    }
+
+    fn to_json(&self) -> Value {
+        json!({
+            "name": self.name,
+            "version": self.version,
+            "edition": self.edition,
+            "features": self.features,
+        })
+    }
+}
+
 impl InfoCommand {
     /// Execute the info command
     pub fn execute(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let format = OutputFormat::from_str(&self.output_format)
+        let format = self
+            .output_format
+            .parse::<OutputFormat>()
             .map_err(|e| format!("Invalid output format: {}", e))?;
 
-        let version = env!("CARGO_PKG_VERSION");
+        let emitter = Emitter::new(format);
 
-        match format {
-            OutputFormat::Json => {
-                let info = json!({
-                    "name": "slicer-engine",
-                    "version": version,
-                    "edition": "2021",
-                    "verbose": self.verbose,
-                });
-                println!("{}", serde_json::to_string_pretty(&info)?);
-            }
-            OutputFormat::Human => {
-                println!("Slicer Engine");
-                println!("  Version: {}", version);
-                println!("  Edition: 2021");
-                if self.verbose {
-                    println!("  Features: clipper2-based polygon clipping");
-                }
-            }
-            OutputFormat::Csv => {
-                println!("field,value");
-                println!("name,slicer-engine");
-                println!("version,{}", version);
-                println!("edition,2021");
-            }
-        }
+        let result = InfoResult {
+            name: "slicer-engine",
+            version: env!("CARGO_PKG_VERSION"),
+            edition: "2021",
+            features: if self.verbose {
+                Some("clipper2-based polygon clipping")
+            } else {
+                None
+            },
+        };
 
+        emitter.emit(&result);
         Ok(())
     }
 }
@@ -65,5 +89,55 @@ mod tests {
             verbose: false,
         };
         assert!(!cmd.verbose);
+    }
+
+    #[test]
+    fn test_info_result_schema() {
+        let r = InfoResult {
+            name: "slicer-engine",
+            version: "0.1.0",
+            edition: "2021",
+            features: None,
+        };
+        assert_eq!(r.schema(), "slicer-engine/info-result-v1");
+    }
+
+    #[test]
+    fn test_info_result_human_no_features() {
+        let r = InfoResult {
+            name: "slicer-engine",
+            version: "0.1.0",
+            edition: "2021",
+            features: None,
+        };
+        let s = r.display_human();
+        assert!(s.contains("Slicer Engine"));
+        assert!(s.contains("0.1.0"));
+        assert!(!s.contains("Features"));
+    }
+
+    #[test]
+    fn test_info_result_human_with_features() {
+        let r = InfoResult {
+            name: "slicer-engine",
+            version: "0.1.0",
+            edition: "2021",
+            features: Some("clipper2-based polygon clipping"),
+        };
+        assert!(r.display_human().contains("Features:"));
+    }
+
+    #[test]
+    fn test_info_result_json_fields() {
+        let r = InfoResult {
+            name: "slicer-engine",
+            version: "0.1.0",
+            edition: "2021",
+            features: None,
+        };
+        let v = r.to_json();
+        assert_eq!(v["name"], "slicer-engine");
+        assert_eq!(v["version"], "0.1.0");
+        assert_eq!(v["edition"], "2021");
     }
 }

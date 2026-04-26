@@ -4,12 +4,13 @@
 //! Uses clap v4 for argument parsing with derive macros.
 
 pub mod commands;
+pub mod emit;
 pub mod error;
-pub mod output;
 pub mod io;
+pub mod output;
 
 use clap::Parser;
-use commands::{SliceCommand, InfoCommand};
+use commands::{InfoCommand, SliceCommand};
 
 /// Slicer Engine CLI
 #[derive(Parser, Debug)]
