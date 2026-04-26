@@ -351,12 +351,16 @@ pub fn generate_top_bottom_surfaces(
         .skip(top_start)
         .take(total - top_start)
     {
-        // Skip if this layer was already marked as a bottom surface
+        // Skip layers in the bottom surface range to avoid duplicate surface marking
         if i >= bottom_layers {
             add_solid_infill_to_layer(layer, ExtrusionRole::TopSurface, layer_height);
         }
     }
 }
+
+/// Calculate infill line spacing based on layer height
+/// Standard extrusion width is typically 1.2× layer height for solid infill
+const SOLID_INFILL_EXTRUSION_WIDTH_MULTIPLIER: f64 = 1.2;
 
 /// Add solid infill pattern to a layer with the specified extrusion role.
 ///
@@ -374,8 +378,7 @@ fn add_solid_infill_to_layer(layer: &mut SliceLayer, role: ExtrusionRole, layer_
     }
 
     // Calculate infill line spacing based on layer height
-    // Standard extrusion width is typically 1.2× layer height for solid infill
-    let line_spacing = layer_height * 1.2;
+    let line_spacing = layer_height * SOLID_INFILL_EXTRUSION_WIDTH_MULTIPLIER;
 
     // Generate infill lines at 45° angle
     let infill_paths = generate_rectilinear_infill(&layer.paths, line_spacing, 45.0);
@@ -464,13 +467,15 @@ fn generate_rectilinear_infill(contours: &Paths, line_spacing: f64, angle_degree
         infill_lines.push(line);
     }
 
-    // For now, clip infill lines to contours using a simple ray-casting approach
-    // In a production implementation, we would use Clipper2's intersection operation
-    // but that requires more complex API setup with the builder pattern
-
-    // Simplified approach: just return the infill lines
-    // They will extend beyond the contours, but the slicer will still work
-    // A future enhancement can add proper clipping using Clipper2
+    // TODO: Properly clip infill lines to contours using Clipper2's intersection operation
+    // Currently, infill lines extend beyond the perimeters which may cause extrusion
+    // outside the model boundaries. This requires the Clipper2 builder pattern API:
+    // - Use `Clipper::new().add_subject(&infill_lines).add_clip(&contours)`
+    // - Call `.intersect()` with appropriate FillRule
+    // Tracking issue: https://github.com/max-scopp/slicer-engine/issues/XXX
+    //
+    // For now, returning unclipped infill lines as a functional baseline.
+    // The slicer still produces valid output, but with non-optimal infill boundaries.
     Paths::new(infill_lines)
 }
 
