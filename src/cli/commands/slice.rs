@@ -85,6 +85,16 @@ pub struct SliceCommand {
     /// Overrides the global settings value and --lifecycle-markers.
     #[arg(long, conflicts_with = "lifecycle_markers")]
     pub no_lifecycle_markers: bool,
+
+    /// Infill pattern (rectilinear, grid, honeycomb, gyroid).
+    /// When omitted, falls back to the value in settings (default: rectilinear).
+    #[arg(long)]
+    pub infill_pattern: Option<String>,
+
+    /// Infill density as a percentage (0-100).
+    /// When omitted, uses the value from settings (default: 20%).
+    #[arg(long)]
+    pub infill_density: Option<f64>,
 }
 
 /// Result payload emitted by the `slice` command.
@@ -231,24 +241,41 @@ impl SliceCommand {
         }
 
         // Add infill to layers if density > 0
-        if settings.params.infill_density > 0.0 {
+        // CLI flags override settings values
+        let infill_density = self.infill_density
+            .map(|d| d / 100.0) // Convert percentage to fraction
+            .unwrap_or(settings.params.infill_density);
+            
+        let infill_pattern_str = self.infill_pattern
+            .as_deref()
+            .unwrap_or(&settings.params.infill_pattern);
+            
+        if infill_density > 0.0 {
             use crate::infill::InfillPattern;
             
-            // Parse infill pattern from settings
-            let infill_pattern = InfillPattern::from_str(&settings.params.infill_pattern)
-                .unwrap_or(InfillPattern::Rectilinear);
+            // Parse infill pattern
+            let infill_pattern = InfillPattern::parse(infill_pattern_str)
+                .unwrap_or_else(|| {
+                    if self.verbose {
+                        emitter.log_warn(&format!(
+                            "Unknown infill pattern '{}', using rectilinear",
+                            infill_pattern_str
+                        ));
+                    }
+                    InfillPattern::Rectilinear
+                });
             
             if self.verbose {
                 emitter.log_debug(&format!(
                     "generating {} infill at {:.0}% density…",
                     infill_pattern.name(),
-                    settings.params.infill_density * 100.0
+                    infill_density * 100.0
                 ));
             }
             
             crate::core::add_infill_to_layers(
                 &mut layers,
-                settings.params.infill_density,
+                infill_density,
                 infill_pattern,
             );
             
@@ -370,6 +397,8 @@ mod tests {
             config: None,
             lifecycle_markers: false,
             no_lifecycle_markers: false,
+            infill_pattern: None,
+            infill_density: None,
         };
         assert_eq!(cmd.layer_height, Some(0.2));
         assert_eq!(cmd.gcode_flavor.as_deref(), Some("marlin"));
@@ -391,6 +420,8 @@ mod tests {
             config: None,
             lifecycle_markers: false,
             no_lifecycle_markers: false,
+            infill_pattern: None,
+            infill_density: None,
         };
         assert!(cmd.gcode_flavor.is_none());
     }
@@ -411,6 +442,8 @@ mod tests {
             config: None,
             lifecycle_markers: false,
             no_lifecycle_markers: false,
+            infill_pattern: None,
+            infill_density: None,
         };
         assert_eq!(cmd.gcode_flavor.as_deref(), Some("klipper"));
     }
@@ -431,6 +464,8 @@ mod tests {
             config: None,
             lifecycle_markers: false,
             no_lifecycle_markers: false,
+            infill_pattern: None,
+            infill_density: None,
         };
         assert_eq!(
             cmd.start_print_gcode.as_deref(),
@@ -455,6 +490,8 @@ mod tests {
             config: None,
             lifecycle_markers: true,
             no_lifecycle_markers: false,
+            infill_pattern: None,
+            infill_density: None,
         };
         assert!(cmd_on.lifecycle_markers);
         assert!(!cmd_on.no_lifecycle_markers);
@@ -473,6 +510,8 @@ mod tests {
             config: None,
             lifecycle_markers: false,
             no_lifecycle_markers: true,
+            infill_pattern: None,
+            infill_density: None,
         };
         assert!(!cmd_off.lifecycle_markers);
         assert!(cmd_off.no_lifecycle_markers);

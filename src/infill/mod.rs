@@ -29,9 +29,10 @@
 use clipper2::*;
 
 /// Supported infill patterns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InfillPattern {
     /// Parallel lines alternating direction per layer (default, fastest).
+    #[default]
     Rectilinear,
     /// Perpendicular lines forming a grid pattern (stronger).
     Grid,
@@ -41,15 +42,9 @@ pub enum InfillPattern {
     Gyroid,
 }
 
-impl Default for InfillPattern {
-    fn default() -> Self {
-        Self::Rectilinear
-    }
-}
-
 impl InfillPattern {
     /// Parse pattern name from string (case-insensitive).
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "rectilinear" | "linear" => Some(Self::Rectilinear),
             "grid" => Some(Self::Grid),
@@ -268,13 +263,13 @@ mod tests {
 
     #[test]
     fn test_infill_pattern_from_str() {
-        assert_eq!(InfillPattern::from_str("rectilinear"), Some(InfillPattern::Rectilinear));
-        assert_eq!(InfillPattern::from_str("linear"), Some(InfillPattern::Rectilinear));
-        assert_eq!(InfillPattern::from_str("grid"), Some(InfillPattern::Grid));
-        assert_eq!(InfillPattern::from_str("GRID"), Some(InfillPattern::Grid));
-        assert_eq!(InfillPattern::from_str("honeycomb"), Some(InfillPattern::Honeycomb));
-        assert_eq!(InfillPattern::from_str("gyroid"), Some(InfillPattern::Gyroid));
-        assert_eq!(InfillPattern::from_str("invalid"), None);
+        assert_eq!(InfillPattern::parse("rectilinear"), Some(InfillPattern::Rectilinear));
+        assert_eq!(InfillPattern::parse("linear"), Some(InfillPattern::Rectilinear));
+        assert_eq!(InfillPattern::parse("grid"), Some(InfillPattern::Grid));
+        assert_eq!(InfillPattern::parse("GRID"), Some(InfillPattern::Grid));
+        assert_eq!(InfillPattern::parse("honeycomb"), Some(InfillPattern::Honeycomb));
+        assert_eq!(InfillPattern::parse("gyroid"), Some(InfillPattern::Gyroid));
+        assert_eq!(InfillPattern::parse("invalid"), None);
     }
 
     #[test]
