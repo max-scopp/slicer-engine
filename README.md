@@ -89,6 +89,62 @@ slicer-engine/
 cargo run --release
 ```
 
+## CLI Commands
+
+The slicer-engine provides a user-friendly command-line interface for slicing 3D models.
+
+### General Help
+
+```bash
+# Show available commands and options
+cargo run --release -- --help
+
+# Show version
+cargo run --release -- --version
+```
+
+### Info Command
+
+Display build and library information:
+
+```bash
+# Basic info
+cargo run --release -- info
+
+# Verbose info with features
+cargo run --release -- info --verbose
+
+# JSON format
+cargo run --release -- info --output-format json
+
+# CSV format
+cargo run --release -- info --output-format csv
+```
+
+### Slice Command
+
+Slice a 3D model into layers:
+
+```bash
+# Basic slice with default layer height (0.2mm)
+cargo run --release -- slice --input model.stl
+
+# Slice with custom layer height
+cargo run --release -- slice --input model.stl --layer-height 0.1
+
+# Specify output file
+cargo run --release -- slice --input model.stl --output result.gcode
+
+# JSON output format
+cargo run --release -- slice --input model.stl --output-format json
+
+# Verbose output with debug information
+cargo run --release -- slice --input model.stl --verbose
+
+# Show slice command help
+cargo run --release -- slice --help
+```
+
 ## Testing
 
 ```bash
