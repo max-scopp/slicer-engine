@@ -22,6 +22,7 @@ Configuration for slicing behavior and printer control. All values stored as JSO
 | `gcode_flavor` | string | `"marlin"` | Firmware dialect (`"marlin"` or `"klipper"`) |
 | `start_print_gcode` | string \| null | `null` | Custom start G-code block or file path |
 | `end_print_gcode` | string \| null | `null` | Custom end G-code block or file path |
+| `lifecycle_markers` | object | `{}` | Per-flavor layer lifecycle marker config (see below) |
 
 ## Config Priority
 
@@ -99,12 +100,99 @@ Managed via the `settings set` / `settings get` subcommands (see below).
     "bed_temp": 60.0
   },
   "gcode_flavor": "marlin",
-  "start_print_gcode": null,
-  "end_print_gcode": null
+  "lifecycle_markers": {
+    "klipper": {
+      "enabled": true,
+      "layer_change": ";LAYER_CHANGE",
+      "z_marker": ";Z:{z}",
+      "height_marker": ";HEIGHT:{height}",
+      "before_layer_change": ";BEFORE_LAYER_CHANGE",
+      "after_layer_change": ";AFTER_LAYER_CHANGE",
+      "type_annotation": ";TYPE:{type}",
+      "width_annotation": ";WIDTH:{width}mm"
+    }
+  }
 }
 ```
 
-Both `start_print_gcode` and `end_print_gcode` are omitted from the file when `null`.
+`start_print_gcode` and `end_print_gcode` are omitted from the file when `null`.
+`lifecycle_markers` is omitted entirely when the map is empty (i.e. all defaults are in effect).
+
+## Lifecycle Markers
+
+Layer lifecycle markers are comments that slicer-aware firmware and post-processing scripts
+use to track progress, drive LED effects, pause at layers, etc.
+
+### How it works
+
+Each firmware flavor can have its own `LifecycleMarkerConfig` entry in the `lifecycle_markers`
+map.  Flavors not present in the map use the built-in defaults (enabled, standard
+OrcaSlicer/PrusaSlicer comment format).
+
+When `enabled: false`, the generator emits a minimal `; layer z=…` comment instead of the full
+lifecycle block.
+
+### Per-flavor configuration (`LifecycleMarkerConfig`)
+
+| Field | Default emitted comment | Supported placeholders |
+|-------|------------------------|------------------------|
+| `enabled` | `true` | — |
+| `layer_change` | `;LAYER_CHANGE` | `{z}`, `{height}` |
+| `z_marker` | `;Z:{z}` | `{z}` |
+| `height_marker` | `;HEIGHT:{height}` | `{height}` |
+| `before_layer_change` | `;BEFORE_LAYER_CHANGE` | `{z}` |
+| `after_layer_change` | `;AFTER_LAYER_CHANGE` | `{z}` |
+| `type_annotation` | `;TYPE:{type}` | `{type}` |
+| `width_annotation` | `;WIDTH:{width}mm` | `{width}` |
+
+All string fields are optional — omit them to keep the built-in default for that marker.
+
+### Placeholder reference
+
+| Placeholder | Replaced with | Example |
+|-------------|--------------|---------|
+| `{z}` | Layer Z coordinate (3 d.p.) | `0.200` |
+| `{height}` | Layer height from params (3 d.p.) | `0.200` |
+| `{type}` | Extrusion role type name | `WALL-OUTER`, `FILL` |
+| `{width}` | Extrusion role default width (2 d.p.) | `0.40` |
+
+### Example: disable markers for Marlin, keep them for Klipper
+
+```json
+{
+  "lifecycle_markers": {
+    "marlin": { "enabled": false },
+    "klipper": { "enabled": true }
+  }
+}
+```
+
+### Example: custom marker strings for a Bambu-style slicer
+
+```json
+{
+  "lifecycle_markers": {
+    "marlin": {
+      "enabled": true,
+      "layer_change": ";BAMBULABS_LAYER_CHANGE",
+      "z_marker": ";Z_HEIGHT:{z}"
+    }
+  }
+}
+```
+
+### CLI overrides
+
+The `--lifecycle-markers` and `--no-lifecycle-markers` flags on the `slice` command override
+the `enabled` field from settings for the current invocation only:
+
+```bash
+# Force-enable markers regardless of settings
+slicer-engine slice --input model.stl --lifecycle-markers
+
+# Force-disable markers regardless of settings
+slicer-engine slice --input model.stl --no-lifecycle-markers
+```
 
 ### Object settings (per-object override)
 
@@ -217,7 +305,10 @@ nozzle_temp     210 → 210    (no change)
 {
   "params": { "layer_height": 0.1, "print_speed": 30, "wall_thickness": 1.6 },
   "gcode_flavor": "klipper",
-  "start_print_gcode": "START_PRINT BED_TEMP=60 EXTRUDER_TEMP=210"
+  "start_print_gcode": "START_PRINT BED_TEMP=60 EXTRUDER_TEMP=210",
+  "lifecycle_markers": {
+    "klipper": { "enabled": true }
+  }
 }
 ```
 

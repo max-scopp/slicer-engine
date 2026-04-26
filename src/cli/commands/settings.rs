@@ -360,7 +360,7 @@ fn set_json_path(
     let last_key = last
         .first()
         .copied()
-        .ok_or("Setting path must not be empty")?;
+        .ok_or("Setting key path must not be empty (expected dot-separated path like 'params.layer_height')")?;
 
     let mut current = val;
     for seg in parents {
@@ -492,6 +492,17 @@ impl EmitPayload for ShowResult<'_> {
         }
         if let Some(s) = &self.settings.end_print_gcode {
             lines.push(format!("  end_print_gcode: {}", s));
+        }
+        if !self.settings.lifecycle_markers.is_empty() {
+            lines.push("  lifecycle_markers:".to_string());
+            let mut flavors: Vec<_> = self.settings.lifecycle_markers.iter().collect();
+            flavors.sort_by_key(|(k, _)| k.as_str());
+            for (flavor, cfg) in flavors {
+                lines.push(format!(
+                    "    {}: enabled={}",
+                    flavor, cfg.enabled
+                ));
+            }
         }
         lines.join("\n")
     }
@@ -811,5 +822,38 @@ mod tests {
         set_setting_value(&mut s1, "layer_height", &v).unwrap();
         set_setting_value(&mut s2, "params.layer_height", &v).unwrap();
         assert_eq!(s1.params.layer_height, s2.params.layer_height);
+    }
+
+    #[test]
+    fn test_show_result_human_includes_gcode_flavor() {
+        let settings = GlobalSettings::default();
+        let r = ShowResult {
+            settings: &settings,
+        };
+        let human = r.display_human();
+        assert!(human.contains("gcode_flavor"), "show must include gcode_flavor");
+    }
+
+    #[test]
+    fn test_show_result_human_includes_lifecycle_markers_when_present() {
+        use crate::settings::params::LifecycleMarkerConfig;
+        let mut settings = GlobalSettings::default();
+        settings.lifecycle_markers.insert(
+            "klipper".to_string(),
+            LifecycleMarkerConfig {
+                enabled: false,
+                ..LifecycleMarkerConfig::default()
+            },
+        );
+        let r = ShowResult {
+            settings: &settings,
+        };
+        let human = r.display_human();
+        assert!(
+            human.contains("lifecycle_markers"),
+            "show must include lifecycle_markers when non-empty"
+        );
+        assert!(human.contains("klipper"));
+        assert!(human.contains("enabled=false"));
     }
 }

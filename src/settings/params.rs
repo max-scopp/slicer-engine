@@ -1,6 +1,7 @@
 //! Slicing parameters: per-print and per-object settings.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Parameters that control how a model is sliced and printed.
 ///
@@ -33,6 +34,65 @@ impl Default for SlicingParams {
             nozzle_temp: 210.0,
             bed_temp: 60.0,
         }
+    }
+}
+
+/// Per-flavor lifecycle marker configuration.
+///
+/// Controls whether lifecycle markers are emitted in G-code output and allows
+/// overriding the default marker strings for each supported annotation.
+///
+/// Template placeholders supported by marker override strings:
+/// - `{z}` → current layer Z coordinate (e.g. `0.200`)
+/// - `{height}` → layer height (e.g. `0.200`)
+/// - `{type}` → extrusion role type name (e.g. `Perimeter`)
+/// - `{width}` → default extrusion width for the role (e.g. `0.40`)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LifecycleMarkerConfig {
+    /// Whether to emit lifecycle markers at all. Default: true.
+    #[serde(default = "LifecycleMarkerConfig::default_enabled")]
+    pub enabled: bool,
+    /// Override for `;LAYER_CHANGE`. Supports `{z}` and `{height}` placeholders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer_change: Option<String>,
+    /// Override for `;Z:{z}`. Supports `{z}` placeholder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub z_marker: Option<String>,
+    /// Override for `;HEIGHT:{height}`. Supports `{height}` placeholder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height_marker: Option<String>,
+    /// Override for `;BEFORE_LAYER_CHANGE`. Supports `{z}` placeholder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_layer_change: Option<String>,
+    /// Override for `;AFTER_LAYER_CHANGE`. Supports `{z}` placeholder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_layer_change: Option<String>,
+    /// Override for `;TYPE:{type}`. Supports `{type}` placeholder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_annotation: Option<String>,
+    /// Override for `;WIDTH:{width}mm`. Supports `{width}` placeholder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width_annotation: Option<String>,
+}
+
+impl Default for LifecycleMarkerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            layer_change: None,
+            z_marker: None,
+            height_marker: None,
+            before_layer_change: None,
+            after_layer_change: None,
+            type_annotation: None,
+            width_annotation: None,
+        }
+    }
+}
+
+impl LifecycleMarkerConfig {
+    fn default_enabled() -> bool {
+        true
     }
 }
 
@@ -70,6 +130,13 @@ pub struct GlobalSettings {
     /// Override precedence: `--end-print-gcode` CLI arg → this field → dialect default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_print_gcode: Option<String>,
+    /// Per-flavor lifecycle marker configuration.
+    ///
+    /// Keys are lowercase flavor names (e.g. `"marlin"`, `"klipper"`).
+    /// Missing flavors inherit the default [`LifecycleMarkerConfig`] (enabled: true,
+    /// all markers at defaults).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub lifecycle_markers: HashMap<String, LifecycleMarkerConfig>,
 }
 
 impl GlobalSettings {
@@ -85,6 +152,7 @@ impl Default for GlobalSettings {
             gcode_flavor: Self::default_gcode_flavor(),
             start_print_gcode: None,
             end_print_gcode: None,
+            lifecycle_markers: HashMap::new(),
         }
     }
 }
@@ -113,12 +181,19 @@ mod tests {
         assert_eq!(back.params.layer_height, gs.params.layer_height);
         assert_eq!(back.params.nozzle_temp, gs.params.nozzle_temp);
         assert_eq!(back.gcode_flavor, gs.gcode_flavor);
+        assert!(back.lifecycle_markers.is_empty());
     }
 
     #[test]
     fn test_global_settings_default_gcode_flavor_is_marlin() {
         let gs = GlobalSettings::default();
         assert_eq!(gs.gcode_flavor, "marlin");
+    }
+
+    #[test]
+    fn test_global_settings_default_lifecycle_markers_is_empty() {
+        let gs = GlobalSettings::default();
+        assert!(gs.lifecycle_markers.is_empty());
     }
 
     #[test]
@@ -130,21 +205,10 @@ mod tests {
             back.gcode_flavor, "marlin",
             "should default to marlin for legacy files"
         );
-    }
-
-    #[test]
-    fn test_object_settings_with_overrides_round_trip() {
-        let os = ObjectSettings {
-            object_name: "part_a".to_string(),
-            overrides: Some(SlicingParams {
-                layer_height: 0.1,
-                ..SlicingParams::default()
-            }),
-        };
-        let json = serde_json::to_string(&os).expect("serialize");
-        let back: ObjectSettings = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(back.object_name, "part_a");
-        assert_eq!(back.overrides.unwrap().layer_height, 0.1);
+        assert!(
+            back.lifecycle_markers.is_empty(),
+            "should default to empty map for legacy files"
+        );
     }
 
     #[test]
@@ -192,5 +256,98 @@ mod tests {
             !json.contains("end_print_gcode"),
             "None field should be omitted from JSON"
         );
+        assert!(
+            !json.contains("lifecycle_markers"),
+            "Empty HashMap should be omitted from JSON"
+        );
+    }
+
+    #[test]
+    fn test_object_settings_with_overrides_round_trip() {
+        let os = ObjectSettings {
+            object_name: "part_a".to_string(),
+            overrides: Some(SlicingParams {
+                layer_height: 0.1,
+                ..SlicingParams::default()
+            }),
+        };
+        let json = serde_json::to_string(&os).expect("serialize");
+        let back: ObjectSettings = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.object_name, "part_a");
+        assert_eq!(back.overrides.unwrap().layer_height, 0.1);
+    }
+
+    #[test]
+    fn test_object_settings_without_overrides_round_trip() {
+        let os = ObjectSettings {
+            object_name: "part_b".to_string(),
+            overrides: None,
+        };
+        let json = serde_json::to_string(&os).expect("serialize");
+        let back: ObjectSettings = serde_json::from_str(&json).expect("deserialize");
+        assert!(back.overrides.is_none());
+    }
+
+    // ── LifecycleMarkerConfig tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_lifecycle_marker_config_default_enabled() {
+        let cfg = LifecycleMarkerConfig::default();
+        assert!(cfg.enabled);
+        assert!(cfg.layer_change.is_none());
+        assert!(cfg.z_marker.is_none());
+        assert!(cfg.height_marker.is_none());
+        assert!(cfg.before_layer_change.is_none());
+        assert!(cfg.after_layer_change.is_none());
+        assert!(cfg.type_annotation.is_none());
+        assert!(cfg.width_annotation.is_none());
+    }
+
+    #[test]
+    fn test_lifecycle_marker_config_round_trip() {
+        let cfg = LifecycleMarkerConfig {
+            enabled: false,
+            layer_change: Some("LAYER_CHANGE {z}".to_string()),
+            z_marker: Some(";Z:{z}".to_string()),
+            ..LifecycleMarkerConfig::default()
+        };
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let back: LifecycleMarkerConfig = serde_json::from_str(&json).expect("deserialize");
+        assert!(!back.enabled);
+        assert_eq!(back.layer_change.as_deref(), Some("LAYER_CHANGE {z}"));
+        assert_eq!(back.z_marker.as_deref(), Some(";Z:{z}"));
+    }
+
+    #[test]
+    fn test_lifecycle_marker_config_defaults_when_absent() {
+        let json = r#"{}"#;
+        let cfg: LifecycleMarkerConfig = serde_json::from_str(json).expect("deserialize");
+        assert!(cfg.enabled, "enabled should default to true when absent");
+    }
+
+    #[test]
+    fn test_lifecycle_marker_config_none_fields_omitted() {
+        let cfg = LifecycleMarkerConfig::default();
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        assert!(!json.contains("layer_change"), "None field omitted");
+        assert!(!json.contains("z_marker"), "None field omitted");
+    }
+
+    #[test]
+    fn test_global_settings_lifecycle_markers_round_trip() {
+        let mut gs = GlobalSettings::default();
+        gs.lifecycle_markers.insert(
+            "klipper".to_string(),
+            LifecycleMarkerConfig {
+                enabled: true,
+                layer_change: Some(";LAYER_CHANGE".to_string()),
+                ..LifecycleMarkerConfig::default()
+            },
+        );
+        let json = serde_json::to_string(&gs).expect("serialize");
+        let back: GlobalSettings = serde_json::from_str(&json).expect("deserialize");
+        let klipper_cfg = back.lifecycle_markers.get("klipper").unwrap();
+        assert!(klipper_cfg.enabled);
+        assert_eq!(klipper_cfg.layer_change.as_deref(), Some(";LAYER_CHANGE"));
     }
 }
