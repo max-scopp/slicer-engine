@@ -3,8 +3,8 @@
 //! **All** browser ↔ server communication goes over a single `/ws` endpoint.
 //! Messages are JSON objects with a discriminant `"type"` field (snake_case).
 
-use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 /// Slicing parameters sent from the browser with a `slice` request.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -21,6 +21,21 @@ pub struct WsSlicingParams {
     pub gcode_flavor: String,
 }
 
+/// Summary of a completed slicing session for history/re-download.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SessionSummary {
+    /// Unique request identifier
+    pub request_uuid: String,
+    /// Original uploaded filename
+    pub original_filename: Option<String>,
+    /// Number of layers in the sliced G-code
+    pub layer_count: Option<usize>,
+    /// Session creation timestamp (RFC3339)
+    pub created_at: String,
+    /// URL to download the G-code file
+    pub download_url: String,
+}
+
 /// Messages sent **from the browser to the server**.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
@@ -32,6 +47,8 @@ pub enum ClientMessage {
         request_uuid: String,
         settings: WsSlicingParams,
     },
+    /// Request a list of previously completed slicing sessions.
+    ListSessions,
     /// Abort / reset the current state.
     Reset,
 }
@@ -55,6 +72,8 @@ pub enum ServerMessage {
         /// HTTP GET this URL to download the generated G-code file
         download_url: String,
     },
+    /// List of previously completed slicing sessions.
+    SessionsList { sessions: Vec<SessionSummary> },
     /// A fatal error occurred during processing.
     Error { message: String },
 }

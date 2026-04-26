@@ -54,7 +54,10 @@ impl GenSchemasCommand {
         Ok(())
     }
 
-    fn write_schema(&self, schema_def: &schemas::SchemaDefinition) -> Result<(), Box<dyn std::error::Error>> {
+    fn write_schema(
+        &self,
+        schema_def: &schemas::SchemaDefinition,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let filename = schema_def.schema_id.replace('/', "-") + ".json";
         let path = self.output_dir.join(&filename);
 
@@ -95,9 +98,6 @@ mod tests {
             schema: Some("slicer-engine/result-v1".to_string()),
             pretty: true,
         };
-        assert_eq!(
-            cmd.schema.as_ref().unwrap(),
-            "slicer-engine/result-v1"
-        );
+        assert_eq!(cmd.schema.as_ref().unwrap(), "slicer-engine/result-v1");
     }
 }

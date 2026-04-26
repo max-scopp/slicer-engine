@@ -3,9 +3,9 @@
 //! These types are defined with `#[derive(JsonSchema)]` from the `schemars` crate,
 //! which automatically generates JSON schemas that match the actual Rust types.
 
+use crate::ws_protocol::{ClientMessage, ServerMessage, WsSlicingParams};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use crate::ws_protocol::{ClientMessage, ServerMessage, WsSlicingParams};
 
 /// Generic success result payload
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]

@@ -45,33 +45,34 @@ async fn handle_ws_session(
     while let Some(Ok(msg)) = stream.next().await {
         use actix_ws::AggregatedMessage;
         match msg {
-            AggregatedMessage::Text(text) => {
-                match serde_json::from_str::<ClientMessage>(&text) {
-                    Ok(ClientMessage::Slice {
+            AggregatedMessage::Text(text) => match serde_json::from_str::<ClientMessage>(&text) {
+                Ok(ClientMessage::Slice {
+                    request_uuid,
+                    settings,
+                }) => {
+                    handle_slice(
+                        &mut session,
                         request_uuid,
                         settings,
-                    }) => {
-                        handle_slice(
-                            &mut session,
-                            request_uuid,
-                            settings,
-                            db.clone(),
-                            work_dir.clone(),
-                        )
-                        .await;
-                    }
-                    Ok(ClientMessage::Reset) => {
-                        let _ = send_msg(&mut session, &ServerMessage::log_info("Reset.")).await;
-                    }
-                    Err(e) => {
-                        let _ = send_msg(
-                            &mut session,
-                            &ServerMessage::error(format!("Unrecognised message: {e}")),
-                        )
-                        .await;
-                    }
+                        db.clone(),
+                        work_dir.clone(),
+                    )
+                    .await;
                 }
-            }
+                Ok(ClientMessage::ListSessions) => {
+                    handle_list_sessions(&mut session, db.clone()).await;
+                }
+                Ok(ClientMessage::Reset) => {
+                    let _ = send_msg(&mut session, &ServerMessage::log_info("Reset.")).await;
+                }
+                Err(e) => {
+                    let _ = send_msg(
+                        &mut session,
+                        &ServerMessage::error(format!("Unrecognised message: {e}")),
+                    )
+                    .await;
+                }
+            },
             AggregatedMessage::Close(_) => break,
             _ => {}
         }
@@ -114,8 +115,7 @@ async fn handle_slice(
     // Fetch session from database
     let session_result = {
         let db = db.clone();
-        tokio::task::spawn_blocking(move || db.get_request(uuid))
-            .await
+        tokio::task::spawn_blocking(move || db.get_request(uuid)).await
     };
 
     let session_info = match session_result {
@@ -137,7 +137,9 @@ async fn handle_slice(
     let stl_file_path = match session_info.upload_file_path {
         Some(p) => p,
         None => {
-            send_or_return!(ServerMessage::error("No upload file associated with request"));
+            send_or_return!(ServerMessage::error(
+                "No upload file associated with request"
+            ));
             return;
         }
     };
@@ -194,8 +196,7 @@ async fn handle_slice(
         };
 
         let face_count = mesh.faces.len();
-        let log =
-            ServerMessage::log_info(format!("Mesh loaded: {face_count} triangles. Slicing…"));
+        let log = ServerMessage::log_info(format!("Mesh loaded: {face_count} triangles. Slicing…"));
         let _ = tx.blocking_send(to_json(&log));
 
         let layers = crate::core::slice_mesh(&mesh, params.layer_height);
@@ -238,6 +239,39 @@ async fn handle_slice(
         })
         .await;
     }
+}
+
+/// Fetch and send a list of previously completed slicing sessions.
+async fn handle_list_sessions(
+    session: &mut actix_ws::Session,
+    db: std::sync::Arc<crate::db::Database>,
+) {
+    // Query database for completed sessions
+    let sessions = tokio::task::spawn_blocking(move || db.get_completed_sessions())
+        .await
+        .ok()
+        .and_then(|result| result.ok())
+        .unwrap_or_default();
+
+    // Convert RequestSession to SessionSummary
+    let summaries = sessions
+        .into_iter()
+        .map(|session| {
+            use crate::ws_protocol::SessionSummary;
+            SessionSummary {
+                request_uuid: session.request_uuid.to_string(),
+                original_filename: session.original_filename,
+                layer_count: session.download_file_size.map(|size| size as usize),
+                created_at: session.created_at.to_rfc3339(),
+                download_url: format!("/api/download/{}", session.request_uuid),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let msg = ServerMessage::SessionsList {
+        sessions: summaries,
+    };
+    let _ = send_msg(session, &msg).await;
 }
 
 /// Serialize a [`ServerMessage`] to JSON and send it as a WebSocket text frame.

@@ -138,6 +138,9 @@ pub async fn download_handler(
 
     Ok(actix_web::HttpResponse::Ok()
         .content_type("text/plain")
-        .insert_header(("Content-Disposition", format!("attachment; filename=\"{}\"", download_filename)))
+        .insert_header((
+            "Content-Disposition",
+            format!("attachment; filename=\"{}\"", download_filename),
+        ))
         .body(content))
 }

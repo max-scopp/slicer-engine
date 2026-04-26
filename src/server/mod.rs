@@ -109,7 +109,10 @@ async fn run_server(
             .app_data(app_state.clone())
             // API routes – must be before static file handler
             .route("/api/upload", web::post().to(handlers::upload_handler))
-            .route("/api/download/{request_uuid}", web::get().to(handlers::download_handler))
+            .route(
+                "/api/download/{request_uuid}",
+                web::get().to(handlers::download_handler),
+            )
             // WebSocket endpoint
             .route("/ws", web::get().to(ws_session::ws_handler))
             // Serve static assets; fall back to index.html for SPA navigation

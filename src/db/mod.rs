@@ -8,8 +8,8 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
-use std::sync::Mutex;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use uuid::Uuid;
 
 /// Request lifecycle status.
@@ -31,7 +31,7 @@ pub enum RequestStatus {
 
 impl RequestStatus {
     /// Convert to database string representation.
-    fn to_db(&self) -> &'static str {
+    fn to_db(self) -> &'static str {
         match self {
             RequestStatus::AwaitingUpload => "awaiting_upload",
             RequestStatus::Uploading => "uploading",
@@ -89,7 +89,10 @@ impl Database {
 
     /// Initialize the database schema with optimized indices.
     fn init_schema(&self) -> Result<()> {
-        let conn = self.conn.lock().map_err(|_| anyhow!("Failed to lock database"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("Failed to lock database"))?;
 
         conn.execute_batch(
             r#"
@@ -128,7 +131,10 @@ impl Database {
         let now = Utc::now();
         let now_str = now.to_rfc3339();
 
-        let conn = self.conn.lock().map_err(|_| anyhow!("Failed to lock database"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("Failed to lock database"))?;
         conn.execute(
             "INSERT INTO requests
                 (request_uuid, status, created_at, updated_at)
@@ -156,7 +162,10 @@ impl Database {
 
     /// Retrieve a request session by UUID.
     pub fn get_request(&self, request_uuid: Uuid) -> Result<Option<RequestSession>> {
-        let conn = self.conn.lock().map_err(|_| anyhow!("Failed to lock database"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("Failed to lock database"))?;
         let mut stmt = conn.prepare(
             "SELECT
                 request_uuid, status, original_filename,
@@ -188,7 +197,18 @@ impl Database {
             })
             .optional()?;
 
-        if let Some((uuid_str, status_str, original_filename, upload_path, upload_size, download_path, download_size, created_at_str, updated_at_str)) = result {
+        if let Some((
+            uuid_str,
+            status_str,
+            original_filename,
+            upload_path,
+            upload_size,
+            download_path,
+            download_size,
+            created_at_str,
+            updated_at_str,
+        )) = result
+        {
             let parsed_session = RequestSession {
                 request_uuid: Uuid::parse_str(&uuid_str)?,
                 status: RequestStatus::from_db(&status_str)?,
@@ -197,10 +217,8 @@ impl Database {
                 upload_file_size: upload_size,
                 download_file_path: download_path.map(PathBuf::from),
                 download_file_size: download_size,
-                created_at: DateTime::parse_from_rfc3339(&created_at_str)?
-                    .with_timezone(&Utc),
-                updated_at: DateTime::parse_from_rfc3339(&updated_at_str)?
-                    .with_timezone(&Utc),
+                created_at: DateTime::parse_from_rfc3339(&created_at_str)?.with_timezone(&Utc),
+                updated_at: DateTime::parse_from_rfc3339(&updated_at_str)?.with_timezone(&Utc),
             };
             Ok(Some(parsed_session))
         } else {
@@ -211,7 +229,10 @@ impl Database {
     /// Update request status.
     pub fn update_status(&self, request_uuid: Uuid, new_status: RequestStatus) -> Result<()> {
         let now = Utc::now().to_rfc3339();
-        let conn = self.conn.lock().map_err(|_| anyhow!("Failed to lock database"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("Failed to lock database"))?;
         let rows = conn.execute(
             "UPDATE requests
              SET status = ?, updated_at = ?
@@ -235,7 +256,10 @@ impl Database {
     ) -> Result<()> {
         let now = Utc::now().to_rfc3339();
         let path_str = file_path.as_ref().to_string_lossy().to_string();
-        let conn = self.conn.lock().map_err(|_| anyhow!("Failed to lock database"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("Failed to lock database"))?;
 
         conn.execute(
             "UPDATE requests
@@ -264,7 +288,10 @@ impl Database {
     ) -> Result<()> {
         let now = Utc::now().to_rfc3339();
         let path_str = file_path.as_ref().to_string_lossy().to_string();
-        let conn = self.conn.lock().map_err(|_| anyhow!("Failed to lock database"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("Failed to lock database"))?;
 
         conn.execute(
             "UPDATE requests
@@ -291,7 +318,10 @@ impl Database {
             .ok_or_else(|| anyhow!("Invalid duration"))?
             .to_rfc3339();
 
-        let conn = self.conn.lock().map_err(|_| anyhow!("Failed to lock database"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("Failed to lock database"))?;
 
         // Fetch old records before deleting
         let mut stmt = conn.prepare(
@@ -302,7 +332,10 @@ impl Database {
 
         let files_to_delete: Vec<(Option<String>, Option<String>)> = stmt
             .query_map([&cutoff], |row| {
-                Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?))
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -328,7 +361,10 @@ impl Database {
 
     /// Get all sessions with a specific status (useful for monitoring/debugging).
     pub fn get_sessions_by_status(&self, status: RequestStatus) -> Result<Vec<RequestSession>> {
-        let conn = self.conn.lock().map_err(|_| anyhow!("Failed to lock database"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("Failed to lock database"))?;
         let mut stmt = conn.prepare(
             "SELECT
                 request_uuid, status, original_filename,
@@ -361,7 +397,17 @@ impl Database {
 
         let mut sessions = Vec::new();
         for row_result in sessions_iter {
-            let (uuid_str, status_str, original_filename, upload_path, upload_size, download_path, download_size, created_at_str, updated_at_str) = row_result?;
+            let (
+                uuid_str,
+                status_str,
+                original_filename,
+                upload_path,
+                upload_size,
+                download_path,
+                download_size,
+                created_at_str,
+                updated_at_str,
+            ) = row_result?;
             sessions.push(RequestSession {
                 request_uuid: Uuid::parse_str(&uuid_str)?,
                 status: RequestStatus::from_db(&status_str)?,
@@ -370,14 +416,17 @@ impl Database {
                 upload_file_size: upload_size,
                 download_file_path: download_path.map(PathBuf::from),
                 download_file_size: download_size,
-                created_at: DateTime::parse_from_rfc3339(&created_at_str)?
-                    .with_timezone(&Utc),
-                updated_at: DateTime::parse_from_rfc3339(&updated_at_str)?
-                    .with_timezone(&Utc),
+                created_at: DateTime::parse_from_rfc3339(&created_at_str)?.with_timezone(&Utc),
+                updated_at: DateTime::parse_from_rfc3339(&updated_at_str)?.with_timezone(&Utc),
             });
         }
 
         Ok(sessions)
+    }
+
+    /// Get all completed slicing sessions, ordered by most recent first.
+    pub fn get_completed_sessions(&self) -> Result<Vec<RequestSession>> {
+        self.get_sessions_by_status(RequestStatus::SliceComplete)
     }
 }
 
@@ -433,11 +482,18 @@ mod tests {
         let upload_path = dir.path().join("test.stl");
         std::fs::write(&upload_path, b"test")?;
 
-        db.set_upload_file(uuid, &upload_path, 1024)?;
+        db.set_upload_file(uuid, "test.stl".to_string(), &upload_path, 1024)?;
 
         let retrieved = db.get_request(uuid)?.unwrap();
         assert_eq!(retrieved.upload_file_size, Some(1024));
-        assert_eq!(retrieved.upload_file_path.as_ref().map(|p| p.file_name().unwrap().to_string_lossy().to_string()), Some("test.stl".to_string()));
+        assert_eq!(
+            retrieved.upload_file_path.as_ref().map(|p| p
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string()),
+            Some("test.stl".to_string())
+        );
 
         Ok(())
     }

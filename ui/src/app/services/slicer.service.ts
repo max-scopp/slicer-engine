@@ -7,6 +7,14 @@ import { ServerMessage } from '../../generated/schemas/slicer-engine-ws-server-m
 
 export type SlicerStatus = 'idle' | 'ready' | 'uploading' | 'slicing' | 'done' | 'error';
 
+export interface PreviousSession {
+  request_uuid: string;
+  original_filename?: string | null;
+  layer_count?: number | null;
+  created_at: string;
+  download_url: string;
+}
+
 @Injectable({ providedIn: 'root' })
 export class SlicerService {
   private readonly ws = inject(WebSocketService);
@@ -16,6 +24,7 @@ export class SlicerService {
   readonly settings = signal<SliceSettings>(DEFAULT_SETTINGS);
   readonly status = signal<SlicerStatus>('idle');
   readonly outputLog = signal<string[]>([]);
+  readonly previousSessions = signal<PreviousSession[]>([]);
 
   constructor() {
     // Pipe all WebSocket server messages into local state
@@ -59,6 +68,19 @@ export class SlicerService {
           'Downloading G-code…',
         ]);
         this.downloadGcode(msg.download_url);
+        // Refresh history to show the newly completed session
+        this.loadPreviousSessions();
+        break;
+      case 'SessionsList':
+        this.previousSessions.set(
+          msg.sessions.map(s => ({
+            request_uuid: s.request_uuid,
+            original_filename: s.original_filename,
+            layer_count: s.layer_count,
+            created_at: s.created_at,
+            download_url: s.download_url,
+          }))
+        );
         break;
       case 'Error':
         this.status.set('error');
@@ -147,6 +169,18 @@ export class SlicerService {
     this.status.set('idle');
     this.outputLog.set([]);
     this.ws.send({ type: 'Reset' });
+  }
+
+  loadPreviousSessions(): void {
+    this.ws.send({ type: 'ListSessions' });
+  }
+
+  downloadFromHistory(session: PreviousSession): void {
+    const filename = session.original_filename?.replace(/\.stl$/i, '.gcode') ?? 'output.gcode';
+    const link = document.createElement('a');
+    link.href = session.download_url;
+    link.download = filename;
+    link.click();
   }
 }
 
