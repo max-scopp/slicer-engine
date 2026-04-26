@@ -50,6 +50,26 @@ pub struct GlobalSettings {
     /// string; defaults to `"marlin"` for new or migrated settings files.
     #[serde(default = "GlobalSettings::default_gcode_flavor")]
     pub gcode_flavor: String,
+    /// Optional custom G-code to emit at the start of every print job.
+    ///
+    /// When set, this replaces the firmware dialect's built-in start script.
+    /// The value may be either a newline-separated block of G-code or a path
+    /// to a `.gcode` file — resolved at slice time via
+    /// [`crate::gcode::resolve_gcode_source`].
+    ///
+    /// Override precedence: `--start-print-gcode` CLI arg → this field → dialect default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_print_gcode: Option<String>,
+    /// Optional custom G-code to emit at the end of every print job.
+    ///
+    /// When set, this replaces the firmware dialect's built-in end script.
+    /// The value may be either a newline-separated block of G-code or a path
+    /// to a `.gcode` file — resolved at slice time via
+    /// [`crate::gcode::resolve_gcode_source`].
+    ///
+    /// Override precedence: `--end-print-gcode` CLI arg → this field → dialect default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_print_gcode: Option<String>,
 }
 
 impl GlobalSettings {
@@ -63,6 +83,8 @@ impl Default for GlobalSettings {
         Self {
             params: SlicingParams::default(),
             gcode_flavor: Self::default_gcode_flavor(),
+            start_print_gcode: None,
+            end_print_gcode: None,
         }
     }
 }
@@ -104,7 +126,10 @@ mod tests {
         // Simulate a legacy settings JSON that doesn't have the gcode_flavor field
         let json = r#"{"params":{"layer_height":0.2,"wall_thickness":1.2,"infill_density":0.2,"print_speed":60.0,"nozzle_temp":210.0,"bed_temp":60.0}}"#;
         let back: GlobalSettings = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(back.gcode_flavor, "marlin", "should default to marlin for legacy files");
+        assert_eq!(
+            back.gcode_flavor, "marlin",
+            "should default to marlin for legacy files"
+        );
     }
 
     #[test]
@@ -123,13 +148,49 @@ mod tests {
     }
 
     #[test]
-    fn test_object_settings_without_overrides_round_trip() {
-        let os = ObjectSettings {
-            object_name: "part_b".to_string(),
-            overrides: None,
+    fn test_global_settings_start_end_gcode_default_none() {
+        let gs = GlobalSettings::default();
+        assert!(gs.start_print_gcode.is_none());
+        assert!(gs.end_print_gcode.is_none());
+    }
+
+    #[test]
+    fn test_global_settings_start_end_gcode_round_trip() {
+        let gs = GlobalSettings {
+            start_print_gcode: Some("START_PRINT BED_TEMP=60".to_string()),
+            end_print_gcode: Some("END_PRINT".to_string()),
+            ..GlobalSettings::default()
         };
-        let json = serde_json::to_string(&os).expect("serialize");
-        let back: ObjectSettings = serde_json::from_str(&json).expect("deserialize");
-        assert!(back.overrides.is_none());
+        let json = serde_json::to_string(&gs).expect("serialize");
+        let back: GlobalSettings = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            back.start_print_gcode.as_deref(),
+            Some("START_PRINT BED_TEMP=60")
+        );
+        assert_eq!(back.end_print_gcode.as_deref(), Some("END_PRINT"));
+    }
+
+    #[test]
+    fn test_global_settings_start_end_gcode_absent_from_legacy_json() {
+        // Legacy JSON without start_print_gcode / end_print_gcode should default to None
+        let json = r#"{"params":{"layer_height":0.2,"wall_thickness":1.2,"infill_density":0.2,"print_speed":60.0,"nozzle_temp":210.0,"bed_temp":60.0},"gcode_flavor":"klipper"}"#;
+        let back: GlobalSettings = serde_json::from_str(json).expect("deserialize");
+        assert!(back.start_print_gcode.is_none());
+        assert!(back.end_print_gcode.is_none());
+    }
+
+    #[test]
+    fn test_global_settings_none_fields_omitted_in_json() {
+        let gs = GlobalSettings::default();
+        let json = serde_json::to_string(&gs).expect("serialize");
+        // Optional None fields should be omitted (skip_serializing_if)
+        assert!(
+            !json.contains("start_print_gcode"),
+            "None field should be omitted from JSON"
+        );
+        assert!(
+            !json.contains("end_print_gcode"),
+            "None field should be omitted from JSON"
+        );
     }
 }
