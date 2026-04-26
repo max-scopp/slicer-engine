@@ -15,6 +15,10 @@ pub struct SlicingParams {
     pub wall_thickness: f64,
     /// Infill density as a fraction (0.0 = hollow, 1.0 = solid).
     pub infill_density: f64,
+    /// Infill pattern type (rectilinear, grid, honeycomb, gyroid).
+    /// Defaults to "rectilinear" if not specified.
+    #[serde(default = "SlicingParams::default_infill_pattern")]
+    pub infill_pattern: String,
     /// Print speed in mm/s.
     pub print_speed: f64,
     /// Nozzle temperature in °C.
@@ -30,10 +34,17 @@ impl Default for SlicingParams {
             layer_height: 0.2,
             wall_thickness: 1.2,
             infill_density: 0.2,
+            infill_pattern: Self::default_infill_pattern(),
             print_speed: 60.0,
             nozzle_temp: 210.0,
             bed_temp: 60.0,
         }
+    }
+}
+
+impl SlicingParams {
+    fn default_infill_pattern() -> String {
+        "rectilinear".to_string()
     }
 }
 

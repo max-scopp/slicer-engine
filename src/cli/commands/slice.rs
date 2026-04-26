@@ -224,10 +224,37 @@ impl SliceCommand {
         if self.verbose {
             emitter.log_debug("slicing mesh…");
         }
-        let layers = slice_mesh(&mesh, layer_height);
+        let mut layers = slice_mesh(&mesh, layer_height);
 
         if self.verbose {
             emitter.log_debug(&format!("sliced into {} layers", layers.len()));
+        }
+
+        // Add infill to layers if density > 0
+        if settings.params.infill_density > 0.0 {
+            use crate::infill::InfillPattern;
+            
+            // Parse infill pattern from settings
+            let infill_pattern = InfillPattern::from_str(&settings.params.infill_pattern)
+                .unwrap_or(InfillPattern::Rectilinear);
+            
+            if self.verbose {
+                emitter.log_debug(&format!(
+                    "generating {} infill at {:.0}% density…",
+                    infill_pattern.name(),
+                    settings.params.infill_density * 100.0
+                ));
+            }
+            
+            crate::core::add_infill_to_layers(
+                &mut layers,
+                settings.params.infill_density,
+                infill_pattern,
+            );
+            
+            if self.verbose {
+                emitter.log_debug("infill generation complete");
+            }
         }
 
         // Resolve per-flavor lifecycle marker config from settings.

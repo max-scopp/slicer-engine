@@ -100,6 +100,9 @@ fn edge_intersect(a: Vertex, b: Vertex, z: f64) -> (f64, f64) {
 /// contours are stored in a [`SliceLayer`] using Clipper2's [`Paths`] type so
 /// they can be used directly with Boolean or offset operations.
 ///
+/// This function only generates perimeter paths. Use [`add_infill_to_layers`]
+/// to add infill patterns to the layers after slicing.
+///
 /// # Arguments
 /// * `mesh`         – triangle mesh in millimetres
 /// * `layer_height` – distance between layer planes in mm (must be > 0)
@@ -173,6 +176,63 @@ pub fn slice_mesh(mesh: &Mesh, layer_height: f64) -> Vec<SliceLayer> {
     }
 
     layers
+}
+
+/// Add infill paths to layers based on slicing parameters.
+///
+/// Takes a set of layers with perimeter paths and adds infill patterns within
+/// the perimeter boundaries. Infill paths are assigned the [`ExtrusionRole::Infill`]
+/// role for proper G-code annotation.
+///
+/// # Arguments
+/// * `layers` - Slice layers with perimeter paths (will be modified in place)
+/// * `infill_density` - Infill density as a fraction (0.0 = no infill, 1.0 = solid)
+/// * `infill_pattern` - The pattern type to generate (rectilinear, grid, etc.)
+///
+/// # Example
+/// ```rust,no_run
+/// use slicer_engine::core::{slice_mesh, add_infill_to_layers};
+/// use slicer_engine::infill::InfillPattern;
+/// # use slicer_engine::mesh::types::Mesh;
+/// # let mesh = Mesh::new();
+///
+/// let mut layers = slice_mesh(&mesh, 0.2);
+/// add_infill_to_layers(&mut layers, 0.2, InfillPattern::Rectilinear);
+/// ```
+pub fn add_infill_to_layers(
+    layers: &mut [SliceLayer],
+    infill_density: f64,
+    infill_pattern: crate::infill::InfillPattern,
+) {
+    use crate::infill::generate_infill;
+    
+    if infill_density <= 0.0 {
+        return; // No infill requested
+    }
+
+    for (layer_idx, layer) in layers.iter_mut().enumerate() {
+        // Skip layers with no perimeters
+        if layer.paths.is_empty() {
+            continue;
+        }
+
+        // Calculate angle offset for alternating patterns
+        // Rectilinear infill alternates 0° and 90° each layer
+        let angle_offset = if layer_idx % 2 == 0 {
+            0.0
+        } else {
+            std::f64::consts::FRAC_PI_2 // 90 degrees
+        };
+
+        // Generate infill paths within perimeter boundaries
+        let infill_paths = generate_infill(&layer.paths, infill_pattern, infill_density, angle_offset);
+
+        // Add infill paths to the layer with proper role annotation
+        for infill_path in infill_paths.iter() {
+            layer.paths.push(infill_path.clone());
+            layer.path_roles.push(ExtrusionRole::Infill);
+        }
+    }
 }
 
 /// Collect all XY line segments produced by intersecting `mesh` with the
