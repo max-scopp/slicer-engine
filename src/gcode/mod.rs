@@ -42,6 +42,7 @@ pub use dialects::{KlipperDialect, MarlinDialect};
 
 use crate::core::SliceLayer;
 use crate::settings::params::SlicingParams;
+use std::borrow::Cow;
 use std::str::FromStr;
 
 /// Default filament diameter in mm (standard 1.75 mm PLA/PETG/etc.).
@@ -239,6 +240,11 @@ pub trait GcodeDialect: Send + Sync {
 
 // ── Resolve gcode source ───────────────────────────────────────────────────────
 
+/// Maximum allowed size (in bytes) for a G-code script file read by
+/// [`resolve_gcode_source`].  Prevents memory exhaustion when a large file is
+/// accidentally passed as a script path.
+const MAX_GCODE_FILE_BYTES: u64 = 1024 * 1024; // 1 MiB
+
 /// Resolve a G-code source string that may be either a file path or a direct
 /// G-code snippet.
 ///
@@ -251,10 +257,23 @@ pub trait GcodeDialect: Send + Sync {
 /// string such as `"G28\nM109 S210"` without any extra ceremony.
 ///
 /// # Errors
-/// Returns an [`std::io::Error`] only if the path exists but cannot be read.
+/// Returns an [`std::io::Error`] if the path exists but cannot be read, or if
+/// the file exceeds the 1 MiB size limit.
 pub fn resolve_gcode_source(input: &str) -> Result<Vec<String>, std::io::Error> {
     let path = std::path::Path::new(input);
     if path.is_file() {
+        let meta = std::fs::metadata(path)?;
+        if meta.len() > MAX_GCODE_FILE_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "G-code file '{}' is too large ({} bytes; limit is {} bytes)",
+                    path.display(),
+                    meta.len(),
+                    MAX_GCODE_FILE_BYTES
+                ),
+            ));
+        }
         let content = std::fs::read_to_string(path)?;
         return Ok(content.lines().map(|l| l.to_string()).collect());
     }
@@ -436,11 +455,11 @@ impl GcodeGenerator {
         out.push_str("; ---\n");
 
         // ── Start script (custom override or flavor default) ──────────────────
-        let start_script = self
-            .custom_start_script
-            .clone()
-            .unwrap_or_else(|| self.dialect.start_script(params));
-        for line in &start_script {
+        let start_script: Cow<[String]> = match &self.custom_start_script {
+            Some(lines) => Cow::Borrowed(lines),
+            None => Cow::Owned(self.dialect.start_script(params)),
+        };
+        for line in start_script.iter() {
             out.push_str(line);
             out.push('\n');
         }
@@ -522,11 +541,11 @@ impl GcodeGenerator {
         }
 
         // ── End script (custom override or flavor default) ────────────────────
-        let end_script = self
-            .custom_end_script
-            .clone()
-            .unwrap_or_else(|| self.dialect.end_script());
-        for line in &end_script {
+        let end_script: Cow<[String]> = match &self.custom_end_script {
+            Some(lines) => Cow::Borrowed(lines),
+            None => Cow::Owned(self.dialect.end_script()),
+        };
+        for line in end_script.iter() {
             out.push_str(line);
             out.push('\n');
         }
@@ -996,5 +1015,21 @@ mod tests {
         let path = tmp.path().to_str().unwrap().to_string();
         let lines = resolve_gcode_source(&path).unwrap();
         assert_eq!(lines, vec!["G28 ; home", "M109 S210 ; wait"]);
+    }
+
+    #[test]
+    fn test_resolve_gcode_source_file_too_large() {
+        use std::io::Write;
+        // Create a file that exceeds the 1 MiB limit
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        let big_line = "G1 X0 Y0\n".repeat(200_000); // ~1.8 MiB
+        tmp.write_all(big_line.as_bytes()).unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let err = resolve_gcode_source(&path).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("too large"),
+            "error should mention file is too large: {err}"
+        );
     }
 }
