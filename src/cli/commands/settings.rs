@@ -471,7 +471,7 @@ impl EmitPayload for ShowResult<'_> {
     }
 
     fn display_human(&self) -> String {
-        [
+        let mut lines = vec![
             "Global Settings:".to_string(),
             format!("  layer_height: {} mm", self.settings.params.layer_height),
             format!(
@@ -486,8 +486,14 @@ impl EmitPayload for ShowResult<'_> {
             format!("  nozzle_temp: {}°C", self.settings.params.nozzle_temp),
             format!("  bed_temp: {}°C", self.settings.params.bed_temp),
             format!("  gcode_flavor: {}", self.settings.gcode_flavor),
-        ]
-        .join("\n")
+        ];
+        if let Some(s) = &self.settings.start_print_gcode {
+            lines.push(format!("  start_print_gcode: {}", s));
+        }
+        if let Some(s) = &self.settings.end_print_gcode {
+            lines.push(format!("  end_print_gcode: {}", s));
+        }
+        lines.join("\n")
     }
 
     fn to_json(&self) -> Value {

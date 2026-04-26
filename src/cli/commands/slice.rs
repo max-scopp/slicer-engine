@@ -3,7 +3,7 @@
 use crate::cli::emit::Emitter;
 use crate::cli::output::{EmitPayload, OutputFormat};
 use crate::core::slice_mesh;
-use crate::gcode::{GcodeGenerator, GcodeFlavor};
+use crate::gcode::{resolve_gcode_source, GcodeFlavor, GcodeGenerator};
 use crate::mesh::analysis::{calculate_aabb, calculate_surface_area, calculate_volume};
 use crate::mesh::io::read_stl;
 use crate::mesh::transforms::{center_mesh, drop_to_floor};
@@ -35,6 +35,28 @@ pub struct SliceCommand {
     /// When omitted, falls back to the value stored in global settings (default: marlin).
     #[arg(long)]
     pub gcode_flavor: Option<String>,
+
+    /// Custom start G-code (overrides dialect default and global settings).
+    ///
+    /// Accepts either a file path (auto-detected when the path exists) or a
+    /// direct G-code string.  Multiple lines may be separated with `\n`.
+    ///
+    /// Examples:
+    ///   --start-print-gcode ./my-start.gcode
+    ///   --start-print-gcode "START_PRINT BED_TEMP=60 EXTRUDER_TEMP=210"
+    #[arg(long)]
+    pub start_print_gcode: Option<String>,
+
+    /// Custom end G-code (overrides dialect default and global settings).
+    ///
+    /// Accepts either a file path (auto-detected when the path exists) or a
+    /// direct G-code string.  Multiple lines may be separated with `\n`.
+    ///
+    /// Examples:
+    ///   --end-print-gcode ./my-end.gcode
+    ///   --end-print-gcode "END_PRINT"
+    #[arg(long)]
+    pub end_print_gcode: Option<String>,
 
     /// Enable verbose output (prints AABB, volume, surface area)
     #[arg(short, long)]
@@ -197,10 +219,34 @@ impl SliceCommand {
         }
 
         // Generate G-code using the selected firmware flavor; route dialect
-        // warnings through the emitter's warn channel
+        // warnings through the emitter's warn channel.
+        // Script precedence: CLI arg → global settings → dialect default.
         let emitter_for_warn = emitter.clone();
-        let generator = GcodeGenerator::new(flavor)
-            .with_warn_fn(move |msg| emitter_for_warn.log_warn(msg));
+        let mut generator =
+            GcodeGenerator::new(flavor).with_warn_fn(move |msg| emitter_for_warn.log_warn(msg));
+
+        // Resolve custom start script (CLI arg takes priority over global settings)
+        let start_source = self
+            .start_print_gcode
+            .as_deref()
+            .or(settings.start_print_gcode.as_deref());
+        if let Some(src) = start_source {
+            let lines = resolve_gcode_source(src)
+                .map_err(|e| format!("Failed to read start G-code: {}", e))?;
+            generator = generator.with_start_script(lines);
+        }
+
+        // Resolve custom end script (CLI arg takes priority over global settings)
+        let end_source = self
+            .end_print_gcode
+            .as_deref()
+            .or(settings.end_print_gcode.as_deref());
+        if let Some(src) = end_source {
+            let lines = resolve_gcode_source(src)
+                .map_err(|e| format!("Failed to read end G-code: {}", e))?;
+            generator = generator.with_end_script(lines);
+        }
+
         let gcode = generator.generate(&layers, &slice_params);
 
         // Determine output path
@@ -255,6 +301,8 @@ mod tests {
             output: None,
             output_format: "human".to_string(),
             gcode_flavor: Some("marlin".to_string()),
+            start_print_gcode: None,
+            end_print_gcode: None,
             verbose: false,
             center: false,
             drop_to_floor: false,
@@ -272,6 +320,8 @@ mod tests {
             output: None,
             output_format: "human".to_string(),
             gcode_flavor: None, // will fall back to settings / marlin
+            start_print_gcode: None,
+            end_print_gcode: None,
             verbose: false,
             center: false,
             drop_to_floor: false,
@@ -288,12 +338,36 @@ mod tests {
             output: None,
             output_format: "human".to_string(),
             gcode_flavor: Some("klipper".to_string()),
+            start_print_gcode: None,
+            end_print_gcode: None,
             verbose: false,
             center: false,
             drop_to_floor: false,
             config: None,
         };
         assert_eq!(cmd.gcode_flavor.as_deref(), Some("klipper"));
+    }
+
+    #[test]
+    fn test_slice_command_start_end_gcode_args() {
+        let cmd = SliceCommand {
+            input: PathBuf::from("test.stl"),
+            layer_height: Some(0.2),
+            output: None,
+            output_format: "human".to_string(),
+            gcode_flavor: Some("klipper".to_string()),
+            start_print_gcode: Some("START_PRINT BED_TEMP=65".to_string()),
+            end_print_gcode: Some("END_PRINT".to_string()),
+            verbose: false,
+            center: false,
+            drop_to_floor: false,
+            config: None,
+        };
+        assert_eq!(
+            cmd.start_print_gcode.as_deref(),
+            Some("START_PRINT BED_TEMP=65")
+        );
+        assert_eq!(cmd.end_print_gcode.as_deref(), Some("END_PRINT"));
     }
 
     #[test]
