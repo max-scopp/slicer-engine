@@ -101,9 +101,11 @@ slicer-engine slice --help
 - Write inline tests with `#[cfg(test)]` in the same module
 
 ### Performance Priorities
-- **Release builds prioritized**: LTO enabled, opt-level 3, codegen-units 1
+- **Development builds prioritized locally**: Use `cargo build` (debug/opt-level 1) for fast iteration (~5-10s)
+  - Release builds with LTO/opt-level 3/codegen-units 1 are reserved for CI/distribution only
+  - Profile edge cases with `cargo flamegraph` if performance regressions suspected
+- **CI builds**: GitHub Actions builds with `--release` to test final optimized product
 - Minimize allocations in hot paths (especially in slicing operations)
-- Profile with `cargo flamegraph` if performance regressions suspected
 - Consider compile-time vs runtime tradeoffs for polygon operations
 
 ### Documentation

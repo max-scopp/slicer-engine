@@ -29,10 +29,15 @@ tempfile = "3"
 [lib]
 crate-type = ["rlib", "cdylib"]
 
+[profile.dev]
+opt-level = 1
+
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
+# Note: Use `cargo build` for fast dev builds
+# Use `cargo build --release` only for CI/distribution
 
 [profile.wasm]
 inherits = "release"
