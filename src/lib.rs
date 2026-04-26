@@ -7,9 +7,13 @@
 //! - Cross-platform support (Windows, macOS, WebAssembly)
 //! - Optimized for multi-threaded environments
 //! - Type-safe geometric operations
+//! - Mesh loading and spatial analysis (STL binary/ASCII)
+//! - Printer profile and slicing parameter validation
 //! - User-friendly CLI layer for command-line usage
 
-pub mod core;
 pub mod cli;
+pub mod core;
+pub mod mesh;
+pub mod settings;
 
 pub use core::*;

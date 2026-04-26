@@ -10,7 +10,7 @@ pub mod io;
 pub mod output;
 
 use clap::Parser;
-use commands::{InfoCommand, SliceCommand};
+use commands::{InfoCommand, SettingsCommand, SliceCommand};
 
 /// Slicer Engine CLI
 #[derive(Parser, Debug)]
@@ -32,6 +32,9 @@ pub enum Commands {
 
     /// Display build and library information
     Info(InfoCommand),
+
+    /// Validate or diff slicing settings
+    Settings(SettingsCommand),
 }
 
 impl CliArgs {
@@ -46,6 +49,7 @@ impl CliArgs {
         match &self.command {
             Commands::Slice(cmd) => cmd.execute(),
             Commands::Info(cmd) => cmd.execute(),
+            Commands::Settings(cmd) => cmd.execute(),
         }
     }
 }

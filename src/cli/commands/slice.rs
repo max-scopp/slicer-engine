@@ -1,16 +1,18 @@
 //! Slice command - performs 3D model slicing
 
+use crate::cli::emit::Emitter;
+use crate::cli::output::{EmitPayload, OutputFormat};
+use crate::mesh::analysis::{calculate_aabb, calculate_surface_area, calculate_volume};
+use crate::mesh::io::read_stl;
+use crate::mesh::transforms::{center_mesh, drop_to_floor};
 use clap::Parser;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
-use crate::cli::emit::Emitter;
-use crate::cli::output::{EmitPayload, OutputFormat};
-
 /// Slice a 3D model into layers
 #[derive(Parser, Debug)]
 pub struct SliceCommand {
-    /// Input model file path (STL, OBJ, etc.)
+    /// Input model file path (STL)
     #[arg(short, long)]
     pub input: PathBuf,
 
@@ -26,9 +28,17 @@ pub struct SliceCommand {
     #[arg(long, default_value = "human")]
     pub output_format: String,
 
-    /// Enable verbose output
+    /// Enable verbose output (prints AABB, volume, surface area)
     #[arg(short, long)]
     pub verbose: bool,
+
+    /// Center the mesh horizontally before slicing
+    #[arg(long)]
+    pub center: bool,
+
+    /// Drop the mesh to Z=0 before slicing
+    #[arg(long)]
+    pub drop_to_floor: bool,
 }
 
 /// Result payload emitted by the `slice` command.
@@ -74,9 +84,56 @@ impl SliceCommand {
         }
 
         if self.verbose {
-            emitter.log_debug(&format!("slicing: {:?}", self.input));
+            emitter.log_debug(&format!("loading mesh: {:?}", self.input));
+        }
+
+        // Load the STL mesh
+        let mut mesh = read_stl(&self.input)
+            .map_err(|e| format!("Failed to load mesh '{}': {}", self.input.display(), e))?;
+
+        // Apply optional transforms
+        if self.center {
+            mesh = center_mesh(&mesh);
+            if self.verbose {
+                emitter.log_debug("applied center transform");
+            }
+        }
+        if self.drop_to_floor {
+            mesh = drop_to_floor(&mesh);
+            if self.verbose {
+                emitter.log_debug("applied drop-to-floor transform");
+            }
+        }
+
+        if self.verbose {
+            // Compute and log geometry
+            let aabb = calculate_aabb(&mesh);
             emitter.log_debug(&format!(
-                "layer height: {} mm",
+                "AABB: ({:.3}, {:.3}, {:.3}) → ({:.3}, {:.3}, {:.3})",
+                aabb.min.x, aabb.min.y, aabb.min.z, aabb.max.x, aabb.max.y, aabb.max.z
+            ));
+            emitter.log_debug(&format!(
+                "dimensions: {:.3} × {:.3} × {:.3} mm",
+                aabb.width(),
+                aabb.depth(),
+                aabb.height()
+            ));
+
+            match calculate_volume(&mesh) {
+                Ok(vol) => emitter.log_debug(&format!("volume: {:.3} mm³", vol)),
+                Err(e) => emitter.log_debug(&format!("volume: {}", e)),
+            }
+
+            let area = calculate_surface_area(&mesh);
+            emitter.log_debug(&format!("surface area: {:.3} mm²", area));
+
+            emitter.log_debug(&format!(
+                "faces: {}, vertices: {}",
+                mesh.faces.len(),
+                mesh.vertices.len()
+            ));
+            emitter.log_debug(&format!(
+                "layer height: {:.3} mm",
                 self.layer_height.unwrap_or(0.2)
             ));
         }
@@ -109,6 +166,8 @@ mod tests {
             output: None,
             output_format: "human".to_string(),
             verbose: false,
+            center: false,
+            drop_to_floor: false,
         };
         assert_eq!(cmd.layer_height, Some(0.2));
     }

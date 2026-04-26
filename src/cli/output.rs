@@ -54,6 +54,7 @@ pub trait EmitPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     #[test]
     fn test_output_format_parsing() {
@@ -65,8 +66,6 @@ mod tests {
         assert_eq!(OutputFormat::from_str("text").unwrap(), OutputFormat::Human);
         assert_eq!(OutputFormat::from_str("JSON").unwrap(), OutputFormat::Json);
     }
-
-
 
     #[test]
     fn test_output_format_invalid() {
