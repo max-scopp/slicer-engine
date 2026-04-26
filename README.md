@@ -37,7 +37,7 @@ graph LR
 
 - **[Mesh Operations](src/mesh/README.md)** – Loading STL, mesh types
 - **[Slicing Algorithm](src/SLICING.md)** – How slicing works (with diagrams)
-- **[Settings](src/settings/README.md)** – Configuration parameters
+- **[Settings](src/settings/README.md)** – Configuration parameters and priority
 - **[CLI Commands](src/cli/README.md)** – Usage reference
 
 ## Project Structure
@@ -45,27 +45,145 @@ graph LR
 ```
 src/
 ├── core.rs          # Slicing algorithm
-├── gcode.rs         # G-code emission
+├── gcode/           # G-code emission (multi-flavor)
 ├── mesh/            # STL loading & types
 ├── settings/        # Parameters & validation
 └── cli/             # Command interface
 ```
 
+## CLI Usage
+
+### Slice Command
+
+```bash
+# Basic slice with default settings
+slicer-engine slice --input model.stl
+
+# Custom layer height and output file
+slicer-engine slice --input model.stl --layer-height 0.15 --output result.gcode
+
+# Klipper firmware flavor
+slicer-engine slice --input model.stl --gcode-flavor klipper
+
+# Custom start/end G-code (string or file path)
+slicer-engine slice --input model.stl \
+  --start-print-gcode "START_PRINT BED_TEMP=60 EXTRUDER_TEMP=210" \
+  --end-print-gcode "END_PRINT"
+
+# Use an explicit project config file
+slicer-engine slice --input model.stl --config ./slicer.json
+
+# Center and drop mesh to Z=0 before slicing
+slicer-engine slice --input model.stl --center --drop-to-floor
+
+# JSON output format
+slicer-engine slice --input model.stl --output-format json
+```
+
+### Settings Command
+
+Manage persistent settings stored in `~/.config/slicer-engine/settings.json`.
+
+#### Get / Set values
+
+Both flat aliases and full dot-separated paths are accepted:
+
+```bash
+# Get a value (flat alias or dotted path — equivalent)
+slicer-engine settings get layer_height
+slicer-engine settings get params.layer_height
+
+# Set a value
+slicer-engine settings set layer_height 0.15
+slicer-engine settings set params.nozzle_temp 215
+slicer-engine settings set gcode_flavor klipper
+
+# Set custom start/end G-code
+slicer-engine settings set start_print_gcode "START_PRINT BED_TEMP=60 EXTRUDER_TEMP=210"
+slicer-engine settings set end_print_gcode "END_PRINT"
+
+# Clear an optional field
+slicer-engine settings set start_print_gcode null
+
+# JSON output
+slicer-engine settings get layer_height --output-format json
+```
+
+#### Show all settings
+
+```bash
+slicer-engine settings show
+slicer-engine settings show --output-format json
+```
+
+#### Validate / Diff
+
+```bash
+# Validate global + object settings files
+slicer-engine settings validate --global global.json --object object.json
+
+# Show which object params override the globals
+slicer-engine settings diff --global global.json --object object.json
+```
+
+### Info Command
+
+```bash
+slicer-engine info
+slicer-engine info --verbose
+slicer-engine info --output-format json
+```
+
+## Settings & Config Priority
+
+Settings are resolved in this order (highest priority first):
+
+| Priority | Source |
+|----------|--------|
+| 1 (highest) | CLI arguments (`--layer-height`, `--gcode-flavor`, …) |
+| 2 | `slicer.json` in CWD (or `--config FILE`) |
+| 3 | `~/.config/slicer-engine/settings.json` (user config) |
+| 4 (lowest) | Built-in defaults |
+
+### Project config (`slicer.json`)
+
+Drop a `slicer.json` into your project directory to set project-level defaults.
+Only the keys you include are overridden; everything else falls back to the user config or defaults.
+
+```json
+{
+  "params": {
+    "layer_height": 0.15,
+    "nozzle_temp": 215
+  },
+  "gcode_flavor": "klipper"
+}
+```
+
+The file is auto-discovered when you run `slicer-engine slice` from the same directory.
+Use `--config FILE` for an explicit path:
+
+```bash
+slicer-engine slice --input model.stl --config ./profiles/klipper.json
+```
+
+See [Settings Reference](src/settings/README.md) for all parameters and validation rules.
+
 ## Build Targets
 
 ```bash
-cargo build --release                    # Native
-cargo build --release --target x86_64-pc-windows-msvc     # Windows
-cargo build --release --target x86_64-apple-darwin        # macOS Intel
-cargo build --release --target aarch64-apple-darwin       # macOS ARM
-wasm-pack build --target web --release                    # WebAssembly
+cargo build --release                                          # Native
+cargo build --release --target x86_64-pc-windows-msvc        # Windows
+cargo build --release --target x86_64-apple-darwin           # macOS Intel
+cargo build --release --target aarch64-apple-darwin          # macOS ARM
+wasm-pack build --target web --release                        # WebAssembly
 ```
 
 ## Development
 
 ```bash
-cargo test --release    # Run tests
-cargo fmt && cargo clippy -- -D warnings
+cargo test --release
+cargo fmt && cargo clippy --all-targets --all-features -- -D warnings
 ```
 
 ## Features
@@ -73,103 +191,20 @@ cargo fmt && cargo clippy -- -D warnings
 - ✓ Cross-platform (Windows, macOS, WASM)
 - ✓ STL loading (ASCII & binary)
 - ✓ Triangle-plane intersection slicing
-- ✓ G-code generation with temperature control
+- ✓ G-code generation (Marlin & Klipper)
+- ✓ Custom start/end G-code (string or file)
+- ✓ Four-level settings priority cascade with `slicer.json` project config
+- ✓ Dotted-path settings access (`params.layer_height`)
 - ✓ Settings validation & per-object overrides
 - ✓ Powered by [Clipper2](https://github.com/AngusJohnson/Clipper2)
 
----
-
-**License:** See LICENSE  
-**Coordinates:** All dimensions in millimeters, Z-axis is vertical
-
-# Show version
-cargo run --release -- --version
-```
-
-### Info Command
-
-Display build and library information:
-
-```bash
-# Basic info
-cargo run --release -- info
-
-# Verbose info with features
-cargo run --release -- info --verbose
-
-# JSON format
-cargo run --release -- info --output-format json
-
-
-```
-
-### Slice Command
-
-Slice a 3D model into layers:
-
-```bash
-# Basic slice with default layer height (0.2mm)
-cargo run --release -- slice --input model.stl
-
-# Slice with custom layer height
-cargo run --release -- slice --input model.stl --layer-height 0.1
-
-# Specify output file
-cargo run --release -- slice --input model.stl --output result.gcode
-
-# JSON output format
-cargo run --release -- slice --input model.stl --output-format json
-
-# Verbose output with debug information
-cargo run --release -- slice --input model.stl --verbose
-
-# Show slice command help
-cargo run --release -- slice --help
-```
-
-## Testing
-
-```bash
-cargo test --release
-```
-
-## Code Quality
-
-Format code:
-```bash
-cargo fmt
-```
-
-Check for issues with clippy:
-```bash
-cargo clippy --all-targets --all-features
-```
-
 ## CI/CD Pipeline
 
-The project includes GitHub Actions workflows that automatically:
-- Build for Windows (x86_64)
-- Build for macOS (x86_64 and ARM64)
-- Build for WebAssembly
-- Run tests
-- Check code formatting
-- Run linter
-
-Workflows are triggered on push to `main` and `develop` branches, and on pull requests.
-
-## Dependencies
-
-- **clipper2**: Polygon clipping library
-  - Version: 1.3
-  - Used for geometric operations on 2D paths
-
-## License
+GitHub Actions automatically builds all platform targets, runs linting, formatting, and the test suite on every push and pull request.
 
 ## License
 
 **LEGAL NOTICE:** This is an interim state. Until an official license is decided and published, all rights are reserved and no use, reproduction, modification, or distribution of this software is permitted without explicit written authorization.
-
-However, this is only a temporary measure while I chart a path forward with the code. The final license will be heavily influenced by community opinions and needs. I welcome your input and feedback on what licensing approach would best serve the community and the project's goals.
 
 TBD
 
@@ -180,3 +215,4 @@ TBD
 3. Ensure code passes linting: `cargo clippy`
 4. Format code: `cargo fmt`
 5. Push and create a pull request
+

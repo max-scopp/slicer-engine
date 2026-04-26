@@ -3,11 +3,12 @@
 use crate::cli::emit::Emitter;
 use crate::cli::output::{EmitPayload, OutputFormat};
 use crate::core::slice_mesh;
-use crate::gcode::{GcodeFlavor, GcodeGenerator};
+use crate::gcode::{resolve_gcode_source, GcodeFlavor, GcodeGenerator};
 use crate::mesh::analysis::{calculate_aabb, calculate_surface_area, calculate_volume};
 use crate::mesh::io::read_stl;
 use crate::mesh::transforms::{center_mesh, drop_to_floor};
-use crate::settings::load_settings;
+use crate::settings::params::LifecycleMarkerConfig;
+use crate::settings::{load_and_merge_settings, load_settings};
 use clap::Parser;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -36,6 +37,28 @@ pub struct SliceCommand {
     #[arg(long)]
     pub gcode_flavor: Option<String>,
 
+    /// Custom start G-code (overrides dialect default and global settings).
+    ///
+    /// Accepts either a file path (auto-detected when the path exists) or a
+    /// direct G-code string.  Multiple lines may be separated with `\n`.
+    ///
+    /// Examples:
+    ///   --start-print-gcode ./my-start.gcode
+    ///   --start-print-gcode "START_PRINT BED_TEMP=60 EXTRUDER_TEMP=210"
+    #[arg(long)]
+    pub start_print_gcode: Option<String>,
+
+    /// Custom end G-code (overrides dialect default and global settings).
+    ///
+    /// Accepts either a file path (auto-detected when the path exists) or a
+    /// direct G-code string.  Multiple lines may be separated with `\n`.
+    ///
+    /// Examples:
+    ///   --end-print-gcode ./my-end.gcode
+    ///   --end-print-gcode "END_PRINT"
+    #[arg(long)]
+    pub end_print_gcode: Option<String>,
+
     /// Enable verbose output (prints AABB, volume, surface area)
     #[arg(short, long)]
     pub verbose: bool,
@@ -48,8 +71,12 @@ pub struct SliceCommand {
     #[arg(long)]
     pub drop_to_floor: bool,
 
+    /// Explicit path to a project config file (overrides auto-discovery of slicer.json).
+    #[arg(long, value_name = "FILE")]
+    pub config: Option<PathBuf>,
+
     /// Emit layer lifecycle markers (;LAYER_CHANGE, ;BEFORE/AFTER_LAYER_CHANGE, ;TYPE:, ;WIDTH:).
-    /// When omitted, falls back to the value stored in global settings (default: enabled).
+    /// When omitted, falls back to the per-flavor config in global settings (default: enabled).
     /// Use --lifecycle-markers to force-enable or --no-lifecycle-markers to force-disable.
     #[arg(long, conflicts_with = "no_lifecycle_markers")]
     pub lifecycle_markers: bool,
@@ -107,8 +134,18 @@ impl SliceCommand {
 
         let emitter = Emitter::new(format);
 
-        // Load persisted settings — used for layer height default and gcode flavor default
-        let settings = load_settings().unwrap_or_else(|_| Default::default());
+        // Load and merge settings following the priority hierarchy:
+        // global defaults → user config → project config (slicer.json or --config)
+        let settings = match load_and_merge_settings(self.config.as_deref()) {
+            Ok(s) => s,
+            Err(e) => {
+                emitter.log_warn(&format!(
+                    "Failed to load project config, using user/default settings: {}",
+                    e
+                ));
+                load_settings().unwrap_or_default()
+            }
+        };
 
         // Resolve gcode flavor: CLI arg → global settings → built-in default (Marlin)
         let flavor_str = self
@@ -193,20 +230,57 @@ impl SliceCommand {
             emitter.log_debug(&format!("sliced into {} layers", layers.len()));
         }
 
-        // Generate G-code using the selected firmware flavor; route dialect
-        // warnings through the emitter's warn channel
-        let emitter_for_warn = emitter.clone();
-        // Resolve lifecycle markers: --no-lifecycle-markers > --lifecycle-markers > global settings > default (true)
-        let emit_lifecycle_markers = if self.no_lifecycle_markers {
-            false
+        // Resolve per-flavor lifecycle marker config from settings.
+        // CLI flags override the enabled field.
+        let marker_config = settings
+            .lifecycle_markers
+            .get(&flavor.to_string())
+            .cloned()
+            .unwrap_or_default();
+        let marker_config = if self.no_lifecycle_markers {
+            LifecycleMarkerConfig {
+                enabled: false,
+                ..marker_config
+            }
         } else if self.lifecycle_markers {
-            true
+            LifecycleMarkerConfig {
+                enabled: true,
+                ..marker_config
+            }
         } else {
-            settings.emit_lifecycle_markers
+            marker_config
         };
-        let generator = GcodeGenerator::new(flavor)
-            .with_lifecycle_markers(emit_lifecycle_markers)
+
+        // Generate G-code using the selected firmware flavor; route dialect
+        // warnings through the emitter's warn channel.
+        // Script precedence: CLI arg → global settings → dialect default.
+        let emitter_for_warn = emitter.clone();
+        let mut generator = GcodeGenerator::new(flavor)
+            .with_marker_config(marker_config)
             .with_warn_fn(move |msg| emitter_for_warn.log_warn(msg));
+
+        // Resolve custom start script (CLI arg takes priority over global settings)
+        let start_source = self
+            .start_print_gcode
+            .as_deref()
+            .or(settings.start_print_gcode.as_deref());
+        if let Some(src) = start_source {
+            let lines = resolve_gcode_source(src)
+                .map_err(|e| format!("Failed to read start G-code: {}", e))?;
+            generator = generator.with_start_script(lines);
+        }
+
+        // Resolve custom end script (CLI arg takes priority over global settings)
+        let end_source = self
+            .end_print_gcode
+            .as_deref()
+            .or(settings.end_print_gcode.as_deref());
+        if let Some(src) = end_source {
+            let lines = resolve_gcode_source(src)
+                .map_err(|e| format!("Failed to read end G-code: {}", e))?;
+            generator = generator.with_end_script(lines);
+        }
+
         let gcode = generator.generate(&layers, &slice_params);
 
         // Determine output path
@@ -261,9 +335,12 @@ mod tests {
             output: None,
             output_format: "human".to_string(),
             gcode_flavor: Some("marlin".to_string()),
+            start_print_gcode: None,
+            end_print_gcode: None,
             verbose: false,
             center: false,
             drop_to_floor: false,
+            config: None,
             lifecycle_markers: false,
             no_lifecycle_markers: false,
         };
@@ -279,9 +356,12 @@ mod tests {
             output: None,
             output_format: "human".to_string(),
             gcode_flavor: None, // will fall back to settings / marlin
+            start_print_gcode: None,
+            end_print_gcode: None,
             verbose: false,
             center: false,
             drop_to_floor: false,
+            config: None,
             lifecycle_markers: false,
             no_lifecycle_markers: false,
         };
@@ -296,13 +376,40 @@ mod tests {
             output: None,
             output_format: "human".to_string(),
             gcode_flavor: Some("klipper".to_string()),
+            start_print_gcode: None,
+            end_print_gcode: None,
             verbose: false,
             center: false,
             drop_to_floor: false,
+            config: None,
             lifecycle_markers: false,
             no_lifecycle_markers: false,
         };
         assert_eq!(cmd.gcode_flavor.as_deref(), Some("klipper"));
+    }
+
+    #[test]
+    fn test_slice_command_start_end_gcode_args() {
+        let cmd = SliceCommand {
+            input: PathBuf::from("test.stl"),
+            layer_height: Some(0.2),
+            output: None,
+            output_format: "human".to_string(),
+            gcode_flavor: Some("klipper".to_string()),
+            start_print_gcode: Some("START_PRINT BED_TEMP=65".to_string()),
+            end_print_gcode: Some("END_PRINT".to_string()),
+            verbose: false,
+            center: false,
+            drop_to_floor: false,
+            config: None,
+            lifecycle_markers: false,
+            no_lifecycle_markers: false,
+        };
+        assert_eq!(
+            cmd.start_print_gcode.as_deref(),
+            Some("START_PRINT BED_TEMP=65")
+        );
+        assert_eq!(cmd.end_print_gcode.as_deref(), Some("END_PRINT"));
     }
 
     #[test]
@@ -313,9 +420,12 @@ mod tests {
             output: None,
             output_format: "human".to_string(),
             gcode_flavor: None,
+            start_print_gcode: None,
+            end_print_gcode: None,
             verbose: false,
             center: false,
             drop_to_floor: false,
+            config: None,
             lifecycle_markers: true,
             no_lifecycle_markers: false,
         };
@@ -328,9 +438,12 @@ mod tests {
             output: None,
             output_format: "human".to_string(),
             gcode_flavor: None,
+            start_print_gcode: None,
+            end_print_gcode: None,
             verbose: false,
             center: false,
             drop_to_floor: false,
+            config: None,
             lifecycle_markers: false,
             no_lifecycle_markers: true,
         };
@@ -385,7 +498,7 @@ mod tests {
             input_name: "model.stl".to_string(),
             layer_height: 0.2,
             layer_count: 5,
-            output_path: Some(PathBuf::from("/tmp/model.gcode")),
+            output_path: Some(PathBuf::from("/some/path/model.gcode")),
             gcode_flavor: "marlin".to_string(),
         };
         let s = r.display_human();

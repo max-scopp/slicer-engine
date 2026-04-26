@@ -14,7 +14,7 @@ graph TB
     
     SLICE --> SU["Load STL<br/>Slice mesh<br/>Generate G-code"]
     
-    SETTINGS --> SV["validate<br/>diff<br/>show<br/>get/set"]
+    SETTINGS --> SV["validate<br/>diff<br/>show<br/>get / set"]
     
     INFO --> IV["Show version<br/>Build info"]
     
@@ -30,20 +30,24 @@ Convert a 3D model to printer-ready G-code.
 
 ```bash
 # Basic
-cargo run --release -- slice \
-  --input model.stl \
-  --output output.gcode
+slicer-engine slice --input model.stl --output output.gcode
 
-# With layer height
-cargo run --release -- slice \
-  --input model.stl --output out.gcode \
-  --layer-height 0.15
+# Custom layer height
+slicer-engine slice --input model.stl --output out.gcode --layer-height 0.15
 
-# With settings
-cargo run --release -- slice \
-  --input model.stl --output out.gcode \
-  --global-settings global.json \
-  --object-settings object.json
+# Klipper firmware flavor
+slicer-engine slice --input model.stl --gcode-flavor klipper
+
+# Custom start/end G-code (string or file path)
+slicer-engine slice --input model.stl \
+  --start-print-gcode "START_PRINT BED_TEMP=60 EXTRUDER_TEMP=210" \
+  --end-print-gcode "END_PRINT"
+
+# Use an explicit project config file
+slicer-engine slice --input model.stl --config ./slicer.json
+
+# Center and drop mesh to Z=0 before slicing
+slicer-engine slice --input model.stl --center --drop-to-floor --verbose
 ```
 
 **Arguments:**
@@ -51,39 +55,71 @@ cargo run --release -- slice \
 | Flag | Type | Required | Default | Purpose |
 |------|------|----------|---------|---------|
 | `--input` | path | ✓ | – | Input STL file |
-| `--output` | path | ✓ | – | Output G-code file |
-| `--layer-height` | float | | 0.2 mm | Slice spacing |
-| `--global-settings` | path | | – | Global params JSON |
-| `--object-settings` | path | | – | Object overrides JSON |
+| `--output` | path | | auto | Output G-code file |
+| `--layer-height` | float | | from settings | Slice spacing (mm) |
+| `--gcode-flavor` | string | | from settings | `marlin` or `klipper` |
+| `--start-print-gcode` | string | | from settings | Custom start G-code or file path |
+| `--end-print-gcode` | string | | from settings | Custom end G-code or file path |
+| `--config` | path | | auto-discover | Explicit `slicer.json` path |
+| `--center` | flag | | false | Center mesh horizontally |
+| `--drop-to-floor` | flag | | false | Drop mesh to Z=0 |
+| `--verbose` | flag | | false | Print mesh stats |
 | `--output-format` | string | | human | `json` or `human` |
 
 ## Settings: Manage Configuration
 
-Validate, compare, and modify slicing parameters.
+Validate, compare, and modify slicing parameters.  
+Settings are persisted in `~/.config/slicer-engine/settings.json`.
+
+### Get / Set
+
+Both flat aliases and full dot-separated paths are accepted:
 
 ```bash
-# Validate both global and object settings
-cargo run --release -- settings validate \
-  --global global.json --object object.json
+# Get — flat alias or full path (equivalent)
+slicer-engine settings get layer_height
+slicer-engine settings get params.layer_height
 
-# Show differences (what's overridden)
-cargo run --release -- settings diff \
-  --global global.json --object object.json
+# Set — flat alias or full path
+slicer-engine settings set layer_height 0.15
+slicer-engine settings set params.nozzle_temp 215
 
-# Display all global settings
-cargo run --release -- settings show
+# Top-level fields
+slicer-engine settings set gcode_flavor klipper
+slicer-engine settings set start_print_gcode "START_PRINT BED_TEMP=60 EXTRUDER_TEMP=210"
+slicer-engine settings set end_print_gcode "END_PRINT"
 
-# Get/set individual values
-cargo run --release -- settings get layer_height
-cargo run --release -- settings set layer_height 0.15
+# Clear an optional field
+slicer-engine settings set start_print_gcode null
+
+# JSON output
+slicer-engine settings get gcode_flavor --output-format json
 ```
 
-See [Settings Reference](../settings/README.md) for all parameters.
+### Show / Validate / Diff
+
+```bash
+# Display all persisted settings
+slicer-engine settings show
+slicer-engine settings show --output-format json
+
+# Validate global and object settings files
+slicer-engine settings validate \
+  --global global.json --object object.json
+
+# Show differences (what's overridden in an object file)
+slicer-engine settings diff \
+  --global global.json --object object.json
+```
+
+See [Settings Reference](../settings/README.md) for all parameters and the full priority cascade.
 
 ## Info: Build Information
 
 ```bash
-cargo run --release -- info
+slicer-engine info
+slicer-engine info --verbose
+slicer-engine info --output-format json
 ```
 
 Shows: version, Rust info, Clipper2 details.
@@ -91,24 +127,20 @@ Shows: version, Rust info, Clipper2 details.
 ## Complete Workflow
 
 ```bash
-# 1. Create settings
-cat > my_settings.json << 'EOF'
+# 1. Set your preferred defaults once
+slicer-engine settings set gcode_flavor klipper
+slicer-engine settings set params.nozzle_temp 215
+
+# 2. Add a project-specific slicer.json (overrides user settings for this project)
+cat > slicer.json << 'EOF'
 {
-  "params": {
-    "layer_height": 0.2,
-    "nozzle_temp": 210,
-    "bed_temp": 60
-  }
+  "params": { "layer_height": 0.15 },
+  "gcode_flavor": "klipper"
 }
 EOF
 
-# 2. Slice the model
-cargo run --release -- slice \
-  --input cube.stl \
-  --output cube.gcode \
-  --global-settings my_settings.json
-
-# 3. Load on printer and print
+# 3. Slice — picks up slicer.json automatically
+slicer-engine slice --input cube.stl --output cube.gcode
 ```
 
 ## Input/Output Formats
@@ -136,9 +168,9 @@ G1 X10 Y10 E0.5 F3600  ; move & extrude
 ## Global Flags
 
 ```bash
-cargo run --release -- --version    # Show version
-cargo run --release -- --help        # Show help
-cargo run --release -- slice --help  # Command help
+slicer-engine --version   # Show version
+slicer-engine --help      # Show help
+slicer-engine slice --help  # Command help
 ```
 
 ## Error Messages
@@ -150,10 +182,11 @@ cargo run --release -- slice --help  # Command help
 | `Invalid settings JSON` | Fix JSON syntax |
 | `Settings validation failed` | Check parameter ranges |
 | `Cannot write output` | Check disk space & permissions |
+| `Invalid gcode_flavor` | Use `marlin` or `klipper` |
 
 ## See Also
 
 - [Mesh Loading](../mesh/README.md) – STL parsing
 - [Slicing](../SLICING.md) – How slicing works
-- [Settings](../settings/README.md) – Parameter reference
+- [Settings](../settings/README.md) – Parameter reference and priority cascade
 - [Root](../../README.md) – Project overview

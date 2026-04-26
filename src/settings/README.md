@@ -4,6 +4,8 @@ Configuration for slicing behavior and printer control. All values stored as JSO
 
 ## Quick Reference
 
+### Slicing Parameters (`params.*`)
+
 | Parameter | Type | Default | Range | Effect |
 |-----------|------|---------|-------|--------|
 | `layer_height` | mm | 0.2 | 0.1–0.4 | Distance between layers |
@@ -13,27 +15,78 @@ Configuration for slicing behavior and printer control. All values stored as JSO
 | `nozzle_temp` | °C | 210 | 180–250 | Heat level (material-dependent) |
 | `bed_temp` | °C | 60 | 20–100 | Bed heat (material-dependent) |
 
-## Configuration Flow
+### Global Settings (top-level)
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `gcode_flavor` | string | `"marlin"` | Firmware dialect (`"marlin"` or `"klipper"`) |
+| `start_print_gcode` | string \| null | `null` | Custom start G-code block or file path |
+| `end_print_gcode` | string \| null | `null` | Custom end G-code block or file path |
+
+## Config Priority
+
+Settings are resolved in this order (highest priority first):
+
+```
+1. CLI arguments          (--layer-height, --gcode-flavor, --start-print-gcode, …)
+2. slicer.json            (project config in CWD, or --config FILE)
+3. ~/.config/slicer-engine/settings.json  (user config)
+4. Built-in defaults
+```
 
 ```mermaid
-graph LR
-    A["Global Settings<br/>JSON"] --> B{Apply<br/>Overrides?}
-    C["Object Settings<br/>JSON"] --> B
-    
-    B -->|No Override| D["Use Global"]
-    B -->|Yes Override| E["Use Object Value"]
-    
-    D --> F["SlicingParams<br/>to Slicing"]
-    E --> F
-    
-    style A fill:#e1f5ff
+graph TB
+    A["CLI arguments\n(highest priority)"] --> R["Resolved Settings"]
+    B["slicer.json\n(project config)"] --> R
+    C["~/.config/slicer-engine/settings.json\n(user config)"] --> R
+    D["Built-in defaults\n(lowest priority)"] --> R
+
+    style A fill:#c8e6c9
+    style B fill:#fff9c4
     style C fill:#e1f5ff
-    style F fill:#c8e6c9
+    style D fill:#f5f5f5
+    style R fill:#f8bbd0
 ```
+
+Each layer overrides only the keys it specifies; unset keys fall through to the next layer.
+
+## Project Config (`slicer.json`)
+
+Place a `slicer.json` file in your project directory to set per-project defaults that override
+the user config without touching it.  Only the keys you include are overridden.
+
+```json
+{
+  "params": {
+    "layer_height": 0.15,
+    "nozzle_temp": 215
+  },
+  "gcode_flavor": "klipper"
+}
+```
+
+The file is **auto-discovered** when you run any `slice` command from the same directory.
+You can also point to it explicitly:
+
+```bash
+slicer-engine slice --input model.stl --config ./path/to/slicer.json
+```
+
+## User Config (`settings.json`)
+
+The persistent user-level config lives at:
+
+| Platform | Path |
+|----------|------|
+| Linux | `~/.config/slicer-engine/settings.json` |
+| macOS | `~/Library/Application Support/slicer-engine/settings.json` |
+| Windows | `%APPDATA%\slicer-engine\settings.json` |
+
+Managed via the `settings set` / `settings get` subcommands (see below).
 
 ## JSON Structure
 
-### Global (Baseline)
+### Global settings file (`settings.json` or `slicer.json`)
 
 ```json
 {
@@ -44,11 +97,16 @@ graph LR
     "print_speed": 60.0,
     "nozzle_temp": 210.0,
     "bed_temp": 60.0
-  }
+  },
+  "gcode_flavor": "marlin",
+  "start_print_gcode": null,
+  "end_print_gcode": null
 }
 ```
 
-### Object (Selective Override)
+Both `start_print_gcode` and `end_print_gcode` are omitted from the file when `null`.
+
+### Object settings (per-object override)
 
 ```json
 {
@@ -60,14 +118,48 @@ graph LR
 }
 ```
 
-When `overrides` is `null`, object inherits all global settings.
+When `overrides` is `null`, the object inherits all global settings.
 
 ## CLI Commands
+
+### Get/Set Individual Values
+
+Both flat aliases and full dot-separated paths are accepted:
+
+```bash
+# These are equivalent
+slicer-engine settings get layer_height
+slicer-engine settings get params.layer_height
+
+# Set via flat alias
+slicer-engine settings set layer_height 0.15
+
+# Set via full path
+slicer-engine settings set params.nozzle_temp 215
+
+# Set top-level fields
+slicer-engine settings set gcode_flavor klipper
+slicer-engine settings set start_print_gcode "START_PRINT BED_TEMP=60 EXTRUDER_TEMP=210"
+slicer-engine settings set end_print_gcode "END_PRINT"
+
+# Clear an optional field
+slicer-engine settings set start_print_gcode null
+
+# JSON output
+slicer-engine settings get layer_height --output-format json
+```
+
+### Show All
+
+```bash
+slicer-engine settings show
+slicer-engine settings show --output-format json
+```
 
 ### Validate
 
 ```bash
-cargo run --release -- settings validate \
+slicer-engine settings validate \
   --global global.json --object object.json
 ```
 
@@ -76,29 +168,16 @@ Checks constraints and ranges. Output: ✓ valid or error messages.
 ### Diff
 
 ```bash
-cargo run --release -- settings diff \
+slicer-engine settings diff \
   --global global.json --object object.json
 ```
 
-Show which parameters are overridden:
+Shows which parameters are overridden:
 
 ```
 layer_height    0.2 → 0.1    ✓ Override
 print_speed     60  → 40     ✓ Override
 nozzle_temp     210 → 210    (no change)
-```
-
-### Show All
-
-```bash
-cargo run --release -- settings show
-```
-
-### Get/Set Individual Values
-
-```bash
-cargo run --release -- settings get layer_height
-cargo run --release -- settings set layer_height 0.15
 ```
 
 ## Validation Rules
@@ -111,26 +190,34 @@ cargo run --release -- settings set layer_height 0.15
 | `print_speed` | > 0 | Higher = faster but lower quality |
 | `nozzle_temp` | 180–250°C | Material-dependent (PLA≈210, PETG≈230) |
 | `bed_temp` | 20–120°C | Material-dependent (PLA≈60, PETG≈100) |
+| `gcode_flavor` | `"marlin"` \| `"klipper"` | Must be a known firmware dialect |
 
 ## Common Profiles
 
+### PLA
+
 ```json
 {
-  "pla": {
-    "layer_height": 0.2,
-    "nozzle_temp": 210,
-    "bed_temp": 60
-  },
-  "petg": {
-    "layer_height": 0.2,
-    "nozzle_temp": 230,
-    "bed_temp": 85
-  },
-  "high_detail": {
-    "layer_height": 0.1,
-    "print_speed": 30,
-    "wall_thickness": 1.6
-  }
+  "params": { "layer_height": 0.2, "nozzle_temp": 210, "bed_temp": 60 },
+  "gcode_flavor": "marlin"
+}
+```
+
+### PETG
+
+```json
+{
+  "params": { "layer_height": 0.2, "nozzle_temp": 230, "bed_temp": 85 }
+}
+```
+
+### High-detail (Klipper)
+
+```json
+{
+  "params": { "layer_height": 0.1, "print_speed": 30, "wall_thickness": 1.6 },
+  "gcode_flavor": "klipper",
+  "start_print_gcode": "START_PRINT BED_TEMP=60 EXTRUDER_TEMP=210"
 }
 ```
 
@@ -138,11 +225,11 @@ cargo run --release -- settings set layer_height 0.15
 
 ```mermaid
 graph LR
-    A["Settings JSON"] --> B["Validate"]
-    B --> C["Pass to<br/>Slice"]
-    C --> D["Pass to<br/>G-code Gen"]
-    D --> E["Control Printer"]
-    
+    A["slicer.json / settings.json"] --> B["load_and_merge_settings()"]
+    B --> C["slice command"]
+    C --> D["G-code Gen"]
+    D --> E["Output .gcode"]
+
     style A fill:#e1f5ff
     style E fill:#f8bbd0
 ```
