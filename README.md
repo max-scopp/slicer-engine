@@ -70,6 +70,10 @@ slicer-engine slice --input model.stl \
   --start-print-gcode "START_PRINT BED_TEMP=60 EXTRUDER_TEMP=210" \
   --end-print-gcode "END_PRINT"
 
+# Force-enable or disable layer lifecycle markers
+slicer-engine slice --input model.stl --lifecycle-markers
+slicer-engine slice --input model.stl --no-lifecycle-markers
+
 # Use an explicit project config file
 slicer-engine slice --input model.stl --config ./slicer.json
 
@@ -193,6 +197,7 @@ cargo fmt && cargo clippy --all-targets --all-features -- -D warnings
 - ✓ Triangle-plane intersection slicing
 - ✓ G-code generation (Marlin & Klipper)
 - ✓ Custom start/end G-code (string or file)
+- ✓ Layer lifecycle markers with per-flavor, per-marker template overrides (`{z}`, `{height}`, `{type}`, `{width}`)
 - ✓ Four-level settings priority cascade with `slicer.json` project config
 - ✓ Dotted-path settings access (`params.layer_height`)
 - ✓ Settings validation & per-object overrides
