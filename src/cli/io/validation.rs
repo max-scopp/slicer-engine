@@ -1,7 +1,7 @@
 //! Path validation utilities
 
-use std::path::{Path, PathBuf};
 use crate::cli::error::CliError;
+use std::path::{Path, PathBuf};
 
 /// Path validator for security and consistency
 pub struct PathValidator;
@@ -24,12 +24,9 @@ impl PathValidator {
         }
 
         // Canonicalize the path to prevent directory traversal
-        path.canonicalize()
-            .map_err(|e| CliError::invalid(format!(
-                "Cannot resolve path {}: {}",
-                path.display(),
-                e
-            )))
+        path.canonicalize().map_err(|e| {
+            CliError::invalid(format!("Cannot resolve path {}: {}", path.display(), e))
+        })
     }
 
     /// Validate output directory path
@@ -43,21 +40,22 @@ impl PathValidator {
             }
         } else {
             // Create directory if it doesn't exist
-            std::fs::create_dir_all(path)
-                .map_err(|e| CliError::from(e))?;
+            std::fs::create_dir_all(path).map_err(CliError::from)?;
         }
 
-        path.canonicalize()
-            .map_err(|e| CliError::invalid(format!(
+        path.canonicalize().map_err(|e| {
+            CliError::invalid(format!(
                 "Cannot resolve output path {}: {}",
                 path.display(),
                 e
-            )))
+            ))
+        })
     }
 
     /// Check if file has valid extension
     pub fn validate_extension(path: &Path, valid_extensions: &[&str]) -> Result<(), CliError> {
-        let ext = path.extension()
+        let ext = path
+            .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_lowercase();
@@ -77,8 +75,6 @@ impl PathValidator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use tempfile::TempDir;
 
     #[test]
     fn test_validate_nonexistent_file() {
@@ -88,28 +84,19 @@ mod tests {
 
     #[test]
     fn test_validate_extension_valid() {
-        let result = PathValidator::validate_extension(
-            Path::new("model.stl"),
-            &["stl", "obj"],
-        );
+        let result = PathValidator::validate_extension(Path::new("model.stl"), &["stl", "obj"]);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_validate_extension_invalid() {
-        let result = PathValidator::validate_extension(
-            Path::new("model.txt"),
-            &["stl", "obj"],
-        );
+        let result = PathValidator::validate_extension(Path::new("model.txt"), &["stl", "obj"]);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_validate_extension_case_insensitive() {
-        let result = PathValidator::validate_extension(
-            Path::new("model.STL"),
-            &["stl", "obj"],
-        );
+        let result = PathValidator::validate_extension(Path::new("model.STL"), &["stl", "obj"]);
         assert!(result.is_ok());
     }
 }

@@ -3,19 +3,21 @@
 use serde_json::json;
 
 /// Output format types
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OutputFormat {
     /// JSON format
     Json,
     /// Human-readable format
+    #[default]
     Human,
     /// CSV format (future)
     Csv,
 }
 
-impl OutputFormat {
-    /// Parse from string
-    pub fn from_str(s: &str) -> Result<Self, String> {
+impl std::str::FromStr for OutputFormat {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "json" => Ok(OutputFormat::Json),
             "human" | "text" => Ok(OutputFormat::Human),
@@ -32,12 +34,6 @@ impl std::fmt::Display for OutputFormat {
             OutputFormat::Human => write!(f, "human"),
             OutputFormat::Csv => write!(f, "csv"),
         }
-    }
-}
-
-impl Default for OutputFormat {
-    fn default() -> Self {
-        OutputFormat::Human
     }
 }
 
@@ -62,7 +58,7 @@ impl OutputFormatter for SuccessOutput {
                     "message": self.message,
                     "details": self.details
                 });
-                println!("{}", output.to_string());
+                println!("{}", output);
             }
             OutputFormat::Human => {
                 println!("✓ {}", self.message);
@@ -92,7 +88,7 @@ impl OutputFormatter for ErrorOutput {
                     "error": self.error,
                     "context": self.context
                 });
-                eprintln!("{}", output.to_string());
+                eprintln!("{}", output);
             }
             OutputFormat::Human => {
                 eprintln!("✗ Error: {}", self.error);
@@ -110,11 +106,15 @@ impl OutputFormatter for ErrorOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     #[test]
     fn test_output_format_parsing() {
         assert_eq!(OutputFormat::from_str("json").unwrap(), OutputFormat::Json);
-        assert_eq!(OutputFormat::from_str("human").unwrap(), OutputFormat::Human);
+        assert_eq!(
+            OutputFormat::from_str("human").unwrap(),
+            OutputFormat::Human
+        );
         assert_eq!(OutputFormat::from_str("csv").unwrap(), OutputFormat::Csv);
         assert_eq!(OutputFormat::from_str("JSON").unwrap(), OutputFormat::Json);
     }

@@ -1,7 +1,7 @@
 //! Info command - displays build and library information
 
-use clap::Parser;
 use crate::cli::output::OutputFormat;
+use clap::Parser;
 use serde_json::json;
 
 /// Display build and library information
@@ -19,7 +19,9 @@ pub struct InfoCommand {
 impl InfoCommand {
     /// Execute the info command
     pub fn execute(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let format = OutputFormat::from_str(&self.output_format)
+        let format = self
+            .output_format
+            .parse::<OutputFormat>()
             .map_err(|e| format!("Invalid output format: {}", e))?;
 
         let version = env!("CARGO_PKG_VERSION");
