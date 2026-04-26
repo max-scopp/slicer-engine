@@ -25,9 +25,11 @@ pub struct WsSlicingParams {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
 pub enum ClientMessage {
-    /// Start a slice job.  `stl_b64` is the base64-encoded STL file bytes.
+    /// Start a slice job. The STL file must be uploaded first via HTTP POST /api/upload,
+    /// which returns a `request_uuid`. This message initiates slicing on that uploaded file.
     Slice {
-        stl_b64: String,
+        /// UUID of the uploaded request/session
+        request_uuid: String,
         settings: WsSlicingParams,
     },
     /// Abort / reset the current state.
@@ -47,10 +49,11 @@ pub enum ServerMessage {
         current_layer: usize,
         total_layers: usize,
     },
-    /// Slice finished successfully; `gcode` is the full G-code output.
+    /// Slice finished successfully. Download the G-code from the provided URL.
     SliceComplete {
-        gcode: String,
         layer_count: usize,
+        /// HTTP GET this URL to download the generated G-code file
+        download_url: String,
     },
     /// A fatal error occurred during processing.
     Error { message: String },

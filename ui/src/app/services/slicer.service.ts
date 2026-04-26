@@ -1,14 +1,16 @@
 import { Injectable, inject, signal, effect } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { HttpClient } from '@angular/common/http';
 import { DEFAULT_SETTINGS, SliceSettings } from '../models/slice-settings.model';
 import { WebSocketService } from './websocket.service';
 import { ServerMessage } from '../../generated/schemas/slicer-engine-ws-server-message-v1';
 
-export type SlicerStatus = 'idle' | 'ready' | 'slicing' | 'done' | 'error';
+export type SlicerStatus = 'idle' | 'ready' | 'uploading' | 'slicing' | 'done' | 'error';
 
 @Injectable({ providedIn: 'root' })
 export class SlicerService {
   private readonly ws = inject(WebSocketService);
+  private readonly http = inject(HttpClient);
 
   readonly selectedFile = signal<File | null>(null);
   readonly settings = signal<SliceSettings>(DEFAULT_SETTINGS);
@@ -56,7 +58,7 @@ export class SlicerService {
           `Slice complete — ${msg.layer_count} layers generated.`,
           'Downloading G-code…',
         ]);
-        this.downloadGcode(msg.gcode);
+        this.downloadGcode(msg.download_url);
         break;
       case 'Error':
         this.status.set('error');
@@ -65,16 +67,13 @@ export class SlicerService {
     }
   }
 
-  private downloadGcode(gcode: string): void {
+  private downloadGcode(downloadUrl: string): void {
     const filename =
       this.selectedFile()?.name.replace(/\.stl$/i, '.gcode') ?? 'output.gcode';
-    const blob = new Blob([gcode], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = filename;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.download = filename;
+    link.click();
   }
 
   selectFile(file: File): void {
@@ -82,7 +81,7 @@ export class SlicerService {
     this.status.set('ready');
     this.outputLog.update(log => [
       ...log,
-      `File selected: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`,
+      `File selected: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`,
     ]);
   }
 
@@ -92,39 +91,55 @@ export class SlicerService {
 
   async slice(): Promise<void> {
     const file = this.selectedFile();
-    if (!file) return;
+    if (!file) {
+      return;
+    }
 
-    this.status.set('slicing');
-    this.outputLog.update(log => [...log, 'Reading file…']);
+    this.status.set('uploading');
+    this.outputLog.update(log => [...log, 'Uploading file…']);
 
-    const stl_b64 = await this.readFileAsBase64(file);
-    const s = this.settings();
+    try {
+      // Step 1: Upload file via HTTP
+      const formData = new FormData();
+      formData.append('file', file);
 
-    this.outputLog.update(log => [...log, 'Sending to server over WebSocket…']);
-    this.ws.send({
-      type: 'Slice',
-      stl_b64,
-      settings: {
-        layer_height: s.layerHeight,
-        print_speed: s.printSpeed,
-        nozzle_temp: s.nozzleTemp,
-        bed_temp: s.bedTemp,
-        gcode_flavor: s.gcodeFlavor,
-      },
-    });
-  }
+      const uploadResponse = await this.http
+        .post<{ request_uuid: string }>('/api/upload', formData)
+        .toPromise();
 
-  private readFileAsBase64(file: File): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const result = reader.result as string;
-        // Strip the `data:<mime>;base64,` prefix
-        resolve(result.split(',')[1]);
-      };
-      reader.onerror = () => reject(new Error('FileReader error'));
-      reader.readAsDataURL(file);
-    });
+      if (!uploadResponse) {
+        throw new Error('No response from upload');
+      }
+
+      const requestUuid = uploadResponse.request_uuid;
+      this.outputLog.update(log => [
+        ...log,
+        `Upload complete. Request ID: ${requestUuid}`,
+        'Starting slice job…',
+      ]);
+
+      // Step 2: Send slice request via WebSocket with request_uuid
+      const s = this.settings();
+      this.status.set('slicing');
+
+      this.ws.send({
+        type: 'Slice',
+        request_uuid: requestUuid,
+        settings: {
+          layer_height: s.layerHeight,
+          print_speed: s.printSpeed,
+          nozzle_temp: s.nozzleTemp,
+          bed_temp: s.bedTemp,
+          gcode_flavor: s.gcodeFlavor,
+        },
+      });
+    } catch (error) {
+      this.status.set('error');
+      this.outputLog.update(log => [
+        ...log,
+        `[error] Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      ]);
+    }
   }
 
   reset(): void {
