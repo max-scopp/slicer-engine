@@ -7,7 +7,7 @@ use crate::gcode::{resolve_gcode_source, GcodeFlavor, GcodeGenerator};
 use crate::mesh::analysis::{calculate_aabb, calculate_surface_area, calculate_volume};
 use crate::mesh::io::read_stl;
 use crate::mesh::transforms::{center_mesh, drop_to_floor};
-use crate::settings::load_settings;
+use crate::settings::{load_and_merge_settings, load_settings};
 use clap::Parser;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -69,6 +69,10 @@ pub struct SliceCommand {
     /// Drop the mesh to Z=0 before slicing
     #[arg(long)]
     pub drop_to_floor: bool,
+
+    /// Explicit path to a project config file (overrides auto-discovery of slicer.json).
+    #[arg(long, value_name = "FILE")]
+    pub config: Option<PathBuf>,
 }
 
 /// Result payload emitted by the `slice` command.
@@ -118,8 +122,18 @@ impl SliceCommand {
 
         let emitter = Emitter::new(format);
 
-        // Load persisted settings — used for layer height default and gcode flavor default
-        let settings = load_settings().unwrap_or_else(|_| Default::default());
+        // Load and merge settings following the priority hierarchy:
+        // global defaults → user config → project config (slicer.json or --config)
+        let settings = match load_and_merge_settings(self.config.as_deref()) {
+            Ok(s) => s,
+            Err(e) => {
+                emitter.log_warn(&format!(
+                    "Failed to load project config, using user/default settings: {}",
+                    e
+                ));
+                load_settings().unwrap_or_default()
+            }
+        };
 
         // Resolve gcode flavor: CLI arg → global settings → built-in default (Marlin)
         let flavor_str = self
@@ -292,6 +306,7 @@ mod tests {
             verbose: false,
             center: false,
             drop_to_floor: false,
+            config: None,
         };
         assert_eq!(cmd.layer_height, Some(0.2));
         assert_eq!(cmd.gcode_flavor.as_deref(), Some("marlin"));
@@ -310,6 +325,7 @@ mod tests {
             verbose: false,
             center: false,
             drop_to_floor: false,
+            config: None,
         };
         assert!(cmd.gcode_flavor.is_none());
     }
@@ -327,6 +343,7 @@ mod tests {
             verbose: false,
             center: false,
             drop_to_floor: false,
+            config: None,
         };
         assert_eq!(cmd.gcode_flavor.as_deref(), Some("klipper"));
     }
@@ -344,6 +361,7 @@ mod tests {
             verbose: false,
             center: false,
             drop_to_floor: false,
+            config: None,
         };
         assert_eq!(
             cmd.start_print_gcode.as_deref(),
