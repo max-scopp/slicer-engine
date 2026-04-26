@@ -102,8 +102,16 @@ impl SliceCommand {
 
         // Load and merge settings following the priority hierarchy:
         // global defaults → user config → project config (slicer.json or --config)
-        let settings = load_and_merge_settings(self.config.as_deref())
-            .unwrap_or_else(|_| load_settings().unwrap_or_default());
+        let settings = match load_and_merge_settings(self.config.as_deref()) {
+            Ok(s) => s,
+            Err(e) => {
+                emitter.log_warn(&format!(
+                    "Failed to load project config, using user/default settings: {}",
+                    e
+                ));
+                load_settings().unwrap_or_default()
+            }
+        };
 
         // Resolve gcode flavor: CLI arg → global settings → built-in default (Marlin)
         let flavor_str = self

@@ -147,16 +147,10 @@ pub fn load_and_merge_settings(
     }
 
     // Layer 3: project config (auto-discover or explicit path)
-    let project_path: Option<PathBuf> = match project_config_path {
-        Some(p) => {
-            if p.exists() {
-                Some(p.to_path_buf())
-            } else {
-                None
-            }
-        }
-        None => find_project_config(),
-    };
+    let project_path: Option<PathBuf> = project_config_path
+        .filter(|p| p.exists())
+        .map(|p| p.to_path_buf())
+        .or_else(find_project_config);
 
     if let Some(ref p) = project_path {
         let project_val = load_project_config(p)?;

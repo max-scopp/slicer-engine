@@ -328,6 +328,16 @@ fn execute_set(args: &SetArgs) -> Result<(), Box<dyn std::error::Error>> {
 // ── Helper functions ──────────────────────────────────────────────────────────
 
 /// Navigate a `serde_json::Value` using a dot-separated path (e.g. `"params.layer_height"`).
+///
+/// Walks each `.`-separated segment in turn, returning `None` if any segment
+/// is missing or the intermediate value is not an object.
+///
+/// # Examples
+/// ```ignore
+/// let val = serde_json::json!({"params": {"layer_height": 0.2}});
+/// let found = get_json_path(&val, "params.layer_height");
+/// assert_eq!(found, Some(&serde_json::json!(0.2)));
+/// ```
 fn get_json_path<'a>(val: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
     let mut current = val;
     for segment in path.split('.') {
@@ -443,7 +453,7 @@ fn set_setting_value(
 
     set_json_path(&mut val, &resolved, value.clone())?;
 
-    // Deserialise back — this catches type mismatches (e.g. string for a float field)
+    // Deserialize back — this catches type mismatches (e.g. string for a float field)
     *settings = serde_json::from_value(val)
         .map_err(|e| format!("Invalid value for '{}': {}", key, e))?;
     Ok(())
