@@ -13,6 +13,17 @@ A high-performance 3D model slicer engine written in Rust, powered by [Clipper2]
 - Rust 1.70+ ([Install Rust](https://rustup.rs/))
 - For WASM builds: `wasm-pack` ([Install wasm-pack](https://rustwasm.org/wasm-pack/installer/))
 
+## Quick Start
+
+```bash
+cd slicer-engine
+cargo build --release      # Release build
+cargo run --release        # Run the application
+cargo test --release       # Run tests
+cargo fmt                  # Format code
+cargo clippy               # Lint code
+```
+
 ## Building
 
 ### Native Build (Debug)
