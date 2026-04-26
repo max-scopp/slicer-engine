@@ -3,7 +3,7 @@
 use crate::cli::emit::Emitter;
 use crate::cli::output::{EmitPayload, OutputFormat};
 use crate::core::slice_mesh;
-use crate::gcode::{GcodeGenerator, GcodeFlavor};
+use crate::gcode::{GcodeFlavor, GcodeGenerator};
 use crate::mesh::analysis::{calculate_aabb, calculate_surface_area, calculate_volume};
 use crate::mesh::io::read_stl;
 use crate::mesh::transforms::{center_mesh, drop_to_floor};
@@ -47,6 +47,17 @@ pub struct SliceCommand {
     /// Drop the mesh to Z=0 before slicing
     #[arg(long)]
     pub drop_to_floor: bool,
+
+    /// Emit layer lifecycle markers (;LAYER_CHANGE, ;BEFORE/AFTER_LAYER_CHANGE, ;TYPE:, ;WIDTH:).
+    /// When omitted, falls back to the value stored in global settings (default: enabled).
+    /// Use --lifecycle-markers to force-enable or --no-lifecycle-markers to force-disable.
+    #[arg(long, conflicts_with = "no_lifecycle_markers")]
+    pub lifecycle_markers: bool,
+
+    /// Disable layer lifecycle markers.
+    /// Overrides the global settings value and --lifecycle-markers.
+    #[arg(long, conflicts_with = "lifecycle_markers")]
+    pub no_lifecycle_markers: bool,
 }
 
 /// Result payload emitted by the `slice` command.
@@ -185,7 +196,15 @@ impl SliceCommand {
         // Generate G-code using the selected firmware flavor; route dialect
         // warnings through the emitter's warn channel
         let emitter_for_warn = emitter.clone();
+        let emit_lifecycle_markers = if self.lifecycle_markers {
+            true
+        } else if self.no_lifecycle_markers {
+            false
+        } else {
+            settings.emit_lifecycle_markers
+        };
         let generator = GcodeGenerator::new(flavor)
+            .with_lifecycle_markers(emit_lifecycle_markers)
             .with_warn_fn(move |msg| emitter_for_warn.log_warn(msg));
         let gcode = generator.generate(&layers, &slice_params);
 
@@ -244,6 +263,8 @@ mod tests {
             verbose: false,
             center: false,
             drop_to_floor: false,
+            lifecycle_markers: false,
+            no_lifecycle_markers: false,
         };
         assert_eq!(cmd.layer_height, Some(0.2));
         assert_eq!(cmd.gcode_flavor.as_deref(), Some("marlin"));
@@ -260,6 +281,8 @@ mod tests {
             verbose: false,
             center: false,
             drop_to_floor: false,
+            lifecycle_markers: false,
+            no_lifecycle_markers: false,
         };
         assert!(cmd.gcode_flavor.is_none());
     }
@@ -275,8 +298,43 @@ mod tests {
             verbose: false,
             center: false,
             drop_to_floor: false,
+            lifecycle_markers: false,
+            no_lifecycle_markers: false,
         };
         assert_eq!(cmd.gcode_flavor.as_deref(), Some("klipper"));
+    }
+
+    #[test]
+    fn test_slice_command_lifecycle_markers_flags() {
+        let cmd_on = SliceCommand {
+            input: PathBuf::from("test.stl"),
+            layer_height: Some(0.2),
+            output: None,
+            output_format: "human".to_string(),
+            gcode_flavor: None,
+            verbose: false,
+            center: false,
+            drop_to_floor: false,
+            lifecycle_markers: true,
+            no_lifecycle_markers: false,
+        };
+        assert!(cmd_on.lifecycle_markers);
+        assert!(!cmd_on.no_lifecycle_markers);
+
+        let cmd_off = SliceCommand {
+            input: PathBuf::from("test.stl"),
+            layer_height: Some(0.2),
+            output: None,
+            output_format: "human".to_string(),
+            gcode_flavor: None,
+            verbose: false,
+            center: false,
+            drop_to_floor: false,
+            lifecycle_markers: false,
+            no_lifecycle_markers: true,
+        };
+        assert!(!cmd_off.lifecycle_markers);
+        assert!(cmd_off.no_lifecycle_markers);
     }
 
     #[test]

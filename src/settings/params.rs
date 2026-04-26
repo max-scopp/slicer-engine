@@ -50,11 +50,23 @@ pub struct GlobalSettings {
     /// string; defaults to `"marlin"` for new or migrated settings files.
     #[serde(default = "GlobalSettings::default_gcode_flavor")]
     pub gcode_flavor: String,
+    /// Emit layer lifecycle markers in G-code output.
+    ///
+    /// When `true` the generator adds `;LAYER_CHANGE`, `;Z:`, `;HEIGHT:`,
+    /// `;BEFORE_LAYER_CHANGE`, `;AFTER_LAYER_CHANGE`, `;TYPE:`, and `;WIDTH:`
+    /// annotations compatible with OrcaSlicer / Klipper post-processing hooks.
+    /// Defaults to `true` for new or migrated settings files.
+    #[serde(default = "GlobalSettings::default_emit_lifecycle_markers")]
+    pub emit_lifecycle_markers: bool,
 }
 
 impl GlobalSettings {
     fn default_gcode_flavor() -> String {
         "marlin".to_string()
+    }
+
+    fn default_emit_lifecycle_markers() -> bool {
+        true
     }
 }
 
@@ -63,6 +75,7 @@ impl Default for GlobalSettings {
         Self {
             params: SlicingParams::default(),
             gcode_flavor: Self::default_gcode_flavor(),
+            emit_lifecycle_markers: Self::default_emit_lifecycle_markers(),
         }
     }
 }
@@ -91,6 +104,7 @@ mod tests {
         assert_eq!(back.params.layer_height, gs.params.layer_height);
         assert_eq!(back.params.nozzle_temp, gs.params.nozzle_temp);
         assert_eq!(back.gcode_flavor, gs.gcode_flavor);
+        assert_eq!(back.emit_lifecycle_markers, gs.emit_lifecycle_markers);
     }
 
     #[test]
@@ -100,11 +114,35 @@ mod tests {
     }
 
     #[test]
+    fn test_global_settings_default_emit_lifecycle_markers_is_true() {
+        let gs = GlobalSettings::default();
+        assert!(gs.emit_lifecycle_markers);
+    }
+
+    #[test]
     fn test_global_settings_gcode_flavor_defaults_when_absent() {
         // Simulate a legacy settings JSON that doesn't have the gcode_flavor field
         let json = r#"{"params":{"layer_height":0.2,"wall_thickness":1.2,"infill_density":0.2,"print_speed":60.0,"nozzle_temp":210.0,"bed_temp":60.0}}"#;
         let back: GlobalSettings = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(back.gcode_flavor, "marlin", "should default to marlin for legacy files");
+        assert_eq!(
+            back.gcode_flavor, "marlin",
+            "should default to marlin for legacy files"
+        );
+        assert!(
+            back.emit_lifecycle_markers,
+            "should default to true for legacy files"
+        );
+    }
+
+    #[test]
+    fn test_global_settings_lifecycle_markers_defaults_when_absent() {
+        // Simulate a settings JSON without emit_lifecycle_markers field
+        let json = r#"{"params":{"layer_height":0.2,"wall_thickness":1.2,"infill_density":0.2,"print_speed":60.0,"nozzle_temp":210.0,"bed_temp":60.0},"gcode_flavor":"marlin"}"#;
+        let back: GlobalSettings = serde_json::from_str(json).expect("deserialize");
+        assert!(
+            back.emit_lifecycle_markers,
+            "should default to true when absent"
+        );
     }
 
     #[test]

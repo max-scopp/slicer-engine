@@ -4,6 +4,53 @@ use clipper2::*;
 
 use crate::mesh::types::{Mesh, Vertex};
 
+/// The role of an extrusion path, used to annotate G-code with `;TYPE:` comments
+/// and enable firmware features like Klipper adaptive acceleration by role.
+///
+/// Each variant maps to a named type that is emitted in the G-code output and
+/// carries a default extrusion width for that role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExtrusionRole {
+    /// Outer or inner perimeter / wall contour (default role).
+    #[default]
+    Perimeter,
+    /// Sparse infill pattern.
+    Infill,
+    /// Bridge extrusion spanning a gap with no support below.
+    Bridge,
+    /// Solid top-surface infill.
+    TopSurface,
+    /// Support structure material.
+    Support,
+    /// Skirt or brim line.
+    Skirt,
+}
+
+impl ExtrusionRole {
+    /// The `;TYPE:` label emitted in G-code comments for this role.
+    pub fn type_name(self) -> &'static str {
+        match self {
+            Self::Perimeter => "Perimeter",
+            Self::Infill => "Infill",
+            Self::Bridge => "Bridge",
+            Self::TopSurface => "Top surface",
+            Self::Support => "Support",
+            Self::Skirt => "Skirt",
+        }
+    }
+
+    /// Default extrusion width in mm for this role.
+    ///
+    /// Used to populate the `;WIDTH:` annotation in the G-code output.
+    pub fn default_width_mm(self) -> f64 {
+        match self {
+            Self::Perimeter | Self::Infill | Self::Bridge | Self::TopSurface => 0.4,
+            Self::Support => 0.4,
+            Self::Skirt => 0.4,
+        }
+    }
+}
+
 /// Represents a slice layer in the 3D model
 #[derive(Debug, Clone)]
 pub struct SliceLayer {
@@ -11,6 +58,11 @@ pub struct SliceLayer {
     pub z: f64,
     /// Paths that make up this layer (closed contours in XY)
     pub paths: Paths,
+    /// Extrusion role for each path in [`SliceLayer::paths`].
+    ///
+    /// `path_roles[i]` is the role of `paths[i]`.  If shorter than `paths`,
+    /// the remaining paths default to [`ExtrusionRole::Perimeter`].
+    pub path_roles: Vec<ExtrusionRole>,
 }
 
 impl SliceLayer {
@@ -19,7 +71,16 @@ impl SliceLayer {
         Self {
             z,
             paths: Paths::default(),
+            path_roles: Vec::new(),
         }
+    }
+
+    /// Return the extrusion role for path index `i`.
+    ///
+    /// Falls back to [`ExtrusionRole::Perimeter`] when `path_roles` has no
+    /// entry for the given index.
+    pub fn role_for_path(&self, i: usize) -> ExtrusionRole {
+        self.path_roles.get(i).copied().unwrap_or_default()
     }
 }
 
@@ -103,6 +164,7 @@ pub fn slice_mesh(mesh: &Mesh, layer_height: f64) -> Vec<SliceLayer> {
             if contour.len() >= 3 {
                 let path: Path = contour.into();
                 layer.paths.push(path);
+                layer.path_roles.push(ExtrusionRole::Perimeter);
             }
         }
 
@@ -291,6 +353,75 @@ mod tests {
         let layer = SliceLayer::new(1.0);
         assert_eq!(layer.z, 1.0);
         assert!(layer.paths.is_empty());
+        assert!(layer.path_roles.is_empty());
+    }
+
+    #[test]
+    fn test_slice_layer_role_for_path_default() {
+        let layer = SliceLayer::new(1.0);
+        // No roles set → should fall back to Perimeter
+        assert_eq!(layer.role_for_path(0), ExtrusionRole::Perimeter);
+        assert_eq!(layer.role_for_path(99), ExtrusionRole::Perimeter);
+    }
+
+    #[test]
+    fn test_slice_layer_role_for_path_explicit() {
+        let mut layer = SliceLayer::new(1.0);
+        layer.path_roles.push(ExtrusionRole::Skirt);
+        layer.path_roles.push(ExtrusionRole::Infill);
+        assert_eq!(layer.role_for_path(0), ExtrusionRole::Skirt);
+        assert_eq!(layer.role_for_path(1), ExtrusionRole::Infill);
+        // Out of bounds → Perimeter default
+        assert_eq!(layer.role_for_path(2), ExtrusionRole::Perimeter);
+    }
+
+    #[test]
+    fn test_extrusion_role_type_names() {
+        assert_eq!(ExtrusionRole::Perimeter.type_name(), "Perimeter");
+        assert_eq!(ExtrusionRole::Infill.type_name(), "Infill");
+        assert_eq!(ExtrusionRole::Bridge.type_name(), "Bridge");
+        assert_eq!(ExtrusionRole::TopSurface.type_name(), "Top surface");
+        assert_eq!(ExtrusionRole::Support.type_name(), "Support");
+        assert_eq!(ExtrusionRole::Skirt.type_name(), "Skirt");
+    }
+
+    #[test]
+    fn test_extrusion_role_widths_positive() {
+        for role in [
+            ExtrusionRole::Perimeter,
+            ExtrusionRole::Infill,
+            ExtrusionRole::Bridge,
+            ExtrusionRole::TopSurface,
+            ExtrusionRole::Support,
+            ExtrusionRole::Skirt,
+        ] {
+            assert!(
+                role.default_width_mm() > 0.0,
+                "{:?} width must be positive",
+                role
+            );
+        }
+    }
+
+    #[test]
+    fn test_slice_mesh_path_roles_match_paths() {
+        let mesh = make_cube_mesh();
+        let layers = slice_mesh(&mesh, 2.0);
+        for layer in &layers {
+            assert_eq!(
+                layer.paths.len(),
+                layer.path_roles.len(),
+                "path_roles length must match paths length at z={}",
+                layer.z
+            );
+            for role in &layer.path_roles {
+                assert_eq!(
+                    *role,
+                    ExtrusionRole::Perimeter,
+                    "slice_mesh assigns Perimeter"
+                );
+            }
+        }
     }
 
     #[test]

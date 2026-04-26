@@ -269,6 +269,7 @@ pub type WarnFn = Box<dyn Fn(&str)>;
 pub struct GcodeGenerator {
     dialect: Box<dyn GcodeDialect>,
     warn_fn: Option<WarnFn>,
+    lifecycle_markers: bool,
 }
 
 impl GcodeGenerator {
@@ -281,6 +282,7 @@ impl GcodeGenerator {
         Self {
             dialect,
             warn_fn: None,
+            lifecycle_markers: true,
         }
     }
 
@@ -291,6 +293,7 @@ impl GcodeGenerator {
         Self {
             dialect,
             warn_fn: None,
+            lifecycle_markers: true,
         }
     }
 
@@ -307,6 +310,19 @@ impl GcodeGenerator {
     /// ```
     pub fn with_warn_fn(mut self, f: impl Fn(&str) + 'static) -> Self {
         self.warn_fn = Some(Box::new(f));
+        self
+    }
+
+    /// Configure whether layer lifecycle markers are emitted in the output.
+    ///
+    /// When `true` (the default) each layer block is preceded by:
+    /// `;LAYER_CHANGE`, `;Z:`, `;HEIGHT:`, `;BEFORE_LAYER_CHANGE`, `G92 E0`,
+    /// `;AFTER_LAYER_CHANGE` and `;TYPE:` / `;WIDTH:` annotations at each
+    /// extrusion-role transition.
+    ///
+    /// Set to `false` to emit a minimal "; layer z=…" comment instead.
+    pub fn with_lifecycle_markers(mut self, enabled: bool) -> Self {
+        self.lifecycle_markers = enabled;
         self
     }
 
@@ -360,16 +376,46 @@ impl GcodeGenerator {
         let mut e_total = 0.0_f64;
 
         for layer in layers {
-            out.push_str(&format!("; layer z={:.3}\n", layer.z));
-            out.push_str(&format!(
-                "{}\n",
-                self.dialect.move_z(layer.z, TRAVEL_SPEED_MM_MIN)
-            ));
+            if self.lifecycle_markers {
+                // Lifecycle block: LAYER_CHANGE → BEFORE_LAYER_CHANGE → Z move → AFTER_LAYER_CHANGE
+                out.push_str(";LAYER_CHANGE\n");
+                out.push_str(&format!(";Z:{:.3}\n", layer.z));
+                out.push_str(&format!(";HEIGHT:{:.3}\n", params.layer_height));
+                out.push_str(";BEFORE_LAYER_CHANGE\n");
+                out.push_str(&format!(";{:.3}\n", layer.z));
+                // Reset extruder position at layer start
+                out.push_str(&format!("{}\n", self.dialect.reset_extruder()));
+                e_total = 0.0;
+                out.push_str(&format!(
+                    "{}\n",
+                    self.dialect.move_z(layer.z, TRAVEL_SPEED_MM_MIN)
+                ));
+                out.push_str(";AFTER_LAYER_CHANGE\n");
+                out.push_str(&format!(";{:.3}\n", layer.z));
+            } else {
+                out.push_str(&format!("; layer z={:.3}\n", layer.z));
+                out.push_str(&format!(
+                    "{}\n",
+                    self.dialect.move_z(layer.z, TRAVEL_SPEED_MM_MIN)
+                ));
+            }
 
-            for path in layer.paths.iter() {
+            let mut last_role: Option<crate::core::ExtrusionRole> = None;
+
+            for (path_idx, path) in layer.paths.iter().enumerate() {
                 let points: Vec<(f64, f64)> = path.iter().map(|p| (p.x(), p.y())).collect();
                 if points.len() < 2 {
                     continue;
+                }
+
+                // Emit ;TYPE: / ;WIDTH: annotation when the extrusion role changes
+                if self.lifecycle_markers {
+                    let role = layer.role_for_path(path_idx);
+                    if last_role != Some(role) {
+                        out.push_str(&format!(";TYPE:{}\n", role.type_name()));
+                        out.push_str(&format!(";WIDTH:{:.2}mm\n", role.default_width_mm()));
+                        last_role = Some(role);
+                    }
                 }
 
                 let (start_x, start_y) = points[0];
@@ -386,7 +432,8 @@ impl GcodeGenerator {
                 ));
                 out.push_str(&format!(
                     "{} ; travel\n",
-                    self.dialect.travel_xy(start_x, start_y, TRAVEL_SPEED_MM_MIN)
+                    self.dialect
+                        .travel_xy(start_x, start_y, TRAVEL_SPEED_MM_MIN)
                 ));
                 out.push_str(&format!(
                     "{} ; lower\n",
@@ -496,9 +543,14 @@ mod tests {
     fn test_generate_gcode_layer_z_appears() {
         let layer = SliceLayer::new(1.0);
         let gcode = generate_gcode(&[layer], &SlicingParams::default());
+        // With lifecycle markers on by default, expect LAYER_CHANGE block
         assert!(
-            gcode.contains("layer z=1.000"),
-            "missing layer comment: {gcode}"
+            gcode.contains(";LAYER_CHANGE"),
+            "missing LAYER_CHANGE marker: {gcode}"
+        );
+        assert!(
+            gcode.contains(";Z:1.000"),
+            "missing ;Z: annotation: {gcode}"
         );
         assert!(gcode.contains("G1 Z1.000"), "missing Z move");
     }
@@ -525,7 +577,10 @@ mod tests {
 
     #[test]
     fn test_gcode_flavor_from_str() {
-        assert_eq!("marlin".parse::<GcodeFlavor>().unwrap(), GcodeFlavor::Marlin);
+        assert_eq!(
+            "marlin".parse::<GcodeFlavor>().unwrap(),
+            GcodeFlavor::Marlin
+        );
         assert_eq!(
             "klipper".parse::<GcodeFlavor>().unwrap(),
             GcodeFlavor::Klipper
@@ -621,7 +676,12 @@ mod tests {
 
         let gcode =
             GcodeGenerator::new(GcodeFlavor::Klipper).generate(&[layer], &SlicingParams::default());
-        assert!(gcode.contains("layer z=0.200"), "missing layer comment");
+        // Lifecycle markers are on by default
+        assert!(
+            gcode.contains(";LAYER_CHANGE"),
+            "missing LAYER_CHANGE marker"
+        );
+        assert!(gcode.contains(";Z:0.200"), "missing ;Z: annotation");
         assert!(gcode.contains(" E"), "no extrusion moves");
         assert!(gcode.contains("X0.000 Y0.000"), "missing start travel");
     }
@@ -766,5 +826,117 @@ mod tests {
         let gen = GcodeGenerator::with_dialect(Box::new(NoFanDialect));
         let gcode = gen.generate(&[], &SlicingParams::default());
         assert!(gcode.contains("; Generated by slicer-engine"));
+    }
+
+    // ── Lifecycle markers ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_lifecycle_markers_enabled_by_default() {
+        let layer = SliceLayer::new(0.2);
+        let gcode =
+            GcodeGenerator::new(GcodeFlavor::Marlin).generate(&[layer], &SlicingParams::default());
+        assert!(
+            gcode.contains(";LAYER_CHANGE"),
+            "LAYER_CHANGE must be present"
+        );
+        assert!(gcode.contains(";Z:0.200"), ";Z: annotation must be present");
+        assert!(
+            gcode.contains(";HEIGHT:0.200"),
+            ";HEIGHT: annotation must be present"
+        );
+        assert!(
+            gcode.contains(";BEFORE_LAYER_CHANGE"),
+            ";BEFORE_LAYER_CHANGE must be present"
+        );
+        assert!(
+            gcode.contains(";AFTER_LAYER_CHANGE"),
+            ";AFTER_LAYER_CHANGE must be present"
+        );
+        assert!(gcode.contains("G92 E0"), "extruder reset must be present");
+    }
+
+    #[test]
+    fn test_lifecycle_markers_disabled_emits_legacy_comment() {
+        let layer = SliceLayer::new(0.2);
+        let gcode = GcodeGenerator::new(GcodeFlavor::Marlin)
+            .with_lifecycle_markers(false)
+            .generate(&[layer], &SlicingParams::default());
+        assert!(
+            gcode.contains("; layer z=0.200"),
+            "legacy comment must appear when markers disabled"
+        );
+        assert!(
+            !gcode.contains(";LAYER_CHANGE"),
+            "LAYER_CHANGE must NOT appear when markers disabled"
+        );
+    }
+
+    #[test]
+    fn test_lifecycle_markers_type_annotation_emitted() {
+        use clipper2::Path;
+        let mut layer = SliceLayer::new(0.2);
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer.paths.push(square);
+        layer.path_roles.push(crate::core::ExtrusionRole::Perimeter);
+
+        let gcode =
+            GcodeGenerator::new(GcodeFlavor::Marlin).generate(&[layer], &SlicingParams::default());
+        assert!(
+            gcode.contains(";TYPE:Perimeter"),
+            ";TYPE: annotation must be present"
+        );
+        assert!(
+            gcode.contains(";WIDTH:0.40mm"),
+            ";WIDTH: annotation must be present"
+        );
+    }
+
+    #[test]
+    fn test_lifecycle_markers_type_transition_emitted_once_per_role() {
+        use clipper2::Path;
+        let mut layer = SliceLayer::new(0.2);
+        let sq: Path = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)].into();
+        // Two Perimeter paths followed by one Infill path
+        layer.paths.push(sq.clone());
+        layer.paths.push(sq.clone());
+        layer.paths.push(sq);
+        layer.path_roles.push(crate::core::ExtrusionRole::Perimeter);
+        layer.path_roles.push(crate::core::ExtrusionRole::Perimeter);
+        layer.path_roles.push(crate::core::ExtrusionRole::Infill);
+
+        let gcode =
+            GcodeGenerator::new(GcodeFlavor::Marlin).generate(&[layer], &SlicingParams::default());
+
+        // Perimeter TYPE should appear exactly once (no duplicate at role boundary)
+        let perimeter_count = gcode.matches(";TYPE:Perimeter").count();
+        assert_eq!(
+            perimeter_count, 1,
+            "Perimeter TYPE emitted {} times",
+            perimeter_count
+        );
+
+        // Infill TYPE should appear exactly once
+        let infill_count = gcode.matches(";TYPE:Infill").count();
+        assert_eq!(
+            infill_count, 1,
+            "Infill TYPE emitted {} times",
+            infill_count
+        );
+    }
+
+    #[test]
+    fn test_lifecycle_markers_no_type_when_disabled() {
+        use clipper2::Path;
+        let mut layer = SliceLayer::new(0.2);
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer.paths.push(square);
+
+        let gcode = GcodeGenerator::new(GcodeFlavor::Marlin)
+            .with_lifecycle_markers(false)
+            .generate(&[layer], &SlicingParams::default());
+        assert!(
+            !gcode.contains(";TYPE:"),
+            ";TYPE: must NOT appear when markers disabled"
+        );
     }
 }

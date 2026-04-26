@@ -357,6 +357,7 @@ fn get_setting_value(
             serde_json::Number::from_f64(settings.params.bed_temp).ok_or("Invalid float value")?,
         )),
         "gcode_flavor" => Ok(Value::String(settings.gcode_flavor.clone())),
+        "emit_lifecycle_markers" => Ok(Value::Bool(settings.emit_lifecycle_markers)),
         _ => Err(format!("Unknown setting key: {}", key).into()),
     }
 }
@@ -377,6 +378,15 @@ fn set_setting_value(
             .parse::<crate::gcode::GcodeFlavor>()
             .map_err(|e| format!("Invalid gcode_flavor: {}", e))?;
         settings.gcode_flavor = flavor.to_string();
+        return Ok(());
+    }
+
+    // emit_lifecycle_markers is a boolean setting
+    if key == "emit_lifecycle_markers" {
+        let enabled = value
+            .as_bool()
+            .ok_or("Value for 'emit_lifecycle_markers' must be a boolean (true/false)")?;
+        settings.emit_lifecycle_markers = enabled;
         return Ok(());
     }
 
@@ -428,6 +438,10 @@ impl EmitPayload for ShowResult<'_> {
             format!("  nozzle_temp: {}°C", self.settings.params.nozzle_temp),
             format!("  bed_temp: {}°C", self.settings.params.bed_temp),
             format!("  gcode_flavor: {}", self.settings.gcode_flavor),
+            format!(
+                "  emit_lifecycle_markers: {}",
+                self.settings.emit_lifecycle_markers
+            ),
         ]
         .join("\n")
     }
@@ -666,5 +680,51 @@ mod tests {
         let mut settings = GlobalSettings::default();
         let value = serde_json::json!(0.2);
         assert!(set_setting_value(&mut settings, "invalid_key", &value).is_err());
+    }
+
+    #[test]
+    fn test_get_setting_value_emit_lifecycle_markers() {
+        let settings = GlobalSettings::default();
+        let value = get_setting_value(&settings, "emit_lifecycle_markers").unwrap();
+        assert!(value.as_bool().unwrap());
+    }
+
+    #[test]
+    fn test_set_setting_value_emit_lifecycle_markers_false() {
+        let mut settings = GlobalSettings::default();
+        let value = serde_json::json!(false);
+        assert!(set_setting_value(&mut settings, "emit_lifecycle_markers", &value).is_ok());
+        assert!(!settings.emit_lifecycle_markers);
+    }
+
+    #[test]
+    fn test_set_setting_value_emit_lifecycle_markers_true() {
+        let mut settings = GlobalSettings {
+            emit_lifecycle_markers: false,
+            ..GlobalSettings::default()
+        };
+        let value = serde_json::json!(true);
+        assert!(set_setting_value(&mut settings, "emit_lifecycle_markers", &value).is_ok());
+        assert!(settings.emit_lifecycle_markers);
+    }
+
+    #[test]
+    fn test_set_setting_value_emit_lifecycle_markers_invalid_type() {
+        let mut settings = GlobalSettings::default();
+        let value = serde_json::json!("yes");
+        assert!(set_setting_value(&mut settings, "emit_lifecycle_markers", &value).is_err());
+    }
+
+    #[test]
+    fn test_show_result_human_includes_lifecycle_markers() {
+        let settings = GlobalSettings::default();
+        let r = ShowResult {
+            settings: &settings,
+        };
+        let human = r.display_human();
+        assert!(
+            human.contains("emit_lifecycle_markers"),
+            "show result must include emit_lifecycle_markers"
+        );
     }
 }
