@@ -382,6 +382,9 @@ impl GcodeGenerator {
                 out.push_str(&format!(";Z:{:.3}\n", layer.z));
                 out.push_str(&format!(";HEIGHT:{:.3}\n", params.layer_height));
                 out.push_str(";BEFORE_LAYER_CHANGE\n");
+                // Bare Z-value comment (`;0.200`) matches the OrcaSlicer / PrusaSlicer lifecycle
+                // format; it intentionally differs from the `;Z:` label above and is used by
+                // post-processing scripts that parse standalone numeric layer markers.
                 out.push_str(&format!(";{:.3}\n", layer.z));
                 // Reset extruder position at layer start
                 out.push_str(&format!("{}\n", self.dialect.reset_extruder()));
@@ -391,6 +394,7 @@ impl GcodeGenerator {
                     self.dialect.move_z(layer.z, TRAVEL_SPEED_MM_MIN)
                 ));
                 out.push_str(";AFTER_LAYER_CHANGE\n");
+                // Same bare Z-value convention after the layer change (see note above).
                 out.push_str(&format!(";{:.3}\n", layer.z));
             } else {
                 out.push_str(&format!("; layer z={:.3}\n", layer.z));

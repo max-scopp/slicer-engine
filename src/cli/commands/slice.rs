@@ -196,10 +196,11 @@ impl SliceCommand {
         // Generate G-code using the selected firmware flavor; route dialect
         // warnings through the emitter's warn channel
         let emitter_for_warn = emitter.clone();
-        let emit_lifecycle_markers = if self.lifecycle_markers {
-            true
-        } else if self.no_lifecycle_markers {
+        // Resolve lifecycle markers: --no-lifecycle-markers > --lifecycle-markers > global settings > default (true)
+        let emit_lifecycle_markers = if self.no_lifecycle_markers {
             false
+        } else if self.lifecycle_markers {
+            true
         } else {
             settings.emit_lifecycle_markers
         };
