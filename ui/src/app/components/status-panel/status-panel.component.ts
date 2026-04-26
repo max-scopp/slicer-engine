@@ -15,7 +15,7 @@ export class StatusPanelComponent {
   readonly selectedFile = this.slicer.selectedFile;
 
   slice(): void {
-    this.slicer.slice();
+    void this.slicer.slice();
   }
 
   reset(): void {
