@@ -127,6 +127,12 @@ Workflows are triggered on push to `main` and `develop` branches, and on pull re
 
 ## License
 
+## License
+
+**LEGAL NOTICE:** This is an interim state. Until an official license is decided and published, all rights are reserved and no use, reproduction, modification, or distribution of this software is permitted without explicit written authorization.
+
+However, this is only a temporary measure while I chart a path forward with the code. The final license will be heavily influenced by community opinions and needs. I welcome your input and feedback on what licensing approach would best serve the community and the project's goals.
+
 TBD
 
 ## Contributing
