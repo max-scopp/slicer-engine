@@ -327,77 +327,125 @@ fn execute_set(args: &SetArgs) -> Result<(), Box<dyn std::error::Error>> {
 
 // ── Helper functions ──────────────────────────────────────────────────────────
 
-/// Get a setting value by key from global settings
+/// Navigate a `serde_json::Value` using a dot-separated path (e.g. `"params.layer_height"`).
+fn get_json_path<'a>(val: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+    let mut current = val;
+    for segment in path.split('.') {
+        current = current.get(segment)?;
+    }
+    Some(current)
+}
+
+/// Set a value at a dot-separated path inside a mutable `serde_json::Value`.
+///
+/// Intermediate objects must already exist.  The final key is inserted or
+/// replaced.  Returns an error if any intermediate segment is not an object.
+fn set_json_path(
+    val: &mut serde_json::Value,
+    path: &str,
+    new_val: serde_json::Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let segments: Vec<&str> = path.split('.').collect();
+    let (parents, last) = segments.split_at(segments.len().saturating_sub(1));
+    let last_key = last
+        .first()
+        .copied()
+        .ok_or("Setting path must not be empty")?;
+
+    let mut current = val;
+    for seg in parents {
+        current = current
+            .get_mut(*seg)
+            .ok_or_else(|| format!("Path segment '{}' not found in settings", seg))?;
+    }
+
+    let obj = current
+        .as_object_mut()
+        .ok_or("Cannot set value: parent is not a JSON object")?;
+    obj.insert(last_key.to_string(), new_val);
+    Ok(())
+}
+
+/// Resolve a user-supplied key to a full dot-separated path in `GlobalSettings`.
+///
+/// Supports both full paths (`params.layer_height`) and flat shorthand aliases
+/// (`layer_height` → `params.layer_height`).  Returns the resolved path or an
+/// error if the key does not exist in the settings object.
+fn resolve_key_path(
+    val: &serde_json::Value,
+    key: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    // Try the key directly
+    if get_json_path(val, key).is_some() {
+        return Ok(key.to_string());
+    }
+
+    // Try under the "params." prefix for backward-compatible flat keys
+    let nested = format!("params.{}", key);
+    if get_json_path(val, &nested).is_some() {
+        return Ok(nested);
+    }
+
+    Err(format!("Unknown setting key: '{}'", key).into())
+}
+
+/// Get a setting value by key from global settings.
+///
+/// Accepts full dot-separated paths (e.g. `"params.layer_height"`) or flat
+/// shorthand aliases (e.g. `"layer_height"`).
 fn get_setting_value(
     settings: &GlobalSettings,
     key: &str,
 ) -> Result<Value, Box<dyn std::error::Error>> {
-    match key {
-        "layer_height" => Ok(Value::Number(
-            serde_json::Number::from_f64(settings.params.layer_height)
-                .ok_or("Invalid float value")?,
-        )),
-        "wall_thickness" => Ok(Value::Number(
-            serde_json::Number::from_f64(settings.params.wall_thickness)
-                .ok_or("Invalid float value")?,
-        )),
-        "infill_density" => Ok(Value::Number(
-            serde_json::Number::from_f64(settings.params.infill_density)
-                .ok_or("Invalid float value")?,
-        )),
-        "print_speed" => Ok(Value::Number(
-            serde_json::Number::from_f64(settings.params.print_speed)
-                .ok_or("Invalid float value")?,
-        )),
-        "nozzle_temp" => Ok(Value::Number(
-            serde_json::Number::from_f64(settings.params.nozzle_temp)
-                .ok_or("Invalid float value")?,
-        )),
-        "bed_temp" => Ok(Value::Number(
-            serde_json::Number::from_f64(settings.params.bed_temp).ok_or("Invalid float value")?,
-        )),
-        "gcode_flavor" => Ok(Value::String(settings.gcode_flavor.clone())),
-        _ => Err(format!("Unknown setting key: {}", key).into()),
-    }
+    let val = serde_json::to_value(settings)?;
+    let resolved = resolve_key_path(&val, key)?;
+    Ok(get_json_path(&val, &resolved)
+        .expect("key was just resolved; must exist")
+        .clone())
 }
 
-/// Set a setting value by key in global settings
+/// Set a setting value by key in global settings.
+///
+/// Accepts full dot-separated paths (e.g. `"params.layer_height"`) or flat
+/// shorthand aliases (e.g. `"layer_height"`).  Semantic validation is applied
+/// for fields that require it (`infill_density` bounds, `gcode_flavor` enum).
 fn set_setting_value(
     settings: &mut GlobalSettings,
     key: &str,
     value: &Value,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // gcode_flavor is a string setting; handle it before numeric parsing
-    if key == "gcode_flavor" {
-        let flavor = value
-            .as_str()
-            .ok_or("Value for 'gcode_flavor' must be a string")?;
-        // Validate it's a known flavor before persisting
-        flavor
-            .parse::<crate::gcode::GcodeFlavor>()
-            .map_err(|e| format!("Invalid gcode_flavor: {}", e))?;
-        settings.gcode_flavor = flavor.to_string();
-        return Ok(());
-    }
+    let mut val = serde_json::to_value(&*settings)?;
+    let resolved = resolve_key_path(&val, key)?;
 
-    let float_value = value
-        .as_f64()
-        .ok_or_else(|| format!("Value for '{}' must be a number", key))?;
-
-    match key {
-        "layer_height" => settings.params.layer_height = float_value,
-        "wall_thickness" => settings.params.wall_thickness = float_value,
+    // Semantic validation for special fields (last segment of the resolved path)
+    let leaf = resolved.rsplit('.').next().unwrap_or(&resolved);
+    match leaf {
+        "gcode_flavor" => {
+            let flavor = value
+                .as_str()
+                .ok_or("Value for 'gcode_flavor' must be a string")?;
+            flavor
+                .parse::<crate::gcode::GcodeFlavor>()
+                .map_err(|e| format!("Invalid gcode_flavor: {}", e))?;
+        }
         "infill_density" => {
-            if !(0.0..=1.0).contains(&float_value) {
+            let v = value
+                .as_f64()
+                .ok_or("Value for 'infill_density' must be a number")?;
+            if !(0.0..=1.0).contains(&v) {
                 return Err("infill_density must be between 0.0 and 1.0".into());
             }
-            settings.params.infill_density = float_value;
         }
-        "print_speed" => settings.params.print_speed = float_value,
-        "nozzle_temp" => settings.params.nozzle_temp = float_value,
-        "bed_temp" => settings.params.bed_temp = float_value,
-        _ => return Err(format!("Unknown setting key: {}", key).into()),
+        _ => {
+            // All other fields must be valid JSON (type checked by deserialisation below)
+        }
     }
+
+    set_json_path(&mut val, &resolved, value.clone())?;
+
+    // Deserialise back — this catches type mismatches (e.g. string for a float field)
+    *settings = serde_json::from_value(val)
+        .map_err(|e| format!("Invalid value for '{}': {}", key, e))?;
     Ok(())
 }
 
@@ -666,5 +714,86 @@ mod tests {
         let mut settings = GlobalSettings::default();
         let value = serde_json::json!(0.2);
         assert!(set_setting_value(&mut settings, "invalid_key", &value).is_err());
+    }
+
+    // ── Dotted-path GET ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_get_setting_value_dotted_params_layer_height() {
+        let settings = GlobalSettings::default();
+        let value = get_setting_value(&settings, "params.layer_height").unwrap();
+        assert_eq!(value.as_f64().unwrap(), 0.2);
+    }
+
+    #[test]
+    fn test_get_setting_value_dotted_params_nozzle_temp() {
+        let settings = GlobalSettings::default();
+        let value = get_setting_value(&settings, "params.nozzle_temp").unwrap();
+        assert_eq!(value.as_f64().unwrap(), 210.0);
+    }
+
+    #[test]
+    fn test_get_setting_value_gcode_flavor_direct() {
+        let settings = GlobalSettings::default();
+        let value = get_setting_value(&settings, "gcode_flavor").unwrap();
+        assert_eq!(value.as_str().unwrap(), "marlin");
+    }
+
+    #[test]
+    fn test_get_setting_value_flat_alias_equals_dotted() {
+        let settings = GlobalSettings::default();
+        let flat = get_setting_value(&settings, "layer_height").unwrap();
+        let dotted = get_setting_value(&settings, "params.layer_height").unwrap();
+        assert_eq!(flat, dotted);
+    }
+
+    // ── Dotted-path SET ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_set_setting_value_dotted_params_layer_height() {
+        let mut settings = GlobalSettings::default();
+        let value = serde_json::json!(0.05);
+        assert!(set_setting_value(&mut settings, "params.layer_height", &value).is_ok());
+        assert_eq!(settings.params.layer_height, 0.05);
+    }
+
+    #[test]
+    fn test_set_setting_value_dotted_params_infill_density_valid() {
+        let mut settings = GlobalSettings::default();
+        let value = serde_json::json!(0.6);
+        assert!(set_setting_value(&mut settings, "params.infill_density", &value).is_ok());
+        assert_eq!(settings.params.infill_density, 0.6);
+    }
+
+    #[test]
+    fn test_set_setting_value_dotted_params_infill_density_invalid() {
+        let mut settings = GlobalSettings::default();
+        let value = serde_json::json!(2.0);
+        assert!(set_setting_value(&mut settings, "params.infill_density", &value).is_err());
+    }
+
+    #[test]
+    fn test_set_setting_value_dotted_gcode_flavor_valid() {
+        let mut settings = GlobalSettings::default();
+        let value = serde_json::json!("klipper");
+        assert!(set_setting_value(&mut settings, "gcode_flavor", &value).is_ok());
+        assert_eq!(settings.gcode_flavor, "klipper");
+    }
+
+    #[test]
+    fn test_set_setting_value_dotted_gcode_flavor_invalid() {
+        let mut settings = GlobalSettings::default();
+        let value = serde_json::json!("unknown_flavor");
+        assert!(set_setting_value(&mut settings, "gcode_flavor", &value).is_err());
+    }
+
+    #[test]
+    fn test_set_setting_value_flat_and_dotted_equivalent() {
+        let mut s1 = GlobalSettings::default();
+        let mut s2 = GlobalSettings::default();
+        let v = serde_json::json!(0.12);
+        set_setting_value(&mut s1, "layer_height", &v).unwrap();
+        set_setting_value(&mut s2, "params.layer_height", &v).unwrap();
+        assert_eq!(s1.params.layer_height, s2.params.layer_height);
     }
 }
