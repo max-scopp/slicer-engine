@@ -1,4 +1,4 @@
-#//! G-code generation from sliced layers.
+//! G-code generation from sliced layers.
 //!
 //! Converts a `Vec<SliceLayer>` and a `SlicingParams` into a G-code string
 //! suitable for FFF (fused-filament fabrication) printers.
