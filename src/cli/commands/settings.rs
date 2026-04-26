@@ -274,7 +274,9 @@ fn execute_show(args: &ShowArgs) -> Result<(), Box<dyn std::error::Error>> {
     let emitter = Emitter::new(format);
     let settings = load_settings()?;
 
-    emitter.emit(&ShowResult { settings: &settings });
+    emitter.emit(&ShowResult {
+        settings: &settings,
+    });
 
     Ok(())
 }
@@ -307,8 +309,8 @@ fn execute_set(args: &SetArgs) -> Result<(), Box<dyn std::error::Error>> {
     let emitter = Emitter::new(format);
 
     // Parse the value as JSON, falling back to string
-    let parsed_value: Value = serde_json::from_str(&args.value)
-        .unwrap_or_else(|_| Value::String(args.value.clone()));
+    let parsed_value: Value =
+        serde_json::from_str(&args.value).unwrap_or_else(|_| Value::String(args.value.clone()));
 
     // Load current settings, apply the change, and save
     let mut settings = load_settings()?;
@@ -326,7 +328,10 @@ fn execute_set(args: &SetArgs) -> Result<(), Box<dyn std::error::Error>> {
 // ── Helper functions ──────────────────────────────────────────────────────────
 
 /// Get a setting value by key from global settings
-fn get_setting_value(settings: &GlobalSettings, key: &str) -> Result<Value, Box<dyn std::error::Error>> {
+fn get_setting_value(
+    settings: &GlobalSettings,
+    key: &str,
+) -> Result<Value, Box<dyn std::error::Error>> {
     match key {
         "layer_height" => Ok(Value::Number(
             serde_json::Number::from_f64(settings.params.layer_height)
@@ -349,8 +354,7 @@ fn get_setting_value(settings: &GlobalSettings, key: &str) -> Result<Value, Box<
                 .ok_or("Invalid float value")?,
         )),
         "bed_temp" => Ok(Value::Number(
-            serde_json::Number::from_f64(settings.params.bed_temp)
-                .ok_or("Invalid float value")?,
+            serde_json::Number::from_f64(settings.params.bed_temp).ok_or("Invalid float value")?,
         )),
         _ => Err(format!("Unknown setting key: {}", key).into()),
     }
@@ -395,7 +399,7 @@ impl EmitPayload for ShowResult<'_> {
     }
 
     fn display_human(&self) -> String {
-        vec![
+        [
             "Global Settings:".to_string(),
             format!("  layer_height: {} mm", self.settings.params.layer_height),
             format!(
@@ -414,7 +418,7 @@ impl EmitPayload for ShowResult<'_> {
     }
 
     fn to_json(&self) -> Value {
-        serde_json::to_value(&self.settings).unwrap_or(Value::Null)
+        serde_json::to_value(self.settings).unwrap_or(Value::Null)
     }
 }
 

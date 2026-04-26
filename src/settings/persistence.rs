@@ -3,11 +3,11 @@
 use std::fs;
 use std::path::PathBuf;
 
-use dirs;
 use crate::settings::params::GlobalSettings;
+use dirs;
 
 /// Determines the configuration directory for slicer-engine settings.
-/// 
+///
 /// Uses the `dirs` crate to get platform-specific config directories:
 /// - Windows: `%APPDATA%\slicer-engine` (e.g., `C:\Users\User\AppData\Roaming\slicer-engine`)
 /// - macOS: `~/Library/Application Support/slicer-engine`
@@ -45,7 +45,9 @@ pub fn load_settings() -> Result<GlobalSettings, Box<dyn std::error::Error>> {
 /// Creates the config directory if it doesn't exist.
 pub fn save_settings(settings: &GlobalSettings) -> Result<(), Box<dyn std::error::Error>> {
     let path = settings_file();
-    let dir = path.parent().expect("settings file should have parent directory");
+    let dir = path
+        .parent()
+        .expect("settings file should have parent directory");
 
     // Create config directory if it doesn't exist
     if !dir.exists() {
