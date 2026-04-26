@@ -2,7 +2,7 @@ import { Injectable, inject, signal, effect } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { DEFAULT_SETTINGS, SliceSettings } from '../models/slice-settings.model';
 import { WebSocketService } from './websocket.service';
-import { ServerMessage } from '../../generated/ws-protocol';
+import { ServerMessage } from '../../generated/schemas/slicer-engine-ws-server-message-v1';
 
 export type SlicerStatus = 'idle' | 'ready' | 'slicing' | 'done' | 'error';
 
@@ -37,28 +37,28 @@ export class SlicerService {
 
   private handleMessage(msg: ServerMessage): void {
     switch (msg.type) {
-      case 'connected':
+      case 'Connected':
         this.outputLog.update(l => [...l, `[ws] Connected to slicer-engine v${msg.version}`]);
         break;
-      case 'log':
+      case 'Log':
         this.outputLog.update(l => [...l, `[${msg.level}] ${msg.message}`]);
         break;
-      case 'progress':
+      case 'Progress':
         this.outputLog.update(l => [
           ...l,
-          `Progress: ${msg.currentLayer} / ${msg.totalLayers} layers`,
+          `Progress: ${msg.current_layer} / ${msg.total_layers} layers`,
         ]);
         break;
-      case 'sliceComplete':
+      case 'SliceComplete':
         this.status.set('done');
         this.outputLog.update(l => [
           ...l,
-          `Slice complete — ${msg.layerCount} layers generated.`,
+          `Slice complete — ${msg.layer_count} layers generated.`,
           'Downloading G-code…',
         ]);
         this.downloadGcode(msg.gcode);
         break;
-      case 'error':
+      case 'Error':
         this.status.set('error');
         this.outputLog.update(l => [...l, `[error] ${msg.message}`]);
         break;
@@ -97,19 +97,19 @@ export class SlicerService {
     this.status.set('slicing');
     this.outputLog.update(log => [...log, 'Reading file…']);
 
-    const stlB64 = await this.readFileAsBase64(file);
+    const stl_b64 = await this.readFileAsBase64(file);
     const s = this.settings();
 
     this.outputLog.update(log => [...log, 'Sending to server over WebSocket…']);
     this.ws.send({
-      type: 'slice',
-      stlB64,
+      type: 'Slice',
+      stl_b64,
       settings: {
-        layerHeight: s.layerHeight,
-        printSpeed: s.printSpeed,
-        nozzleTemp: s.nozzleTemp,
-        bedTemp: s.bedTemp,
-        gcodeFlavor: s.gcodeFlavor,
+        layer_height: s.layerHeight,
+        print_speed: s.printSpeed,
+        nozzle_temp: s.nozzleTemp,
+        bed_temp: s.bedTemp,
+        gcode_flavor: s.gcodeFlavor,
       },
     });
   }
@@ -131,7 +131,7 @@ export class SlicerService {
     this.selectedFile.set(null);
     this.status.set('idle');
     this.outputLog.set([]);
-    this.ws.send({ type: 'reset' });
+    this.ws.send({ type: 'Reset' });
   }
 }
 

@@ -7,7 +7,10 @@
     "build": "ng build",
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
-    "codegen": "cargo run --manifest-path ../Cargo.toml --bin gen_ws_schemas > src/generated/ws-protocol.ts"
+    "gen-schemas": "cd .. && cargo run --release -- gen-schemas --output-dir ui/schemas",
+    "gen-types": "npx json-schema-to-typescript --declareExternallyReferenced -i schemas/*.json -o src/generated/schemas",
+    "gen": "npm run gen-schemas && npm run gen-types",
+    "postinstall": "npm run gen"
   },
   "private": true,
   "packageManager": "npm@10.8.2",
@@ -25,6 +28,7 @@
     "@angular/build": "^21.2.8",
     "@angular/cli": "^21.2.8",
     "@angular/compiler-cli": "^21.2.0",
+    "json-schema-to-typescript": "^15.0.4",
     "jsdom": "^28.0.0",
     "prettier": "^3.8.1",
     "typescript": "~5.9.2",

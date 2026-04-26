@@ -1,14 +1,13 @@
-//! WebSocket protocol message types shared between the server and the
-//! TypeScript code-generation binary (`gen-ws-schemas`).
+//! WebSocket protocol message types shared between the server and the browser.
 //!
 //! **All** browser ↔ server communication goes over a single `/ws` endpoint.
 //! Messages are JSON objects with a discriminant `"type"` field (snake_case).
 
 use serde::{Deserialize, Serialize};
+use schemars::JsonSchema;
 
 /// Slicing parameters sent from the browser with a `slice` request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WsSlicingParams {
     /// Layer height in mm (e.g. 0.2).
     pub layer_height: f64,
@@ -23,8 +22,8 @@ pub struct WsSlicingParams {
 }
 
 /// Messages sent **from the browser to the server**.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
 pub enum ClientMessage {
     /// Start a slice job.  `stl_b64` is the base64-encoded STL file bytes.
     Slice {
@@ -36,8 +35,8 @@ pub enum ClientMessage {
 }
 
 /// Messages sent **from the server to the browser**.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
 pub enum ServerMessage {
     /// Sent once immediately after the WebSocket handshake completes.
     Connected { version: String },
@@ -49,7 +48,10 @@ pub enum ServerMessage {
         total_layers: usize,
     },
     /// Slice finished successfully; `gcode` is the full G-code output.
-    SliceComplete { gcode: String, layer_count: usize },
+    SliceComplete {
+        gcode: String,
+        layer_count: usize,
+    },
     /// A fatal error occurred during processing.
     Error { message: String },
 }
