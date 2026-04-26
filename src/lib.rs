@@ -13,6 +13,7 @@
 
 pub mod cli;
 pub mod core;
+pub mod gcode;
 pub mod mesh;
 pub mod settings;
 
