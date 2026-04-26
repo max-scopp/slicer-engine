@@ -1,103 +1,86 @@
 # Slicer Engine
 
-A high-performance 3D model slicer engine written in Rust, powered by [Clipper2](https://github.com/AngusJohnson/Clipper2) for polygon clipping operations.
-
-## Features
-
-- Cross-platform support (Windows, macOS, WebAssembly)
-- Optimized build pipeline with multi-target support
-- Leverages Clipper2 for robust geometric operations
-
-## Requirements
-
-- Rust 1.70+ ([Install Rust](https://rustup.rs/))
-- For WASM builds: `wasm-pack` ([Install wasm-pack](https://rustwasm.org/wasm-pack/installer/))
+A high-performance 3D model slicer engine written in Rust. Converts STL meshes into layer-by-layer slices and generates G-code for FFF 3D printers.
 
 ## Quick Start
 
 ```bash
-cd slicer-engine
-cargo build --release      # Release build
-cargo run --release        # Run the application
-cargo test --release       # Run tests
-cargo fmt                  # Format code
-cargo clippy               # Lint code
-```
-
-## Building
-
-### Native Build (Debug)
-
-```bash
-cargo build
-```
-
-### Native Build (Release)
-
-```bash
+# Build
 cargo build --release
+
+# Slice a model
+cargo run --release -- slice --input model.stl --output output.gcode
+
+# Validate settings
+cargo run --release -- settings validate --global global.json --object object.json
 ```
 
-### Windows Build
+## Pipeline
 
-```bash
-cargo build --release --target x86_64-pc-windows-msvc
+```mermaid
+graph LR
+    A["📄 STL File"] --> B["🔍 Load Mesh"]
+    B --> C["✂️ Slice Layers"]
+    C --> D["🖨️ Generate G-code"]
+    D --> E["📤 Output"]
+    
+    F["⚙️ Settings JSON"] -.config.-> C
+    F -.config.-> D
+    
+    style A fill:#e1f5ff
+    style E fill:#c8e6c9
+    style C fill:#fff9c4
+    style D fill:#f8bbd0
 ```
 
-### macOS Build
+## Documentation
 
-```bash
-# Intel Mac
-cargo build --release --target x86_64-apple-darwin
-
-# Apple Silicon
-cargo build --release --target aarch64-apple-darwin
-```
-
-### WebAssembly Build
-
-```bash
-wasm-pack build --target web --release
-```
-
-### Using Makefile (Linux/macOS)
-
-```bash
-make build-release       # Release build
-make build-windows       # Windows target
-make build-macos         # macOS targets
-make build-wasm          # WebAssembly
-make test                # Run tests
-make lint                # Run clippy
-make fmt                 # Format code
-```
+- **[Mesh Operations](src/mesh/README.md)** – Loading STL, mesh types
+- **[Slicing Algorithm](src/SLICING.md)** – How slicing works (with diagrams)
+- **[Settings](src/settings/README.md)** – Configuration parameters
+- **[CLI Commands](src/cli/README.md)** – Usage reference
 
 ## Project Structure
 
 ```
-slicer-engine/
-├── src/
-│   └── main.rs          # Application entry point
-├── Cargo.toml           # Rust package manifest
-├── Makefile             # Build targets
-└── .github/workflows/   # CI/CD pipelines
+src/
+├── core.rs          # Slicing algorithm
+├── gcode.rs         # G-code emission
+├── mesh/            # STL loading & types
+├── settings/        # Parameters & validation
+└── cli/             # Command interface
 ```
 
-## Running
+## Build Targets
 
 ```bash
-cargo run --release
+cargo build --release                    # Native
+cargo build --release --target x86_64-pc-windows-msvc     # Windows
+cargo build --release --target x86_64-apple-darwin        # macOS Intel
+cargo build --release --target aarch64-apple-darwin       # macOS ARM
+wasm-pack build --target web --release                    # WebAssembly
 ```
 
-## CLI Commands
-
-The slicer-engine provides a user-friendly command-line interface for slicing 3D models.
-
-### General Help
+## Development
 
 ```bash
-# Show available commands and options
-cargo run --release -- --help
+cargo test --release    # Run tests
+cargo fmt && cargo clippy -- -D warnings
+```
+
+## Features
+
+- ✓ Cross-platform (Windows, macOS, WASM)
+- ✓ STL loading (ASCII & binary)
+- ✓ Triangle-plane intersection slicing
+- ✓ G-code generation with temperature control
+- ✓ Settings validation & per-object overrides
+- ✓ Powered by [Clipper2](https://github.com/AngusJohnson/Clipper2)
+
+---
+
+**License:** See LICENSE  
+**Coordinates:** All dimensions in millimeters, Z-axis is vertical
 
 # Show version
 cargo run --release -- --version
