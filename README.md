@@ -117,8 +117,7 @@ cargo run --release -- info --verbose
 # JSON format
 cargo run --release -- info --output-format json
 
-# CSV format
-cargo run --release -- info --output-format csv
+
 ```
 
 ### Slice Command

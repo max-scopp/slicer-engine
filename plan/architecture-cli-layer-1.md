@@ -76,7 +76,7 @@ This implementation plan defines the architecture and phased execution for addin
 
 | Task ID | Description | Dependencies | Acceptance Criteria |
 |---------|-------------|--------------|-------------------|
-| TASK-3.1 | Implement `OutputFormatter` trait in `src/cli/output.rs` | TASK-1.5 | Trait supports JSON, human-readable, and CSV output |
+| TASK-3.1 | Implement `OutputFormatter` trait in `src/cli/output.rs` | TASK-1.5 | Trait supports JSON and human-readable output |
 | TASK-3.2 | Create `CliError` enum in `src/cli/error.rs` with error categories | TASK-1.4 | Covers: IO, parsing, validation, slicing errors |
 | TASK-3.3 | Implement Display and From conversions for CliError | TASK-3.2 | Converts std::io::Error, clipper2 errors automatically |
 | TASK-3.4 | Add `--output-format` flag to CLI | TASK-3.1 | Commands accept output format parameter |
@@ -172,7 +172,7 @@ src/
 clap = { version = "4.5", features = ["derive"] }
 anyhow = "1.0"
 serde_json = { version = "1.0", optional = true }
-csv = { version = "1.3", optional = true }
+
 ```
 
 ### Rationale
@@ -180,7 +180,6 @@ csv = { version = "1.3", optional = true }
 - **clap**: Industry-standard CLI argument parser with derive macros for ergonomic command definition
 - **anyhow**: Flexible error handling with context chains
 - **serde_json**: Optional JSON output formatting
-- **csv**: Optional CSV output for layer data
 
 ## 5. API Contract
 
@@ -193,7 +192,7 @@ CliArgs {
         input: PathBuf,           // Path to 3D model file
         layer_height: f64,        // Vertical spacing between layers (mm)
         output: Option<PathBuf>,  // Output file path (default: auto-generated)
-        output_format: OutputFormat,  // JSON, GCode, CSV
+        output_format: OutputFormat,  // JSON, GCode
         verbose: bool,
     })
 }
@@ -210,7 +209,7 @@ CliArgs {
 | OBJ | Future | Backlog |
 | GCode | 4 | Planned |
 | JSON | 3 | Planned |
-| CSV | 3 | Planned |
+
 
 ## 6. Cross-Platform Considerations
 

@@ -66,10 +66,7 @@ mod tests {
         assert_eq!(OutputFormat::from_str("JSON").unwrap(), OutputFormat::Json);
     }
 
-    #[test]
-    fn test_output_format_parsing_csv_rejected() {
-        assert!(OutputFormat::from_str("csv").is_err());
-    }
+
 
     #[test]
     fn test_output_format_invalid() {

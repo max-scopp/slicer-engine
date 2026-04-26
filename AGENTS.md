@@ -50,7 +50,7 @@ src/
 │   │   ├── validation.rs  # Path/file validation
 │   │   ├── reader.rs      # File reader implementations
 │   │   └── writer.rs      # File writer implementations
-│   ├── output.rs          # Output formatting (JSON, GCode, CSV)
+│   ├── output.rs          # Output formatting (JSON, GCode)
 │   ├── error.rs           # CLI error types
 │   └── adapters.rs        # Library API adapters
 ├── core.rs                # Core data structures & operations
@@ -78,7 +78,7 @@ The CLI layer uses the **adapter pattern** to bridge the library API to user-fri
 
 - **Separation of Concerns**: CLI commands in `src/cli/` don't modify core library code
 - **Error Handling**: Custom `CliError` type provides user-friendly error messages
-- **Output Formatting**: Pluggable formatters support JSON, human-readable, and CSV outputs
+- **Output Formatting**: Pluggable formatters support JSON and human-readable outputs
 - **File I/O**: Dedicated `io/` submodule handles all file operations with validation
 - **Backward Compatibility**: Library API remains unchanged; CLI is purely additive
 
