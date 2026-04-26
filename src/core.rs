@@ -3,6 +3,7 @@
 use clipper2::*;
 
 use crate::mesh::types::{Mesh, Vertex};
+use crate::settings::params::SlicingParams;
 
 /// The role of an extrusion path, used to annotate G-code with `;TYPE:` comments
 /// and enable firmware features like Klipper adaptive acceleration by role.
@@ -182,6 +183,46 @@ pub fn slice_mesh(mesh: &Mesh, layer_height: f64) -> Vec<SliceLayer> {
     layers
 }
 
+/// Complete slicing pipeline: slice mesh and generate top/bottom surfaces.
+///
+/// This is a convenience function that combines the basic slicing with surface
+/// generation in one call, using parameters from `SlicingParams`.
+///
+/// # Arguments
+/// * `mesh` - The triangle mesh to slice
+/// * `params` - Slicing parameters including layer height, top/bottom layers, and surface angle
+///
+/// # Returns
+/// A `Vec<SliceLayer>` with perimeters and top/bottom surface infill.
+///
+/// # Example
+/// ```
+/// use slicer_engine::mesh::types::Mesh;
+/// use slicer_engine::settings::params::SlicingParams;
+/// use slicer_engine::core::slice_with_surfaces;
+///
+/// let mesh = Mesh::new(); // Load your mesh
+/// let params = SlicingParams::default();
+/// let layers = slice_with_surfaces(&mesh, &params);
+/// ```
+pub fn slice_with_surfaces(mesh: &Mesh, params: &SlicingParams) -> Vec<SliceLayer> {
+    // Basic slicing
+    let mut layers = slice_mesh(mesh, params.layer_height);
+
+    // Add top/bottom surfaces
+    if params.top_layers > 0 || params.bottom_layers > 0 {
+        generate_top_bottom_surfaces(
+            &mut layers,
+            params.top_layers,
+            params.bottom_layers,
+            params.layer_height,
+            params.surface_infill_angle,
+        );
+    }
+
+    layers
+}
+
 /// Collect all XY line segments produced by intersecting `mesh` with the
 /// horizontal plane at height `z`.
 fn collect_segments(mesh: &Mesh, z: f64) -> Vec<[(f64, f64); 2]> {
@@ -321,6 +362,7 @@ fn chain_segments(segments: Vec<[(f64, f64); 2]>) -> Vec<Vec<(f64, f64)>> {
 /// * `top_layers` - Number of solid layers at the top
 /// * `bottom_layers` - Number of solid layers at the bottom
 /// * `layer_height` - Layer height in mm for calculating infill spacing
+/// * `infill_angle` - Angle in degrees for infill lines (e.g., 45 for diagonal)
 ///
 /// # Surface Detection Algorithm
 /// - Bottom surfaces: First N layers from the bottom
@@ -331,6 +373,7 @@ pub fn generate_top_bottom_surfaces(
     top_layers: usize,
     bottom_layers: usize,
     layer_height: f64,
+    infill_angle: f64,
 ) {
     if layers.is_empty() || (top_layers == 0 && bottom_layers == 0) {
         return;
@@ -340,7 +383,12 @@ pub fn generate_top_bottom_surfaces(
 
     // Generate bottom surfaces for the first N layers
     for layer in layers.iter_mut().take(total.min(bottom_layers)) {
-        add_solid_infill_to_layer(layer, ExtrusionRole::BottomSurface, layer_height);
+        add_solid_infill_to_layer(
+            layer,
+            ExtrusionRole::BottomSurface,
+            layer_height,
+            infill_angle,
+        );
     }
 
     // Generate top surfaces for the last N layers
@@ -353,7 +401,7 @@ pub fn generate_top_bottom_surfaces(
     {
         // Skip layers in the bottom surface range to avoid duplicate surface marking
         if i >= bottom_layers {
-            add_solid_infill_to_layer(layer, ExtrusionRole::TopSurface, layer_height);
+            add_solid_infill_to_layer(layer, ExtrusionRole::TopSurface, layer_height, infill_angle);
         }
     }
 }
@@ -364,7 +412,7 @@ const SOLID_INFILL_EXTRUSION_WIDTH_MULTIPLIER: f64 = 1.2;
 
 /// Add solid infill pattern to a layer with the specified extrusion role.
 ///
-/// Generates a rectilinear (line) infill pattern at 45° angle within the
+/// Generates a rectilinear (line) infill pattern at the specified angle within the
 /// layer's contours. The infill lines are spaced based on a standard
 /// extrusion width derived from the layer height.
 ///
@@ -372,7 +420,13 @@ const SOLID_INFILL_EXTRUSION_WIDTH_MULTIPLIER: f64 = 1.2;
 /// * `layer` - The layer to add infill to
 /// * `role` - The extrusion role (TopSurface or BottomSurface)
 /// * `layer_height` - Layer height in mm, used to calculate line spacing
-fn add_solid_infill_to_layer(layer: &mut SliceLayer, role: ExtrusionRole, layer_height: f64) {
+/// * `infill_angle` - Angle in degrees for infill lines (e.g., 45 for diagonal)
+fn add_solid_infill_to_layer(
+    layer: &mut SliceLayer,
+    role: ExtrusionRole,
+    layer_height: f64,
+    infill_angle: f64,
+) {
     if layer.paths.is_empty() {
         return;
     }
@@ -380,8 +434,8 @@ fn add_solid_infill_to_layer(layer: &mut SliceLayer, role: ExtrusionRole, layer_
     // Calculate infill line spacing based on layer height
     let line_spacing = layer_height * SOLID_INFILL_EXTRUSION_WIDTH_MULTIPLIER;
 
-    // Generate infill lines at 45° angle
-    let infill_paths = generate_rectilinear_infill(&layer.paths, line_spacing, 45.0);
+    // Generate infill lines at specified angle
+    let infill_paths = generate_rectilinear_infill(&layer.paths, line_spacing, infill_angle);
 
     // Add infill paths to the layer
     for path in infill_paths {
@@ -656,7 +710,7 @@ mod tests {
     #[test]
     fn test_generate_top_bottom_surfaces_empty_layers() {
         let mut layers: Vec<SliceLayer> = vec![];
-        generate_top_bottom_surfaces(&mut layers, 3, 3, 0.2);
+        generate_top_bottom_surfaces(&mut layers, 3, 3, 0.2, 45.0);
         // Should handle empty input gracefully
         assert!(layers.is_empty());
     }
@@ -667,7 +721,7 @@ mod tests {
         let mut layers = slice_mesh(&mesh, 2.0);
         let original_count = layers.len();
 
-        generate_top_bottom_surfaces(&mut layers, 0, 0, 2.0);
+        generate_top_bottom_surfaces(&mut layers, 0, 0, 2.0, 45.0);
 
         // Layers should remain unchanged when both counts are 0
         assert_eq!(layers.len(), original_count);
@@ -680,7 +734,7 @@ mod tests {
         let original_paths_first = layers[0].paths.len();
 
         // Generate bottom surfaces for first 2 layers, top for last 2
-        generate_top_bottom_surfaces(&mut layers, 2, 2, 2.0);
+        generate_top_bottom_surfaces(&mut layers, 2, 2, 2.0, 45.0);
 
         // First layer should have more paths (original perimeters + infill)
         assert!(
@@ -695,7 +749,7 @@ mod tests {
         let mut layers = slice_mesh(&mesh, 2.0);
         let total = layers.len();
 
-        generate_top_bottom_surfaces(&mut layers, 2, 2, 2.0);
+        generate_top_bottom_surfaces(&mut layers, 2, 2, 2.0, 45.0);
 
         // Check that bottom layers have BottomSurface role
         for (i, layer) in layers.iter().take(2).enumerate() {
@@ -723,9 +777,35 @@ mod tests {
     #[test]
     fn test_add_solid_infill_to_empty_layer() {
         let mut layer = SliceLayer::new(1.0);
-        add_solid_infill_to_layer(&mut layer, ExtrusionRole::TopSurface, 0.2);
+        add_solid_infill_to_layer(&mut layer, ExtrusionRole::TopSurface, 0.2, 45.0);
         // Should handle empty layer gracefully
         assert!(layer.paths.is_empty());
+    }
+
+    #[test]
+    fn test_slice_with_surfaces() {
+        let mesh = make_cube_mesh();
+        let params = SlicingParams {
+            layer_height: 2.0,
+            top_layers: 2,
+            bottom_layers: 2,
+            surface_infill_angle: 45.0,
+            ..SlicingParams::default()
+        };
+
+        let layers = slice_with_surfaces(&mesh, &params);
+
+        // Should have layers
+        assert!(!layers.is_empty());
+
+        // First layer should have BottomSurface paths
+        assert!(layers[0].path_roles.contains(&ExtrusionRole::BottomSurface));
+
+        // Last layer should have TopSurface paths
+        let last_idx = layers.len() - 1;
+        assert!(layers[last_idx]
+            .path_roles
+            .contains(&ExtrusionRole::TopSurface));
     }
 
     #[test]

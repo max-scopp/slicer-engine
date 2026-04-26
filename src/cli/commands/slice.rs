@@ -236,8 +236,8 @@ impl SliceCommand {
         if top_layers > 0 || bottom_layers > 0 {
             if self.verbose {
                 emitter.log_debug(&format!(
-                    "generating surfaces (top: {}, bottom: {})",
-                    top_layers, bottom_layers
+                    "generating surfaces (top: {}, bottom: {}, angle: {}°)",
+                    top_layers, bottom_layers, slice_params.surface_infill_angle
                 ));
             }
             crate::core::generate_top_bottom_surfaces(
@@ -245,6 +245,7 @@ impl SliceCommand {
                 top_layers,
                 bottom_layers,
                 layer_height,
+                slice_params.surface_infill_angle,
             );
         }
 
