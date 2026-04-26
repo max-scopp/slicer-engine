@@ -36,6 +36,10 @@
 //! assert!(gcode.contains("SET_VELOCITY_LIMIT"));
 //! ```
 
+pub mod dialects;
+
+pub use dialects::{KlipperDialect, MarlinDialect};
+
 use crate::core::SliceLayer;
 use crate::settings::params::SlicingParams;
 use std::str::FromStr;
@@ -122,6 +126,11 @@ impl std::fmt::Display for GcodeFlavor {
 /// overriding the relevant default methods or by exposing extra methods directly
 /// on the concrete struct.
 ///
+/// Use [`GcodeDialect::unsupported_commands`] to advertise commands that this
+/// dialect cannot handle natively; the [`GcodeGenerator`] will emit a warning
+/// via its registered warn function before falling back to the standard
+/// implementation.
+///
 /// All dimensional values use millimetres; speeds use **mm/min** (the native
 /// unit for G-code `F` parameters).
 pub trait GcodeDialect: Send + Sync {
@@ -138,6 +147,19 @@ pub trait GcodeDialect: Send + Sync {
     ///
     /// Typically includes cooling, final retract, nozzle park, and motor-off.
     fn end_script(&self) -> Vec<String>;
+
+    /// List of command identifiers not natively supported by this dialect.
+    ///
+    /// When [`GcodeGenerator`] encounters a command in this list it emits a
+    /// warning via the registered warn function before falling back to the
+    /// default standard G-code implementation.
+    ///
+    /// Command names should correspond to the method names on this trait
+    /// (e.g. `"set_fan_speed"`, `"set_nozzle_temp"`).  Returns an empty slice
+    /// by default — i.e. all commands are assumed supported.
+    fn unsupported_commands(&self) -> &'static [&'static str] {
+        &[]
+    }
 
     /// Format a standalone comment line.
     fn comment(&self, text: &str) -> String {
@@ -171,10 +193,7 @@ pub trait GcodeDialect: Send + Sync {
     /// Move to `(x, y)` while extruding filament to absolute E position `e`
     /// at `speed_mm_min` mm/min.
     fn move_extrude(&self, x: f64, y: f64, e: f64, speed_mm_min: f64) -> String {
-        format!(
-            "G1 X{:.3} Y{:.3} E{:.5} F{:.0}",
-            x, y, e, speed_mm_min
-        )
+        format!("G1 X{:.3} Y{:.3} E{:.5} F{:.0}", x, y, e, speed_mm_min)
     }
 
     /// Move the Z axis to `z` at `speed_mm_min` mm/min (no extrusion).
@@ -218,138 +237,24 @@ pub trait GcodeDialect: Send + Sync {
     }
 }
 
-// ── Marlin dialect ─────────────────────────────────────────────────────────────
-
-/// Marlin firmware G-code dialect.
-///
-/// Targets maximum compatibility with consumer FDM printers.  Uses the
-/// standard RepRap M-command set without any firmware-specific extensions.
-pub struct MarlinDialect;
-
-impl GcodeDialect for MarlinDialect {
-    fn flavor_name(&self) -> &'static str {
-        "Marlin"
-    }
-
-    fn start_script(&self, params: &SlicingParams) -> Vec<String> {
-        vec![
-            "G21 ; millimetres".to_string(),
-            "G90 ; absolute positioning".to_string(),
-            "M82 ; extruder absolute mode".to_string(),
-            format!("M104 S{:.0} ; set nozzle temperature", params.nozzle_temp),
-            format!("M140 S{:.0} ; set bed temperature", params.bed_temp),
-            "G28 ; home all axes".to_string(),
-            format!(
-                "M109 S{:.0} ; wait for nozzle temperature",
-                params.nozzle_temp
-            ),
-            format!("M190 S{:.0} ; wait for bed temperature", params.bed_temp),
-            "G92 E0 ; reset extruder".to_string(),
-        ]
-    }
-
-    fn end_script(&self) -> Vec<String> {
-        vec![
-            "; end of print".to_string(),
-            "G91 ; relative positioning".to_string(),
-            "G1 E-2 F3000 ; final retract".to_string(),
-            "G1 Z5 F3000 ; lift nozzle".to_string(),
-            "G90 ; absolute positioning".to_string(),
-            "G28 X0 Y0 ; park".to_string(),
-            "M104 S0 ; nozzle off".to_string(),
-            "M140 S0 ; bed off".to_string(),
-            "M84 ; disable motors".to_string(),
-        ]
-    }
-}
-
-// ── Klipper dialect ────────────────────────────────────────────────────────────
-
-/// Klipper firmware G-code dialect.
-///
-/// Extends the standard command set with Klipper-specific commands:
-/// - [`KlipperDialect::set_velocity_limit`] — runtime velocity/acceleration cap
-/// - [`KlipperDialect::set_pressure_advance`] — pressure advance tuning
-/// - [`KlipperDialect::call_macro`] — invoke a named Klipper macro
-///
-/// The start script automatically applies `SET_VELOCITY_LIMIT` based on the
-/// configured print speed.
-pub struct KlipperDialect;
-
-impl KlipperDialect {
-    /// Emit a `SET_VELOCITY_LIMIT` command.
-    ///
-    /// Klipper uses this to configure the printer's motion system at runtime,
-    /// which is more flexible than compile-time Marlin firmware limits.
-    pub fn set_velocity_limit(&self, velocity: f64, accel: f64) -> String {
-        format!(
-            "SET_VELOCITY_LIMIT VELOCITY={:.0} ACCEL={:.0}",
-            velocity, accel
-        )
-    }
-
-    /// Emit a `SET_PRESSURE_ADVANCE` command.
-    ///
-    /// Pressure advance compensates for filament compression in the hotend,
-    /// improving corner quality at high speeds.
-    pub fn set_pressure_advance(&self, value: f64) -> String {
-        format!("SET_PRESSURE_ADVANCE ADVANCE={:.4}", value)
-    }
-
-    /// Invoke a named Klipper macro (e.g. `PRINT_START`, `PRINT_END`).
-    ///
-    /// The name is upper-cased to match Klipper macro naming conventions.
-    pub fn call_macro(&self, name: &str) -> String {
-        name.to_uppercase()
-    }
-}
-
-impl GcodeDialect for KlipperDialect {
-    fn flavor_name(&self) -> &'static str {
-        "Klipper"
-    }
-
-    fn start_script(&self, params: &SlicingParams) -> Vec<String> {
-        vec![
-            "G21 ; millimetres".to_string(),
-            "G90 ; absolute positioning".to_string(),
-            "M82 ; extruder absolute mode".to_string(),
-            format!("M104 S{:.0} ; set nozzle temperature", params.nozzle_temp),
-            format!("M140 S{:.0} ; set bed temperature", params.bed_temp),
-            "G28 ; home all axes".to_string(),
-            format!(
-                "M109 S{:.0} ; wait for nozzle temperature",
-                params.nozzle_temp
-            ),
-            format!("M190 S{:.0} ; wait for bed temperature", params.bed_temp),
-            "G92 E0 ; reset extruder".to_string(),
-            // Klipper-specific: apply velocity limits derived from slicing params
-            self.set_velocity_limit(params.print_speed, 3000.0),
-        ]
-    }
-
-    fn end_script(&self) -> Vec<String> {
-        vec![
-            "; end of print".to_string(),
-            "G91 ; relative positioning".to_string(),
-            "G1 E-2 F3000 ; final retract".to_string(),
-            "G1 Z5 F3000 ; lift nozzle".to_string(),
-            "G90 ; absolute positioning".to_string(),
-            "G28 X0 Y0 ; park".to_string(),
-            "M104 S0 ; nozzle off".to_string(),
-            "M140 S0 ; bed off".to_string(),
-            "M84 ; disable motors".to_string(),
-        ]
-    }
-}
-
 // ── Generator (façade) ─────────────────────────────────────────────────────────
+
+/// Boxed warning callback type used by [`GcodeGenerator`].
+///
+/// Receives a human-readable message whenever the active dialect signals that
+/// a command is not natively supported.
+pub type WarnFn = Box<dyn Fn(&str)>;
 
 /// High-level G-code generator that delegates all firmware-specific command
 /// emission to a [`GcodeDialect`] implementation.
 ///
 /// `GcodeGenerator` is the **façade** of the multi-flavor framework: it owns
 /// the per-layer extrusion logic while the dialect handles the command syntax.
+///
+/// An optional **warn function** can be registered via [`GcodeGenerator::with_warn_fn`].
+/// It is called when the active dialect advertises unsupported commands (see
+/// [`GcodeDialect::unsupported_commands`]), so callers can surface those
+/// warnings through the appropriate logging channel.
 ///
 /// # Example
 ///
@@ -363,6 +268,7 @@ impl GcodeDialect for KlipperDialect {
 /// ```
 pub struct GcodeGenerator {
     dialect: Box<dyn GcodeDialect>,
+    warn_fn: Option<WarnFn>,
 }
 
 impl GcodeGenerator {
@@ -372,14 +278,36 @@ impl GcodeGenerator {
             GcodeFlavor::Marlin => Box::new(MarlinDialect),
             GcodeFlavor::Klipper => Box::new(KlipperDialect),
         };
-        Self { dialect }
+        Self {
+            dialect,
+            warn_fn: None,
+        }
     }
 
     /// Create a generator with a custom [`GcodeDialect`] implementation.
     ///
     /// Useful for testing or for dialects not covered by [`GcodeFlavor`].
     pub fn with_dialect(dialect: Box<dyn GcodeDialect>) -> Self {
-        Self { dialect }
+        Self {
+            dialect,
+            warn_fn: None,
+        }
+    }
+
+    /// Register a warn callback invoked when the dialect signals unsupported commands.
+    ///
+    /// The function receives a human-readable warning message and is responsible
+    /// for routing it to the appropriate output channel (e.g. [`crate::cli::emit::Emitter::log_warn`]).
+    ///
+    /// ```rust
+    /// use slicer_engine::gcode::{GcodeGenerator, GcodeFlavor};
+    ///
+    /// let gen = GcodeGenerator::new(GcodeFlavor::Marlin)
+    ///     .with_warn_fn(|msg| eprintln!("[warn] {}", msg));
+    /// ```
+    pub fn with_warn_fn(mut self, f: impl Fn(&str) + 'static) -> Self {
+        self.warn_fn = Some(Box::new(f));
+        self
     }
 
     /// Return a reference to the active dialect.
@@ -387,11 +315,32 @@ impl GcodeGenerator {
         self.dialect.as_ref()
     }
 
+    /// Emit a warning through the registered warn function, if any.
+    fn warn(&self, msg: &str) {
+        if let Some(f) = &self.warn_fn {
+            f(msg);
+        }
+    }
+
     /// Generate a complete G-code program from the given layers and parameters.
     ///
     /// The output is a single `String` with lines separated by `'\n'`.
     /// Returns a minimal (start + end only) program when `layers` is empty.
+    ///
+    /// If any commands are listed in [`GcodeDialect::unsupported_commands`] the
+    /// registered warn function is called once per unsupported command before
+    /// generation begins.
     pub fn generate(&self, layers: &[SliceLayer], params: &SlicingParams) -> String {
+        // Warn about any commands the dialect doesn't natively support
+        for cmd in self.dialect.unsupported_commands() {
+            self.warn(&format!(
+                "Command '{}' is not natively supported by the {} dialect; \
+                 falling back to generic G-code",
+                cmd,
+                self.dialect.flavor_name()
+            ));
+        }
+
         let mut out = String::with_capacity(64 * 1024);
         let print_speed_mm_min = params.print_speed * 60.0;
 
@@ -562,9 +511,7 @@ mod tests {
         layer.paths.push(square);
 
         let gcode = generate_gcode(&[layer], &SlicingParams::default());
-        // Should have at least one extrusion move
         assert!(gcode.contains(" E"), "no extrusion moves in gcode");
-        // Travel move to the start point
         assert!(gcode.contains("X0.000 Y0.000"), "missing start travel");
     }
 
@@ -618,7 +565,8 @@ mod tests {
 
     #[test]
     fn test_generator_marlin_contains_standard_header() {
-        let gcode = GcodeGenerator::new(GcodeFlavor::Marlin).generate(&[], &SlicingParams::default());
+        let gcode =
+            GcodeGenerator::new(GcodeFlavor::Marlin).generate(&[], &SlicingParams::default());
         assert!(gcode.contains("G21"), "missing unit mode");
         assert!(gcode.contains("G28"), "missing home");
         assert!(gcode.contains("M104 S210"), "missing nozzle temp");
@@ -627,7 +575,8 @@ mod tests {
 
     #[test]
     fn test_generator_marlin_contains_standard_footer() {
-        let gcode = GcodeGenerator::new(GcodeFlavor::Marlin).generate(&[], &SlicingParams::default());
+        let gcode =
+            GcodeGenerator::new(GcodeFlavor::Marlin).generate(&[], &SlicingParams::default());
         assert!(gcode.contains("M104 S0"), "missing nozzle off");
         assert!(gcode.contains("M140 S0"), "missing bed off");
         assert!(gcode.contains("M84"), "missing motors off");
@@ -746,9 +695,76 @@ mod tests {
 
     #[test]
     fn test_generator_with_custom_dialect() {
-        // Verify that GcodeGenerator::with_dialect accepts a boxed dialect
         let gen = GcodeGenerator::with_dialect(Box::new(KlipperDialect));
         let gcode = gen.generate(&[], &SlicingParams::default());
         assert!(gcode.contains("SET_VELOCITY_LIMIT"));
+    }
+
+    // ── warn_fn mechanism ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_warn_fn_called_for_unsupported_commands() {
+        use std::sync::{Arc, Mutex};
+
+        // A test dialect that advertises one unsupported command
+        struct LimitedDialect;
+        impl GcodeDialect for LimitedDialect {
+            fn flavor_name(&self) -> &'static str {
+                "Limited"
+            }
+            fn start_script(&self, _: &SlicingParams) -> Vec<String> {
+                vec![]
+            }
+            fn end_script(&self) -> Vec<String> {
+                vec![]
+            }
+            fn unsupported_commands(&self) -> &'static [&'static str] {
+                &["set_fan_speed"]
+            }
+        }
+
+        let warnings: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
+        let warnings_clone = Arc::clone(&warnings);
+        let gen = GcodeGenerator::with_dialect(Box::new(LimitedDialect))
+            .with_warn_fn(move |msg| warnings_clone.lock().unwrap().push(msg.to_string()));
+
+        gen.generate(&[], &SlicingParams::default());
+
+        let warnings = warnings.lock().unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0].contains("set_fan_speed"),
+            "warning should mention the unsupported command"
+        );
+        assert!(
+            warnings[0].contains("Limited"),
+            "warning should mention the dialect name"
+        );
+    }
+
+    #[test]
+    fn test_no_warn_fn_is_silent() {
+        // Verify the generator doesn't panic when no warn_fn is set
+        // even if the dialect lists unsupported commands
+        struct NoFanDialect;
+        impl GcodeDialect for NoFanDialect {
+            fn flavor_name(&self) -> &'static str {
+                "NoFan"
+            }
+            fn start_script(&self, _: &SlicingParams) -> Vec<String> {
+                vec![]
+            }
+            fn end_script(&self) -> Vec<String> {
+                vec![]
+            }
+            fn unsupported_commands(&self) -> &'static [&'static str] {
+                &["set_fan_speed"]
+            }
+        }
+
+        // Should not panic
+        let gen = GcodeGenerator::with_dialect(Box::new(NoFanDialect));
+        let gcode = gen.generate(&[], &SlicingParams::default());
+        assert!(gcode.contains("; Generated by slicer-engine"));
     }
 }

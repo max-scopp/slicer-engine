@@ -24,6 +24,7 @@ use serde_json::{json, Value};
 use crate::cli::output::{EmitPayload, OutputFormat};
 
 /// Central emitter that routes log messages to stderr and results to stdout.
+#[derive(Clone)]
 pub struct Emitter {
     /// Active output format for this session.
     pub format: OutputFormat,
@@ -70,6 +71,27 @@ impl Emitter {
                 eprintln!("{}", entry);
             }
             OutputFormat::Human => eprintln!("[debug] {}", message),
+        }
+    }
+
+    /// Emit a warning log message to **stderr**.
+    ///
+    /// Use this for non-fatal issues that the user should be aware of, such as
+    /// unsupported dialect commands falling back to generic G-code.
+    ///
+    /// - **Human mode**: `[warn] <message>` (yellow on terminals that support ANSI colours).
+    /// - **JSON mode**: JSON with `"level": "warn"`.
+    pub fn log_warn(&self, message: &str) {
+        match self.format {
+            OutputFormat::Json => {
+                let entry = json!({
+                    "$schema": "slicer-engine/log-v1",
+                    "level": "warn",
+                    "message": message,
+                });
+                eprintln!("{}", entry);
+            }
+            OutputFormat::Human => eprintln!("\x1b[33m[warn]\x1b[0m {}", message),
         }
     }
 
@@ -179,6 +201,13 @@ mod tests {
     fn test_emitter_new() {
         let emitter = Emitter::new(OutputFormat::Human);
         assert_eq!(emitter.format, OutputFormat::Human);
+    }
+
+    #[test]
+    fn test_emitter_clone() {
+        let a = Emitter::new(OutputFormat::Json);
+        let b = a.clone();
+        assert_eq!(b.format, OutputFormat::Json);
     }
 
     // ── SuccessResult ────────────────────────────────────────────────────────

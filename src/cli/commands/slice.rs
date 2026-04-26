@@ -31,9 +31,10 @@ pub struct SliceCommand {
     #[arg(long, default_value = "human")]
     pub output_format: String,
 
-    /// G-code firmware flavor (marlin, klipper)
-    #[arg(long, default_value = "marlin")]
-    pub gcode_flavor: String,
+    /// G-code firmware flavor (marlin, klipper).
+    /// When omitted, falls back to the value stored in global settings (default: marlin).
+    #[arg(long)]
+    pub gcode_flavor: Option<String>,
 
     /// Enable verbose output (prints AABB, volume, surface area)
     #[arg(short, long)]
@@ -93,15 +94,19 @@ impl SliceCommand {
             .parse::<OutputFormat>()
             .map_err(|e| format!("Invalid output format: {}", e))?;
 
-        let flavor = self
-            .gcode_flavor
-            .parse::<GcodeFlavor>()
-            .map_err(|e| format!("Invalid G-code flavor: {}", e))?;
-
         let emitter = Emitter::new(format);
 
-        // Load persisted settings and get default layer height
+        // Load persisted settings — used for layer height default and gcode flavor default
         let settings = load_settings().unwrap_or_else(|_| Default::default());
+
+        // Resolve gcode flavor: CLI arg → global settings → built-in default (Marlin)
+        let flavor_str = self
+            .gcode_flavor
+            .as_deref()
+            .unwrap_or(&settings.gcode_flavor);
+        let flavor = flavor_str
+            .parse::<GcodeFlavor>()
+            .map_err(|e| format!("Invalid G-code flavor: {}", e))?;
         let default_layer_height = settings.params.layer_height;
         let layer_height = self.layer_height.unwrap_or(default_layer_height);
 
@@ -177,8 +182,11 @@ impl SliceCommand {
             emitter.log_debug(&format!("sliced into {} layers", layers.len()));
         }
 
-        // Generate G-code using the selected firmware flavor
-        let generator = GcodeGenerator::new(flavor);
+        // Generate G-code using the selected firmware flavor; route dialect
+        // warnings through the emitter's warn channel
+        let emitter_for_warn = emitter.clone();
+        let generator = GcodeGenerator::new(flavor)
+            .with_warn_fn(move |msg| emitter_for_warn.log_warn(msg));
         let gcode = generator.generate(&layers, &slice_params);
 
         // Determine output path
@@ -232,13 +240,28 @@ mod tests {
             layer_height: Some(0.2),
             output: None,
             output_format: "human".to_string(),
-            gcode_flavor: "marlin".to_string(),
+            gcode_flavor: Some("marlin".to_string()),
             verbose: false,
             center: false,
             drop_to_floor: false,
         };
         assert_eq!(cmd.layer_height, Some(0.2));
-        assert_eq!(cmd.gcode_flavor, "marlin");
+        assert_eq!(cmd.gcode_flavor.as_deref(), Some("marlin"));
+    }
+
+    #[test]
+    fn test_slice_command_no_flavor_uses_none() {
+        let cmd = SliceCommand {
+            input: PathBuf::from("test.stl"),
+            layer_height: Some(0.2),
+            output: None,
+            output_format: "human".to_string(),
+            gcode_flavor: None, // will fall back to settings / marlin
+            verbose: false,
+            center: false,
+            drop_to_floor: false,
+        };
+        assert!(cmd.gcode_flavor.is_none());
     }
 
     #[test]
@@ -248,12 +271,12 @@ mod tests {
             layer_height: Some(0.2),
             output: None,
             output_format: "human".to_string(),
-            gcode_flavor: "klipper".to_string(),
+            gcode_flavor: Some("klipper".to_string()),
             verbose: false,
             center: false,
             drop_to_floor: false,
         };
-        assert_eq!(cmd.gcode_flavor, "klipper");
+        assert_eq!(cmd.gcode_flavor.as_deref(), Some("klipper"));
     }
 
     #[test]

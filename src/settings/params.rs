@@ -39,10 +39,32 @@ impl Default for SlicingParams {
 /// Global (print-level) settings that apply to the entire print job.
 ///
 /// These act as the baseline from which per-object overrides are applied.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalSettings {
     /// Base slicing parameters for the whole print.
     pub params: SlicingParams,
+    /// Preferred G-code firmware flavor (e.g. `"marlin"`, `"klipper"`).
+    ///
+    /// Used as the default when the `slice` command is invoked without an
+    /// explicit `--gcode-flavor` flag.  Must be a valid [`crate::gcode::GcodeFlavor`]
+    /// string; defaults to `"marlin"` for new or migrated settings files.
+    #[serde(default = "GlobalSettings::default_gcode_flavor")]
+    pub gcode_flavor: String,
+}
+
+impl GlobalSettings {
+    fn default_gcode_flavor() -> String {
+        "marlin".to_string()
+    }
+}
+
+impl Default for GlobalSettings {
+    fn default() -> Self {
+        Self {
+            params: SlicingParams::default(),
+            gcode_flavor: Self::default_gcode_flavor(),
+        }
+    }
 }
 
 /// Per-object settings that may selectively override the global defaults.
@@ -68,6 +90,21 @@ mod tests {
         let back: GlobalSettings = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.params.layer_height, gs.params.layer_height);
         assert_eq!(back.params.nozzle_temp, gs.params.nozzle_temp);
+        assert_eq!(back.gcode_flavor, gs.gcode_flavor);
+    }
+
+    #[test]
+    fn test_global_settings_default_gcode_flavor_is_marlin() {
+        let gs = GlobalSettings::default();
+        assert_eq!(gs.gcode_flavor, "marlin");
+    }
+
+    #[test]
+    fn test_global_settings_gcode_flavor_defaults_when_absent() {
+        // Simulate a legacy settings JSON that doesn't have the gcode_flavor field
+        let json = r#"{"params":{"layer_height":0.2,"wall_thickness":1.2,"infill_density":0.2,"print_speed":60.0,"nozzle_temp":210.0,"bed_temp":60.0}}"#;
+        let back: GlobalSettings = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(back.gcode_flavor, "marlin", "should default to marlin for legacy files");
     }
 
     #[test]
