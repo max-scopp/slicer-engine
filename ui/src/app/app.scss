@@ -28,23 +28,38 @@
 
 .app-content {
   display: grid;
-  grid-template-columns: 360px 1fr;
+  grid-template-columns: 300px 1fr 1fr;
   gap: 1.5rem;
   padding: 1.5rem 2rem;
   flex: 1;
-  max-width: 1200px;
   width: 100%;
   box-sizing: border-box;
+
+  @media (max-width: 1024px) {
+    grid-template-columns: 280px 1fr 1fr;
+  }
+
+  @media (max-width: 900px) {
+    grid-template-columns: 1fr 1fr;
+  }
 
   @media (max-width: 768px) {
     grid-template-columns: 1fr;
   }
 }
 
-.left-panel {
+.model-section {
+  height: fit-content;
+}
+
+.middle-panel {
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
+}
+
+.settings-section {
+  height: fit-content;
 }
 
 .panel {

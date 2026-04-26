@@ -5,12 +5,12 @@
   </header>
 
   <main class="app-content">
-    <aside class="left-panel">
-      <section class="panel">
-        <h2 class="panel-title">Model</h2>
-        <app-file-upload />
-      </section>
+    <section class="panel model-section">
+      <h2 class="panel-title">Model</h2>
+      <app-file-upload />
+    </section>
 
+    <section class="middle-panel">
       <section class="panel">
         <h2 class="panel-title">Output</h2>
         <app-status-panel />
@@ -19,9 +19,9 @@
       <section class="panel">
         <app-history-panel />
       </section>
-    </aside>
+    </section>
 
-    <section class="right-panel panel">
+    <section class="panel settings-section">
       <app-settings-panel />
     </section>
   </main>
