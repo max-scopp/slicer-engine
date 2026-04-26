@@ -536,4 +536,62 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_add_infill_to_layers_basic() {
+        use crate::infill::InfillPattern;
+        
+        let mesh = make_cube_mesh();
+        let mut layers = slice_mesh(&mesh, 2.0);
+        
+        // Before infill: only perimeter paths
+        for layer in &layers {
+            for role in &layer.path_roles {
+                assert_eq!(*role, ExtrusionRole::Perimeter);
+            }
+        }
+        
+        // Add infill
+        add_infill_to_layers(&mut layers, 0.2, InfillPattern::Rectilinear);
+        
+        // After infill: should have both perimeter and infill paths
+        for layer in &layers {
+            let has_perimeter = layer.path_roles.iter().any(|r| *r == ExtrusionRole::Perimeter);
+            let has_infill = layer.path_roles.iter().any(|r| *r == ExtrusionRole::Infill);
+            assert!(has_perimeter, "Layer at z={} missing perimeter", layer.z);
+            assert!(has_infill, "Layer at z={} missing infill", layer.z);
+        }
+    }
+
+    #[test]
+    fn test_add_infill_to_layers_zero_density() {
+        use crate::infill::InfillPattern;
+        
+        let mesh = make_cube_mesh();
+        let mut layers = slice_mesh(&mesh, 2.0);
+        let initial_path_count: usize = layers.iter().map(|l| l.paths.len()).sum();
+        
+        // Add zero-density infill (should do nothing)
+        add_infill_to_layers(&mut layers, 0.0, InfillPattern::Rectilinear);
+        
+        let final_path_count: usize = layers.iter().map(|l| l.paths.len()).sum();
+        assert_eq!(initial_path_count, final_path_count, "Zero density should not add paths");
+    }
+
+    #[test]
+    fn test_add_infill_to_layers_grid_pattern() {
+        use crate::infill::InfillPattern;
+        
+        let mesh = make_cube_mesh();
+        let mut layers = slice_mesh(&mesh, 2.0);
+        
+        // Add grid infill
+        add_infill_to_layers(&mut layers, 0.3, InfillPattern::Grid);
+        
+        // Grid pattern should produce more infill paths than rectilinear
+        for layer in &layers {
+            let infill_count = layer.path_roles.iter().filter(|r| **r == ExtrusionRole::Infill).count();
+            assert!(infill_count > 0, "Layer at z={} has no infill paths", layer.z);
+        }
+    }
 }
