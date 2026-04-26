@@ -5,13 +5,18 @@ use crate::settings::params::SlicingParams;
 
 /// Klipper firmware G-code dialect.
 ///
-/// Extends the standard command set with Klipper-specific commands:
+/// Targets Klipper firmware's macro-based print workflow.  The default start
+/// and end scripts delegate to the user-defined `START_PRINT` / `END_PRINT`
+/// macros (OrcaSlicer-style), passing print parameters as macro arguments.
+///
+/// Printer-specific setup (homing, bed levelling, purge lines, etc.) is
+/// handled inside those Klipper macros, keeping the slicer output clean and
+/// portable across different Klipper printer configurations.
+///
+/// Extra Klipper-specific commands are available as helper methods:
 /// - [`KlipperDialect::set_velocity_limit`] — runtime velocity/acceleration cap
 /// - [`KlipperDialect::set_pressure_advance`] — pressure advance tuning
 /// - [`KlipperDialect::call_macro`] — invoke a named Klipper macro
-///
-/// The start script automatically applies `SET_VELOCITY_LIMIT` based on the
-/// configured print speed.
 pub struct KlipperDialect;
 
 impl KlipperDialect {
@@ -47,36 +52,21 @@ impl GcodeDialect for KlipperDialect {
         "Klipper"
     }
 
+    /// Default Klipper start script: delegates to the `START_PRINT` macro.
+    ///
+    /// Print temperatures are forwarded as macro arguments so the user's
+    /// Klipper `START_PRINT` macro can use them for pre-heat, bed levelling,
+    /// purge routines, etc.  This follows the OrcaSlicer / SuperSlicer
+    /// convention for Klipper start G-code.
     fn start_script(&self, params: &SlicingParams) -> Vec<String> {
-        vec![
-            "G21 ; millimetres".to_string(),
-            "G90 ; absolute positioning".to_string(),
-            "M82 ; extruder absolute mode".to_string(),
-            format!("M104 S{:.0} ; set nozzle temperature", params.nozzle_temp),
-            format!("M140 S{:.0} ; set bed temperature", params.bed_temp),
-            "G28 ; home all axes".to_string(),
-            format!(
-                "M109 S{:.0} ; wait for nozzle temperature",
-                params.nozzle_temp
-            ),
-            format!("M190 S{:.0} ; wait for bed temperature", params.bed_temp),
-            "G92 E0 ; reset extruder".to_string(),
-            // Klipper-specific: apply velocity limits derived from slicing params
-            self.set_velocity_limit(params.print_speed, 3000.0),
-        ]
+        vec![format!(
+            "START_PRINT BED_TEMP={:.0} EXTRUDER_TEMP={:.0}",
+            params.bed_temp, params.nozzle_temp
+        )]
     }
 
+    /// Default Klipper end script: delegates to the `END_PRINT` macro.
     fn end_script(&self) -> Vec<String> {
-        vec![
-            "; end of print".to_string(),
-            "G91 ; relative positioning".to_string(),
-            "G1 E-2 F3000 ; final retract".to_string(),
-            "G1 Z5 F3000 ; lift nozzle".to_string(),
-            "G90 ; absolute positioning".to_string(),
-            "G28 X0 Y0 ; park".to_string(),
-            "M104 S0 ; nozzle off".to_string(),
-            "M140 S0 ; bed off".to_string(),
-            "M84 ; disable motors".to_string(),
-        ]
+        vec!["END_PRINT".to_string()]
     }
 }

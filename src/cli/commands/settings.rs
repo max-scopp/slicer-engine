@@ -357,6 +357,16 @@ fn get_setting_value(
             serde_json::Number::from_f64(settings.params.bed_temp).ok_or("Invalid float value")?,
         )),
         "gcode_flavor" => Ok(Value::String(settings.gcode_flavor.clone())),
+        "start_print_gcode" => Ok(settings
+            .start_print_gcode
+            .as_ref()
+            .map(|s| Value::String(s.clone()))
+            .unwrap_or(Value::Null)),
+        "end_print_gcode" => Ok(settings
+            .end_print_gcode
+            .as_ref()
+            .map(|s| Value::String(s.clone()))
+            .unwrap_or(Value::Null)),
         _ => Err(format!("Unknown setting key: {}", key).into()),
     }
 }
@@ -367,17 +377,46 @@ fn set_setting_value(
     key: &str,
     value: &Value,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // gcode_flavor is a string setting; handle it before numeric parsing
-    if key == "gcode_flavor" {
-        let flavor = value
-            .as_str()
-            .ok_or("Value for 'gcode_flavor' must be a string")?;
-        // Validate it's a known flavor before persisting
-        flavor
-            .parse::<crate::gcode::GcodeFlavor>()
-            .map_err(|e| format!("Invalid gcode_flavor: {}", e))?;
-        settings.gcode_flavor = flavor.to_string();
-        return Ok(());
+    // String settings — handle before numeric parsing
+    match key {
+        "gcode_flavor" => {
+            let flavor = value
+                .as_str()
+                .ok_or("Value for 'gcode_flavor' must be a string")?;
+            // Validate it's a known flavor before persisting
+            flavor
+                .parse::<crate::gcode::GcodeFlavor>()
+                .map_err(|e| format!("Invalid gcode_flavor: {}", e))?;
+            settings.gcode_flavor = flavor.to_string();
+            return Ok(());
+        }
+        "start_print_gcode" => {
+            settings.start_print_gcode = if value.is_null() {
+                None
+            } else {
+                Some(
+                    value
+                        .as_str()
+                        .ok_or("Value for 'start_print_gcode' must be a string or null")?
+                        .to_string(),
+                )
+            };
+            return Ok(());
+        }
+        "end_print_gcode" => {
+            settings.end_print_gcode = if value.is_null() {
+                None
+            } else {
+                Some(
+                    value
+                        .as_str()
+                        .ok_or("Value for 'end_print_gcode' must be a string or null")?
+                        .to_string(),
+                )
+            };
+            return Ok(());
+        }
+        _ => {}
     }
 
     let float_value = value
@@ -413,7 +452,7 @@ impl EmitPayload for ShowResult<'_> {
     }
 
     fn display_human(&self) -> String {
-        [
+        let mut lines = vec![
             "Global Settings:".to_string(),
             format!("  layer_height: {} mm", self.settings.params.layer_height),
             format!(
@@ -428,8 +467,14 @@ impl EmitPayload for ShowResult<'_> {
             format!("  nozzle_temp: {}°C", self.settings.params.nozzle_temp),
             format!("  bed_temp: {}°C", self.settings.params.bed_temp),
             format!("  gcode_flavor: {}", self.settings.gcode_flavor),
-        ]
-        .join("\n")
+        ];
+        if let Some(s) = &self.settings.start_print_gcode {
+            lines.push(format!("  start_print_gcode: {}", s));
+        }
+        if let Some(s) = &self.settings.end_print_gcode {
+            lines.push(format!("  end_print_gcode: {}", s));
+        }
+        lines.join("\n")
     }
 
     fn to_json(&self) -> Value {
