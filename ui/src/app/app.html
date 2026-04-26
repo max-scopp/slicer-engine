@@ -1,0 +1,24 @@
+<div class="app-shell">
+  <header class="app-header">
+    <h1>{{ title() }}</h1>
+    <span class="subtitle">High-performance 3D model slicer</span>
+  </header>
+
+  <main class="app-content">
+    <aside class="left-panel">
+      <section class="panel">
+        <h2 class="panel-title">Model</h2>
+        <app-file-upload />
+      </section>
+
+      <section class="panel">
+        <h2 class="panel-title">Output</h2>
+        <app-status-panel />
+      </section>
+    </aside>
+
+    <section class="right-panel panel">
+      <app-settings-panel />
+    </section>
+  </main>
+</div>
