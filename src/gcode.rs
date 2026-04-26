@@ -112,10 +112,15 @@ impl std::fmt::Display for GcodeFlavor {
 /// Abstraction over firmware-specific G-code command emission.
 ///
 /// Implement this trait to add support for a new printer firmware flavor.
-/// Most standard G-code commands have **default implementations** so a new
-/// dialect only needs to override [`GcodeDialect::flavor_name`],
-/// [`GcodeDialect::start_script`], and [`GcodeDialect::end_script`] to be
-/// fully functional.
+/// The three **required** methods — [`GcodeDialect::flavor_name`],
+/// [`GcodeDialect::start_script`], and [`GcodeDialect::end_script`] — are the
+/// minimum needed to produce valid output, because every other method has a
+/// default implementation based on standard G-code syntax.
+///
+/// However, firmware-specific features (e.g. `SET_VELOCITY_LIMIT` for Klipper,
+/// or custom fan-speed curves for specialty firmware) should be added either by
+/// overriding the relevant default methods or by exposing extra methods directly
+/// on the concrete struct.
 ///
 /// All dimensional values use millimetres; speeds use **mm/min** (the native
 /// unit for G-code `F` parameters).
