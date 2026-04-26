@@ -4,6 +4,7 @@
 //! Loaded meshes are in native STL coordinates — no transforms are applied on import.
 
 use std::fs::OpenOptions;
+use std::io::Cursor;
 use std::path::Path;
 
 use crate::mesh::types::{Face, Mesh, Vertex};
@@ -70,6 +71,59 @@ pub fn read_stl(path: &Path) -> Result<Mesh, Box<dyn std::error::Error>> {
     })
 }
 
+/// Load a mesh from raw STL bytes (binary or ASCII).
+///
+/// Useful when the STL data has already been read into memory (e.g. uploaded
+/// over a WebSocket) rather than read from a file path.
+///
+/// # Errors
+/// Returns an error if the bytes are not a valid STL file or cannot be
+/// converted to the internal mesh representation.
+pub fn read_stl_from_bytes(bytes: &[u8]) -> Result<Mesh, Box<dyn std::error::Error>> {
+    let mut cursor = Cursor::new(bytes);
+
+    let indexed = stl_io::read_stl(&mut cursor)
+        .map_err(|e| format!("Failed to parse STL from bytes: {}", e))?;
+
+    let vertices: Vec<Vertex> = indexed
+        .vertices
+        .iter()
+        .map(|v| Vertex::new(v[0] as f64, v[1] as f64, v[2] as f64))
+        .collect();
+
+    let faces: Vec<Face> = indexed
+        .faces
+        .iter()
+        .map(|tri| {
+            let v0 = vertices[tri.vertices[0]];
+            let v1 = vertices[tri.vertices[1]];
+            let v2 = vertices[tri.vertices[2]];
+
+            let normal_vec = tri.normal;
+            let normal = if normal_vec[0] != 0.0 || normal_vec[1] != 0.0 || normal_vec[2] != 0.0 {
+                Some(Vertex::new(
+                    normal_vec[0] as f64,
+                    normal_vec[1] as f64,
+                    normal_vec[2] as f64,
+                ))
+            } else {
+                None
+            };
+
+            Face {
+                vertices: [v0, v1, v2],
+                normal,
+            }
+        })
+        .collect();
+
+    Ok(Mesh {
+        vertices,
+        faces,
+        aabb: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,6 +149,21 @@ mod tests {
         let mesh = read_stl(&fixture("simple-cube-ascii.stl")).expect("Failed to read ASCII STL");
         assert_eq!(mesh.faces.len(), 12, "Expected 12 faces");
         assert_eq!(mesh.vertices.len(), 8, "Expected 8 unique vertices");
+    }
+
+    #[test]
+    fn test_read_stl_from_bytes() {
+        let path = fixture("simple-cube.stl");
+        let bytes = std::fs::read(&path).expect("Failed to read fixture bytes");
+        let mesh = read_stl_from_bytes(&bytes).expect("Failed to parse STL from bytes");
+        assert_eq!(mesh.faces.len(), 12, "Expected 12 faces");
+        assert_eq!(mesh.vertices.len(), 8, "Expected 8 unique vertices");
+    }
+
+    #[test]
+    fn test_read_stl_from_invalid_bytes() {
+        let result = read_stl_from_bytes(b"not valid stl data at all");
+        assert!(result.is_err(), "Should fail on invalid bytes");
     }
 
     #[test]

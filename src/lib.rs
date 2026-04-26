@@ -16,5 +16,12 @@ pub mod core;
 pub mod gcode;
 pub mod mesh;
 pub mod settings;
+pub mod ws_protocol;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod db;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod server;
 
 pub use core::*;

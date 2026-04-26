@@ -3,6 +3,7 @@ name = "slicer-engine"
 version = "0.1.0"
 edition = "2021"
 build = "build.rs"
+default-run = "slicer-engine"
 
 [dependencies]
 clipper2 = "0.5"
@@ -10,8 +11,21 @@ clap = { version = "4.5", features = ["derive"] }
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+schemars = "1.2.1"
 stl_io = "0.11"
 dirs = "6.0.0"
+uuid = { version = "1.10", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rusqlite = { version = "0.31", features = ["bundled", "chrono", "uuid"] }
+actix-web = "4.13"
+actix-files = "0.6"
+actix-ws = "0.4"
+actix-multipart = "0.7.2"
+base64 = "0.22"
+futures-util = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "io-util"] }
 
 [dev-dependencies]
 tempfile = "3"
@@ -19,10 +33,15 @@ tempfile = "3"
 [lib]
 crate-type = ["rlib", "cdylib"]
 
+[profile.dev]
+opt-level = 1
+
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
+# Note: Use `cargo build` for fast dev builds
+# Use `cargo build --release` only for CI/distribution
 
 [profile.wasm]
 inherits = "release"

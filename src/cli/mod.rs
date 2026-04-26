@@ -8,9 +8,10 @@ pub mod emit;
 pub mod error;
 pub mod io;
 pub mod output;
+pub mod schemas;
 
 use clap::Parser;
-use commands::{InfoCommand, SettingsCommand, SliceCommand};
+use commands::{GenSchemasCommand, InfoCommand, ServeCommand, SettingsCommand, SliceCommand};
 
 /// Slicer Engine CLI
 #[derive(Parser, Debug)]
@@ -35,6 +36,13 @@ pub enum Commands {
 
     /// Validate or diff slicing settings
     Settings(SettingsCommand),
+
+    /// Serve the Angular UI over a local HTTP server
+    Serve(ServeCommand),
+
+    /// Generate JSON schemas for all emit payloads
+    #[command(name = "gen-schemas")]
+    GenSchemas(GenSchemasCommand),
 }
 
 impl CliArgs {
@@ -50,6 +58,8 @@ impl CliArgs {
             Commands::Slice(cmd) => cmd.execute(),
             Commands::Info(cmd) => cmd.execute(),
             Commands::Settings(cmd) => cmd.execute(),
+            Commands::Serve(cmd) => cmd.execute(),
+            Commands::GenSchemas(cmd) => cmd.execute(),
         }
     }
 }

@@ -1,0 +1,216 @@
+//! Schema definitions for all emit payload types.
+//!
+//! These types are defined with `#[derive(JsonSchema)]` from the `schemars` crate,
+//! which automatically generates JSON schemas that match the actual Rust types.
+
+use crate::ws_protocol::{ClientMessage, ServerMessage, WsSlicingParams};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+/// Generic success result payload
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+pub struct ResultSchema {
+    pub status: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
+}
+
+/// Error response payload
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+pub struct ErrorSchema {
+    pub status: String,
+    pub error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+}
+
+/// Log entry emitted to stderr
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+pub struct LogSchema {
+    pub level: String,
+    pub message: String,
+}
+
+/// Build and library information
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+pub struct InfoResultSchema {
+    pub name: String,
+    pub version: String,
+    pub edition: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub features: Option<String>,
+}
+
+/// Result of a slicing operation
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+pub struct SliceResultSchema {
+    pub status: String,
+    pub input: String,
+    pub layer_height: f64,
+    pub layer_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+}
+
+/// Result of settings validation
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+pub struct ValidateResultSchema {
+    pub status: String,
+    pub message: String,
+}
+
+/// Settings difference between global and object
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+pub struct SettingsDiffSchema {
+    pub field_name: String,
+    pub global_value: String,
+    pub object_value: String,
+    pub is_override: bool,
+}
+
+/// Settings show result (array of diffs)
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+pub struct DiffResultSchema(pub Vec<SettingsDiffSchema>);
+
+/// Display of all global settings
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+pub struct ShowResultSchema {
+    pub params: SlicingParamsSchema,
+}
+
+/// Slicing parameters
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+pub struct SlicingParamsSchema {
+    pub layer_height: f64,
+    pub wall_thickness: f64,
+    pub infill_density: f64,
+    pub print_speed: f64,
+    pub nozzle_temp: f64,
+    pub bed_temp: f64,
+}
+
+/// Get a single setting value
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+pub struct GetResultSchema {
+    pub key: String,
+    pub value: serde_json::Value,
+}
+
+/// Set a setting value result
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+pub struct SetResultSchema {
+    pub key: String,
+    pub value: serde_json::Value,
+    pub message: String,
+}
+
+/// Container for a schema definition with its identifier
+#[derive(Debug, Clone)]
+pub struct SchemaDefinition {
+    pub schema_id: &'static str,
+    pub schema: serde_json::Value,
+}
+
+/// Collect all schema definitions
+pub fn all_schemas() -> Vec<SchemaDefinition> {
+    vec![
+        SchemaDefinition {
+            schema_id: "slicer-engine/result-v1",
+            schema: serde_json::to_value(schemars::schema_for!(ResultSchema))
+                .expect("failed to serialize ResultSchema"),
+        },
+        SchemaDefinition {
+            schema_id: "slicer-engine/error-v1",
+            schema: serde_json::to_value(schemars::schema_for!(ErrorSchema))
+                .expect("failed to serialize ErrorSchema"),
+        },
+        SchemaDefinition {
+            schema_id: "slicer-engine/log-v1",
+            schema: serde_json::to_value(schemars::schema_for!(LogSchema))
+                .expect("failed to serialize LogSchema"),
+        },
+        SchemaDefinition {
+            schema_id: "slicer-engine/info-result-v1",
+            schema: serde_json::to_value(schemars::schema_for!(InfoResultSchema))
+                .expect("failed to serialize InfoResultSchema"),
+        },
+        SchemaDefinition {
+            schema_id: "slicer-engine/slice-result-v1",
+            schema: serde_json::to_value(schemars::schema_for!(SliceResultSchema))
+                .expect("failed to serialize SliceResultSchema"),
+        },
+        SchemaDefinition {
+            schema_id: "slicer-engine/settings-validate-result-v1",
+            schema: serde_json::to_value(schemars::schema_for!(ValidateResultSchema))
+                .expect("failed to serialize ValidateResultSchema"),
+        },
+        SchemaDefinition {
+            schema_id: "slicer-engine/settings-diff-result-v1",
+            schema: serde_json::to_value(schemars::schema_for!(DiffResultSchema))
+                .expect("failed to serialize DiffResultSchema"),
+        },
+        SchemaDefinition {
+            schema_id: "slicer-engine/settings-show-result-v1",
+            schema: serde_json::to_value(schemars::schema_for!(ShowResultSchema))
+                .expect("failed to serialize ShowResultSchema"),
+        },
+        SchemaDefinition {
+            schema_id: "slicer-engine/settings-get-result-v1",
+            schema: serde_json::to_value(schemars::schema_for!(GetResultSchema))
+                .expect("failed to serialize GetResultSchema"),
+        },
+        SchemaDefinition {
+            schema_id: "slicer-engine/settings-set-result-v1",
+            schema: serde_json::to_value(schemars::schema_for!(SetResultSchema))
+                .expect("failed to serialize SetResultSchema"),
+        },
+        SchemaDefinition {
+            schema_id: "slicer-engine/ws/slicing-params-v1",
+            schema: serde_json::to_value(schemars::schema_for!(WsSlicingParams))
+                .expect("failed to serialize WsSlicingParams"),
+        },
+        SchemaDefinition {
+            schema_id: "slicer-engine/ws/client-message-v1",
+            schema: serde_json::to_value(schemars::schema_for!(ClientMessage))
+                .expect("failed to serialize ClientMessage"),
+        },
+        SchemaDefinition {
+            schema_id: "slicer-engine/ws/server-message-v1",
+            schema: serde_json::to_value(schemars::schema_for!(ServerMessage))
+                .expect("failed to serialize ServerMessage"),
+        },
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_all_schemas_generates_definitions() {
+        let schemas = all_schemas();
+        assert_eq!(schemas.len(), 13);
+    }
+
+    #[test]
+    fn test_result_schema_has_correct_id() {
+        let schemas = all_schemas();
+        let result_schema = schemas
+            .iter()
+            .find(|s| s.schema_id == "slicer-engine/result-v1")
+            .expect("result schema not found");
+        assert!(!result_schema.schema.is_null());
+    }
+
+    #[test]
+    fn test_schema_can_serialize() {
+        let result = ResultSchema {
+            status: "success".to_string(),
+            message: "test".to_string(),
+            details: None,
+        };
+        let json = serde_json::to_value(&result).expect("serialize failed");
+        assert_eq!(json["status"], "success");
+    }
+}

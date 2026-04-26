@@ -1,0 +1,67 @@
+<section class="settings-panel">
+  <h2>Slice Settings</h2>
+
+  <div class="field">
+    <label for="layerHeight">Layer Height (mm)</label>
+    <input
+      id="layerHeight"
+      type="number"
+      step="0.05"
+      min="0.05"
+      max="0.5"
+      [value]="settings().layerHeight"
+      (change)="update({ layerHeight: +$any($event.target).value })"
+    />
+  </div>
+
+  <div class="field">
+    <label for="printSpeed">Print Speed (mm/s)</label>
+    <input
+      id="printSpeed"
+      type="number"
+      step="5"
+      min="10"
+      max="300"
+      [value]="settings().printSpeed"
+      (change)="update({ printSpeed: +$any($event.target).value })"
+    />
+  </div>
+
+  <div class="field">
+    <label for="nozzleTemp">Nozzle Temp (°C)</label>
+    <input
+      id="nozzleTemp"
+      type="number"
+      step="5"
+      min="150"
+      max="300"
+      [value]="settings().nozzleTemp"
+      (change)="update({ nozzleTemp: +$any($event.target).value })"
+    />
+  </div>
+
+  <div class="field">
+    <label for="bedTemp">Bed Temp (°C)</label>
+    <input
+      id="bedTemp"
+      type="number"
+      step="5"
+      min="0"
+      max="120"
+      [value]="settings().bedTemp"
+      (change)="update({ bedTemp: +$any($event.target).value })"
+    />
+  </div>
+
+  <div class="field">
+    <label for="gcodeFlavor">GCode Flavor</label>
+    <select
+      id="gcodeFlavor"
+      [value]="settings().gcodeFlavor"
+      (change)="update({ gcodeFlavor: $any($event.target).value })"
+    >
+      <option value="marlin">Marlin</option>
+      <option value="klipper">Klipper</option>
+    </select>
+  </div>
+</section>
