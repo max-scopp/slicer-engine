@@ -254,6 +254,12 @@ pub fn process_mesh(
     crate::arachne::generate_arachne_walls(&mut layers, &arachne_params);
     logger.log_debug("Arachne wall generation complete");
 
+    // Apply single-wall restrictions to first/last layers if configured
+    if params.only_one_wall_first_layer || params.only_one_wall_top {
+        logger.log_debug("applying single-wall restrictions");
+        apply_single_wall_restrictions(&mut layers, params);
+    }
+
     // Calculate interior regions (inside walls) for each layer where surfaces will go
     let interior_regions: Vec<Paths> = if params.top_layers > 0 || params.bottom_layers > 0 {
         logger.log_debug("calculating interior regions for surfaces");
@@ -751,6 +757,81 @@ fn trim_surfaces_to_walls(
         layer.path_roles = new_roles;
         layer.path_widths = new_widths;
     }
+}
+
+/// Apply single-wall restrictions to specific layers based on parameters.
+///
+/// This function modifies layers to use only the outer wall in specific cases:
+/// 1. First layer (layer 0) if only_one_wall_first_layer is true
+/// 2. Last layer of top surface runs if only_one_wall_top is true
+///
+/// Inner walls are removed from these layers, leaving only outer walls.
+fn apply_single_wall_restrictions(
+    layers: &mut [SliceLayer],
+    params: &SlicingParams,
+) {
+    if layers.is_empty() {
+        return;
+    }
+
+    // Process first layer restriction
+    if params.only_one_wall_first_layer && !layers.is_empty() {
+        remove_inner_walls_from_layer(&mut layers[0]);
+    }
+
+    // Process last top surface layer restriction
+    if params.only_one_wall_top {
+        // Find runs of top surface layers and mark the last layer of each run
+        let mut in_top_surface_run = false;
+        let mut last_top_surface_idx = None;
+
+        for i in 0..layers.len() {
+            let has_top_surface = layers[i]
+                .path_roles
+                .iter()
+                .any(|role| *role == ExtrusionRole::TopSurface);
+
+            if has_top_surface {
+                // We're in a top surface run
+                in_top_surface_run = true;
+                last_top_surface_idx = Some(i);
+            } else if in_top_surface_run {
+                // We just exited a top surface run
+                // Apply single wall to the last layer of that run
+                if let Some(idx) = last_top_surface_idx {
+                    remove_inner_walls_from_layer(&mut layers[idx]);
+                }
+                in_top_surface_run = false;
+                last_top_surface_idx = None;
+            }
+        }
+
+        // Handle case where top surface run extends to the end
+        if let Some(idx) = last_top_surface_idx {
+            remove_inner_walls_from_layer(&mut layers[idx]);
+        }
+    }
+}
+
+/// Remove all inner walls from a layer, keeping only outer walls.
+fn remove_inner_walls_from_layer(layer: &mut SliceLayer) {
+    let mut new_paths = Paths::new(vec![]);
+    let mut new_roles = Vec::new();
+    let mut new_widths = Vec::new();
+
+    for (i, path) in layer.paths.iter().enumerate() {
+        let role = layer.role_for_path(i);
+        // Keep everything except InnerWall
+        if role != ExtrusionRole::InnerWall {
+            new_paths.push(path.clone());
+            new_roles.push(role);
+            new_widths.push(layer.width_for_path(i));
+        }
+    }
+
+    layer.paths = new_paths;
+    layer.path_roles = new_roles;
+    layer.path_widths = new_widths;
 }
 
 /// Calculate interior regions from generated walls with configurable overlap.
