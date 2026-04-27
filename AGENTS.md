@@ -189,6 +189,7 @@ GitHub Actions ([.github/workflows/build.yml](.github/workflows/build.yml)) auto
 - **File I/O in WASM**: CLI file operations require JavaScript bindings; not all features available in WASM target.
 - **LTO Compilation**: Release builds are slower due to LTO. Use debug builds during iterative development.
 - **Cross-compilation**: Requires appropriate target toolchains installed. CI verifies these work.
+- **`apply_single_wall_restrictions` is layer-wide, not island-specific**: It strips inner walls from ALL islands on a layer the moment any single island on that layer qualifies (e.g. a small embossed letter's top surface triggers stripping for the entire large cube body too).  Any code that re-derives wall counts or interior regions *after* this step will see `walls_per_island = 1` on those layers and over-expand.  Always snapshot infill regions **before** calling `apply_single_wall_restrictions`; see `pre_strip_infill_regions` in [src/core/pipeline.rs](src/core/pipeline.rs).
 
 ## Slicing Pipeline — Deep Knowledge
 
@@ -199,17 +200,28 @@ why specific design decisions were made.  Read this before touching anything in
 ### Pipeline Execution Order
 
 ```
-slice_mesh()                 — raw mesh → OuterWall contours per layer
-generate_arachne_walls()     — replaces OuterWall contours with bead paths
-apply_single_wall_restrictions()  — strips inner walls from first/last layers if configured
-calculate_interior_region()  — per-layer: area inside innermost wall (for surfaces + infill)
+slice_mesh()                         — raw mesh → OuterWall contours per layer
+generate_arachne_walls()             — replaces OuterWall contours with bead paths
+pre_strip_infill_regions computed    — interior regions snapshotted before wall stripping
+apply_single_wall_restrictions()     — strips inner walls from first/last layers if configured
+interior_regions computed            — per-layer interior (for surfaces), post-strip
 generate_top_bottom_surfaces_with_interior()  — top/bottom solid infill within interior
-add_infill_to_layers()       — sparse infill within interior minus solid regions
+add_infill_to_layers()               — sparse infill using pre-strip regions minus solid regions
 ```
 
 Order matters critically.  Surfaces are computed **after** Arachne walls so that
 `calculate_interior_region` sees the correct bead geometry.  Infill is computed
 **after** surfaces so it can subtract `solid_regions`.
+
+**`pre_strip_infill_regions` must be computed before `apply_single_wall_restrictions`.**
+`apply_single_wall_restrictions` strips inner walls from a layer whenever **any island**
+in that layer has a top surface — including the large body island when only a small
+sub-feature (e.g. an embossed letter) triggers the top-surface condition.  If infill
+regions were re-computed after stripping, `calculate_interior_region` would see
+`walls_per_island = 1` everywhere on those layers and expand the infill boundary into the
+zone that was supposed to be occupied by the stripped inner walls, producing infill that
+bleeds visibly through the wall area.  The snapshot taken before stripping preserves the
+correct `walls_per_island` count for every island.
 
 ### Arachne Wall Paths — What They Are and Are Not
 
