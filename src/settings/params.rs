@@ -493,7 +493,10 @@ mod tests {
         // Legacy JSON without the new fields should still deserialize with defaults
         let json = r#"{"layer_height":0.2,"wall_thickness":1.2,"infill_density":0.2,"print_speed":60.0,"nozzle_temp":210.0,"bed_temp":60.0}"#;
         let params: SlicingParams = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(params.filament_diameter_mm, 1.75, "default filament diameter");
+        assert_eq!(
+            params.filament_diameter_mm, 1.75,
+            "default filament diameter"
+        );
         assert_eq!(params.nozzle_diameter_mm, 0.4, "default nozzle diameter");
         assert_eq!(params.travel_speed_mm_min, 9000.0, "default travel speed");
         assert_eq!(params.z_hop_mm, 0.2, "default z-hop");

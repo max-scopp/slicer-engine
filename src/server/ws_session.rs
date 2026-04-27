@@ -320,7 +320,7 @@ async fn handle_slice(
             download_url: format!("/api/download/{}", uuid),
         };
         let _ = tx.blocking_send(to_json(&complete));
-        
+
         // Finish overall timing
         t_total.finish();
     });
