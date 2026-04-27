@@ -205,15 +205,15 @@ impl SlicingParams {
     }
 
     fn default_only_one_wall_top() -> bool {
-        false
+        true // Single wall on top surface layers for cleaner finish
     }
 
     fn default_only_one_wall_first_layer() -> bool {
-        false
+        true // Single wall on first layer for better bed adhesion
     }
 
     fn default_support_threshold_angle() -> f64 {
-        0.0 // Always generate surfaces by default
+        45.0 // Skip supports for angles ≤45° (shallow overhangs)
     }
 
     fn default_infill_overlap_percent() -> f64 {

@@ -563,8 +563,13 @@ pub fn generate_top_bottom_surfaces_with_interior(
                 difference(perimeters[i].clone(), covered, FillRule::EvenOdd).unwrap_or_default();
             
             // If interior regions are provided, clip surface to interior (inside walls)
+            // Skip surface if interior region is empty or too small
             if let Some(interior_regions) = interior_regions {
-                if !interior_regions[i].is_empty() && !region.is_empty() {
+                if interior_regions[i].is_empty() {
+                    // No interior space - walls fill the entire area
+                    // Skip surface generation entirely
+                    region = Paths::new(vec![]);
+                } else if !region.is_empty() {
                     region = intersect(region, interior_regions[i].clone(), FillRule::EvenOdd)
                         .unwrap_or_default();
                 }
@@ -618,8 +623,13 @@ pub fn generate_top_bottom_surfaces_with_interior(
             }
 
             // If interior regions are provided, clip surface to interior (inside walls)
+            // Skip surface if interior region is empty or too small
             if let Some(interior_regions) = interior_regions {
-                if !interior_regions[i].is_empty() && !top_region.is_empty() {
+                if interior_regions[i].is_empty() {
+                    // No interior space - walls fill the entire area
+                    // Skip surface generation entirely
+                    top_region = Paths::new(vec![]);
+                } else if !top_region.is_empty() {
                     top_region = intersect(top_region, interior_regions[i].clone(), FillRule::EvenOdd)
                         .unwrap_or_default();
                 }
@@ -840,20 +850,24 @@ fn remove_inner_walls_from_layer(layer: &mut SliceLayer) {
 /// interior region where surfaces/infill should be printed. The overlap
 /// parameter controls how much surfaces extend into the walls for bonding.
 ///
+/// Returns an empty Paths if the interior region collapses completely,
+/// indicating that walls fill the entire cross-section.
+///
 /// # Arguments
 /// * `layer` - Layer containing generated wall paths
 /// * `overlap_percent` - How much surfaces overlap into walls (0.0-1.0)
 /// * `nozzle_diameter` - Nozzle diameter in mm
 ///
 /// # Returns
-/// Interior region as Paths where surfaces should be generated
+/// Interior region as Paths where surfaces should be generated, or empty if
+/// walls completely fill the space
 fn calculate_interior_region(
     layer: &SliceLayer,
     overlap_percent: f64,
     nozzle_diameter: f64,
 ) -> Paths {
-    // Collect all wall paths
-    let wall_paths: Vec<Path> = layer
+    // Collect all wall paths with their widths
+    let wall_data: Vec<(Path, f64)> = layer
         .paths
         .iter()
         .enumerate()
@@ -861,32 +875,65 @@ fn calculate_interior_region(
             let role = layer.role_for_path(*i);
             role == ExtrusionRole::OuterWall || role == ExtrusionRole::InnerWall
         })
-        .map(|(_, p)| p.clone())
+        .map(|(i, p)| {
+            let width = layer.width_for_path(i).unwrap_or(nozzle_diameter);
+            (p.clone(), width)
+        })
         .collect();
 
-    if wall_paths.is_empty() {
+    if wall_data.is_empty() {
         return Paths::new(vec![]);
     }
 
-    let walls = Paths::new(wall_paths);
+    // Convert wall centerlines to polygons by inflating by half their width
+    // Then union them all together to get the total wall region
+    let mut wall_region = Paths::new(vec![]);
+    for (path, width) in wall_data {
+        let path_as_paths = Paths::new(vec![path]);
+        let inflated = clipper2::inflate(
+            path_as_paths,
+            (width / 2.0) * 100.0, // Half width to go from centerline to polygon
+            JoinType::Round,
+            EndType::Polygon,
+            2.0,
+        );
+        
+        if wall_region.is_empty() {
+            wall_region = inflated;
+        } else if !inflated.is_empty() {
+            wall_region = clipper2::union(wall_region.clone(), inflated, FillRule::EvenOdd)
+                .unwrap_or(wall_region);
+        }
+    }
     
-    // Calculate how much to shrink walls to create interior region
-    // Shrink by (nozzle_diameter/2 - overlap_distance) to leave the desired overlap
+    if wall_region.is_empty() {
+        return Paths::new(vec![]);
+    }
+    
+    // Now deflate the wall region inward to create the interior
+    // Deflate by (width/2 - overlap) to leave the desired overlap
     let overlap_distance = nozzle_diameter * overlap_percent;
     let shrink_amount = (nozzle_diameter / 2.0) - overlap_distance;
     
-    if shrink_amount > 0.01 {
-        // Deflate (negative inflate) to shrink walls inward
+    if shrink_amount < 0.01 {
+        // Overlap is too large - use minimal shrink
+        let minimal_shrink = 0.05;
         clipper2::inflate(
-            walls,
-            -shrink_amount * 100.0, // Negative = deflate, convert to Centi
+            wall_region,
+            -minimal_shrink * 100.0,
             JoinType::Round,
             EndType::Polygon,
             2.0,
         )
     } else {
-        // No shrinking needed, use walls as-is
-        walls
+        // Normal case: deflate by calculated amount
+        clipper2::inflate(
+            wall_region,
+            -shrink_amount * 100.0,
+            JoinType::Round,
+            EndType::Polygon,
+            2.0,
+        )
     }
 }
 
@@ -1474,6 +1521,9 @@ mod tests {
             top_layers: 2,
             bottom_layers: 2,
             surface_infill_angle: 45.0,
+            // Use old defaults for this test to verify basic functionality
+            only_one_wall_first_layer: false,
+            only_one_wall_top: false,
             ..SlicingParams::default()
         };
 
