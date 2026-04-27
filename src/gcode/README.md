@@ -34,14 +34,14 @@ flowchart TD
     paths["For each path in layer"]
     retract["retract → z-hop → travel → lower → un-retract"]
     extrude["extrude segments\n(compute E per move)"]
-    end["④ Emit end script"]
+    footer["④ Emit end script"]
     out["G-code String"]
 
     caller --> gen --> header --> start --> layers
     layers --> markers --> paths --> retract --> extrude
     extrude --> paths
     paths --> layers
-    layers --> end --> out
+    layers --> footer --> out
 ```
 
 ---
