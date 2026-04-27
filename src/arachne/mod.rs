@@ -190,7 +190,7 @@ fn find_collapse_depth(input: &Paths) -> f64 {
     let mut lo = 0.0_f64;
     let mut hi = max_d;
 
-    for _ in 0..24 {
+    for _ in 0..COLLAPSE_DEPTH_ITERATIONS {
         let mid = (lo + hi) / 2.0;
         let shrunk = simplify(
             inflate(input.clone(), -mid, JoinType::Round, EndType::Polygon, 2.0),
@@ -206,6 +206,12 @@ fn find_collapse_depth(input: &Paths) -> f64 {
 
     lo // largest depth where inflate returns a non-empty result
 }
+
+/// Number of binary-search iterations for collapse-depth calculation.
+///
+/// 24 iterations give sub-nanometre precision on a 500 mm bounding box
+/// (500 / 2^24 ≈ 30 nm), which is far beyond the resolution needed for FDM.
+const COLLAPSE_DEPTH_ITERATIONS: usize = 24;
 
 /// Inward-offset helper: shrink `input` by `depth` and simplify.
 fn shrink(input: &Paths, depth: f64, tol: f64) -> Paths {
@@ -299,16 +305,7 @@ pub fn compute_arachne_beads(input: &Paths, params: &ArachneParams) -> Vec<Bead>
         // Strategy: remove the last n_absorb path entries and regenerate.
         // We count from the end, only touching beads with width == d
         // (i.e. standard beads, not a previous residual bead).
-        let total_beads = beads.len();
-        // Determine the cutoff index: the start of the last n_absorb standard
-        // bead groups.  We do a simple heuristic: re-generate beads at the
-        // last n_absorb centerline depths with an adjusted width.
         let absorb_start_k = n_fit.saturating_sub(n_absorb);
-
-        // Remove the beads that will be regenerated.
-        // We don't know exactly how many path entries each bead produced,
-        // so we regenerate from scratch for the affected depths.
-        let _ = total_beads; // suppress lint
 
         // Remove the innermost n_absorb standard beads from the list.
         // They start at some index in `beads`; compute by counting paths.

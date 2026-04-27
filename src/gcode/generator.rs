@@ -10,6 +10,12 @@ use crate::settings::params::{LifecycleMarkerConfig, SlicingParams};
 
 // ── Private helpers ────────────────────────────────────────────────────────────
 
+/// Minimum width difference (mm) that triggers a new `;WIDTH:` annotation.
+///
+/// Changes smaller than this epsilon are treated as equal, preventing redundant
+/// WIDTH comments for floating-point rounding differences between beads.
+const WIDTH_EPSILON: f64 = 1e-6;
+
 /// Compute the extrusion length (mm of filament) needed to print a straight
 /// line of length `move_len` at the given `layer_height` with the configured
 /// nozzle and filament diameters.
@@ -354,7 +360,7 @@ impl GcodeGenerator {
                 if self.marker_config.enabled {
                     let role_changed = last_role != Some(role);
                     let width_changed = last_width
-                        .is_none_or(|w| (w - width_mm).abs() > 1e-6);
+                        .is_none_or(|w| (w - width_mm).abs() > WIDTH_EPSILON);
 
                     if role_changed || width_changed {
                         let type_name = role.type_name();

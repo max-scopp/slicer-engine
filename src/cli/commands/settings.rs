@@ -491,7 +491,7 @@ impl EmitPayload for ShowResult<'_> {
                 self.settings.params.wall_transition_threshold
             ),
             format!(
-                "  wall_transition_length: {} × nozzle",
+                "  wall_transition_length: {} mm",
                 self.settings.params.wall_transition_length
             ),
             format!(
