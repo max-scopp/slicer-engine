@@ -245,26 +245,7 @@ pub fn process_mesh(
 
     logger.log_info(&format!("sliced into {} layers", layers.len()));
 
-    // Add top/bottom surfaces before Arachne so surface detection uses the
-    // raw mesh contours (which are exact model boundaries).
-    if params.top_layers > 0 || params.bottom_layers > 0 {
-        logger.log_debug(&format!(
-            "generating surfaces (top: {}, bottom: {}, angle: {}°)",
-            params.top_layers, params.bottom_layers, params.surface_infill_angle
-        ));
-        generate_top_bottom_surfaces(
-            &mut layers,
-            params.top_layers,
-            params.bottom_layers,
-            params.layer_height,
-            params.surface_infill_angle,
-        );
-        logger.log_debug("surface generation complete");
-    }
-
-    // Replace the raw mesh-contour perimeters with Arachne variable-width
-    // wall paths.  Non-perimeter paths (top/bottom surface infill) are
-    // preserved.
+    // Generate Arachne walls FIRST from the raw mesh contours
     logger.log_debug(&format!(
         "generating Arachne walls (wall_count: {}, nozzle: {}mm)",
         params.wall_count, params.nozzle_diameter_mm
@@ -273,14 +254,39 @@ pub fn process_mesh(
     crate::arachne::generate_arachne_walls(&mut layers, &arachne_params);
     logger.log_debug("Arachne wall generation complete");
 
-    // TODO: After generating walls, trim solid surface regions to fit inside walls.
-    // Currently disabled because surfaces are generated as open line paths which
-    // don't intersect well with polygon regions. Need to either:
-    // 1. Generate surfaces AFTER walls (in the interior region), or
-    // 2. Use a different clipping approach for open paths
-    //
-    // logger.log_debug("trimming surfaces to walls");
-    // trim_surfaces_to_walls(&mut layers, params.infill_overlap_percent, params.nozzle_diameter_mm);
+    // Calculate interior regions (inside walls) for each layer where surfaces will go
+    let interior_regions: Vec<Paths> = if params.top_layers > 0 || params.bottom_layers > 0 {
+        logger.log_debug("calculating interior regions for surfaces");
+        layers
+            .iter()
+            .map(|layer| {
+                calculate_interior_region(
+                    layer,
+                    params.infill_overlap_percent,
+                    params.nozzle_diameter_mm,
+                )
+            })
+            .collect()
+    } else {
+        vec![]
+    };
+
+    // Now generate top/bottom surfaces INSIDE the walls
+    if params.top_layers > 0 || params.bottom_layers > 0 {
+        logger.log_debug(&format!(
+            "generating surfaces (top: {}, bottom: {}, angle: {}°)",
+            params.top_layers, params.bottom_layers, params.surface_infill_angle
+        ));
+        generate_top_bottom_surfaces_with_interior(
+            &mut layers,
+            params.top_layers,
+            params.bottom_layers,
+            params.layer_height,
+            params.surface_infill_angle,
+            Some(&interior_regions),
+        );
+        logger.log_debug("surface generation complete");
+    }
 
     layers
 }
@@ -459,6 +465,51 @@ pub fn generate_top_bottom_surfaces(
     layer_height: f64,
     infill_angle: f64,
 ) {
+    generate_top_bottom_surfaces_with_interior(
+        layers,
+        top_layers,
+        bottom_layers,
+        layer_height,
+        infill_angle,
+        None, // No interior regions - use full perimeters
+    );
+}
+
+/// Generate top and bottom solid surface infill for layers.
+///
+/// Detects which parts of each layer are exposed (unsupported from below for
+/// bottom surfaces, or exposed from above for top surfaces) by comparing each
+/// layer's geometry to its neighbors. Exposed regions are then filled with
+/// solid rectilinear infill.
+///
+/// The detection algorithm uses **progressive intersection** to handle complex
+/// geometry: for top surfaces, a layer's region is intersected with ALL
+/// `top_layers` layers above it; any part not in that full intersection is a
+/// top surface.  Bottom surfaces use the symmetric logic below.
+///
+/// Clipper2's **EvenOdd fill rule** is used for all boolean operations,
+/// treating any closed contour boundary as defining an interior/exterior toggle.
+/// Regions are considered "outside" when surrounded by an **even** number of
+/// boundaries (0, 2, 4…) and "inside" when surrounded by an **odd** number,
+/// naturally treating nested contours as holes without relying on winding order.
+///
+/// # Arguments
+/// * `layers` - Mutable reference to the slice layers
+/// * `top_layers` - Number of solid layers above any exposed top surface
+/// * `bottom_layers` - Number of solid layers below any exposed bottom surface
+/// * `layer_height` - Layer height in mm, used to derive infill spacing
+/// * `infill_angle` - Angle in degrees for solid infill lines (e.g. 45)
+/// * `interior_regions` - Optional interior regions for each layer (inside walls).
+///   If provided, surface infill is clipped to these regions, ensuring walls
+///   have priority over surfaces.
+pub fn generate_top_bottom_surfaces_with_interior(
+    layers: &mut [SliceLayer],
+    top_layers: usize,
+    bottom_layers: usize,
+    layer_height: f64,
+    infill_angle: f64,
+    interior_regions: Option<&[Paths]>,
+) {
     if layers.is_empty() || (top_layers == 0 && bottom_layers == 0) {
         return;
     }
@@ -502,8 +553,17 @@ pub fn generate_top_bottom_surfaces(
                 }
             }
 
-            let region =
+            let mut region =
                 difference(perimeters[i].clone(), covered, FillRule::EvenOdd).unwrap_or_default();
+            
+            // If interior regions are provided, clip surface to interior (inside walls)
+            if let Some(interior_regions) = interior_regions {
+                if !interior_regions[i].is_empty() && !region.is_empty() {
+                    region = intersect(region, interior_regions[i].clone(), FillRule::EvenOdd)
+                        .unwrap_or_default();
+                }
+            }
+            
             if !region.is_empty() {
                 add_solid_infill_for_region(
                     &mut layers[i],
@@ -549,6 +609,14 @@ pub fn generate_top_bottom_surfaces(
             if !bottom_region.is_empty() && !top_region.is_empty() {
                 top_region = difference(top_region, bottom_region, FillRule::EvenOdd)
                     .unwrap_or_default();
+            }
+
+            // If interior regions are provided, clip surface to interior (inside walls)
+            if let Some(interior_regions) = interior_regions {
+                if !interior_regions[i].is_empty() && !top_region.is_empty() {
+                    top_region = intersect(top_region, interior_regions[i].clone(), FillRule::EvenOdd)
+                        .unwrap_or_default();
+                }
             }
 
             if !top_region.is_empty() {
@@ -682,6 +750,62 @@ fn trim_surfaces_to_walls(
         layer.paths = new_paths;
         layer.path_roles = new_roles;
         layer.path_widths = new_widths;
+    }
+}
+
+/// Calculate interior regions from generated walls with configurable overlap.
+///
+/// Takes the generated wall paths and deflates them inward to create the
+/// interior region where surfaces/infill should be printed. The overlap
+/// parameter controls how much surfaces extend into the walls for bonding.
+///
+/// # Arguments
+/// * `layer` - Layer containing generated wall paths
+/// * `overlap_percent` - How much surfaces overlap into walls (0.0-1.0)
+/// * `nozzle_diameter` - Nozzle diameter in mm
+///
+/// # Returns
+/// Interior region as Paths where surfaces should be generated
+fn calculate_interior_region(
+    layer: &SliceLayer,
+    overlap_percent: f64,
+    nozzle_diameter: f64,
+) -> Paths {
+    // Collect all wall paths
+    let wall_paths: Vec<Path> = layer
+        .paths
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| {
+            let role = layer.role_for_path(*i);
+            role == ExtrusionRole::OuterWall || role == ExtrusionRole::InnerWall
+        })
+        .map(|(_, p)| p.clone())
+        .collect();
+
+    if wall_paths.is_empty() {
+        return Paths::new(vec![]);
+    }
+
+    let walls = Paths::new(wall_paths);
+    
+    // Calculate how much to shrink walls to create interior region
+    // Shrink by (nozzle_diameter/2 - overlap_distance) to leave the desired overlap
+    let overlap_distance = nozzle_diameter * overlap_percent;
+    let shrink_amount = (nozzle_diameter / 2.0) - overlap_distance;
+    
+    if shrink_amount > 0.01 {
+        // Deflate (negative inflate) to shrink walls inward
+        clipper2::inflate(
+            walls,
+            -shrink_amount * 100.0, // Negative = deflate, convert to Centi
+            JoinType::Round,
+            EndType::Polygon,
+            2.0,
+        )
+    } else {
+        // No shrinking needed, use walls as-is
+        walls
     }
 }
 
