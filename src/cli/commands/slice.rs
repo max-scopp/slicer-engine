@@ -5,7 +5,7 @@ use crate::cli::output::{EmitPayload, OutputFormat};
 use crate::gcode::{resolve_gcode_source, GcodeFlavor, GcodeGenerator};
 use crate::logging::{phases, PhaseTimer, ProcessLogger};
 use crate::mesh::analysis::{calculate_aabb, calculate_surface_area, calculate_volume};
-use crate::mesh::io::read_stl;
+use crate::mesh::io::read_mesh;
 use crate::mesh::transforms::{center_mesh, drop_to_floor};
 use crate::settings::params::LifecycleMarkerConfig;
 use crate::settings::{load_and_merge_settings, load_settings};
@@ -16,7 +16,7 @@ use std::path::PathBuf;
 /// Slice a 3D model into layers
 #[derive(Parser, Debug)]
 pub struct SliceCommand {
-    /// Input model file path (STL)
+    /// Input model file path (STL, OBJ, or 3MF)
     #[arg(short, long)]
     pub input: PathBuf,
 
@@ -178,9 +178,9 @@ impl SliceCommand {
         logger.log_debug(&format!("loading mesh: {:?}", self.input));
         logger.log_debug(&format!("G-code flavor: {}", flavor));
 
-        // Load the STL mesh
+        // Load mesh — format is auto-detected from file extension
         let t_load = PhaseTimer::start(phases::MESH_LOAD, &logger);
-        let mut mesh = read_stl(&self.input)
+        let mut mesh = read_mesh(&self.input)
             .map_err(|e| format!("Failed to load mesh '{}': {}", self.input.display(), e))?;
         t_load.finish();
 
@@ -321,10 +321,10 @@ impl SliceCommand {
         };
 
         emitter.emit(&result);
-        
+
         // Finish overall timing
         t_total.finish();
-        
+
         Ok(())
     }
 }

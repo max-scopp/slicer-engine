@@ -388,7 +388,8 @@ impl GcodeGenerator {
                 ));
                 out.push_str(&format!(
                     "{} ; z-hop\n",
-                    self.dialect.move_z(layer.z + params.z_hop_mm, params.travel_speed_mm_min)
+                    self.dialect
+                        .move_z(layer.z + params.z_hop_mm, params.travel_speed_mm_min)
                 ));
                 out.push_str(&format!(
                     "{} ; travel\n",
