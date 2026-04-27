@@ -85,19 +85,6 @@ pub struct Bead {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Generate Arachne variable-width wall paths for every layer.
-///
-/// Replaces the raw mesh-contour [`ExtrusionRole::OuterWall`] paths in each
-/// layer with properly generated variable-width perimeter beads.  All
-/// non-perimeter paths (top/bottom surface infill, sparse infill, etc.) are
-/// preserved in their original order after the new wall paths.
-///
-/// # Arguments
-///
-/// * `layers` – mutable slice layers produced by [`crate::core::slice_mesh`]
-///   (after surface generation).
-/// * `params` – resolved Arachne parameters.
-
 /// Sub-phase timing breakdown for [`generate_arachne_walls`].
 ///
 /// All times are the **sum of CPU time across all rayon worker threads**; they
@@ -110,6 +97,18 @@ pub struct ArachneSubTimings {
     pub bead_shrink_ms: u64,
 }
 
+/// Generate Arachne variable-width wall paths for every layer.
+///
+/// Replaces the raw mesh-contour [`ExtrusionRole::OuterWall`] paths in each
+/// layer with properly generated variable-width perimeter beads.  All
+/// non-perimeter paths (top/bottom surface infill, sparse infill, etc.) are
+/// preserved in their original order after the new wall paths.
+///
+/// # Arguments
+///
+/// * `layers` – mutable slice layers produced by [`crate::core::slice_mesh`]
+///   (after surface generation).
+/// * `params` – resolved Arachne parameters.
 pub fn generate_arachne_walls(layers: &mut [SliceLayer], params: &ArachneParams) -> ArachneSubTimings {
     ARACHNE_COLLAPSE_NS.store(0, Ordering::Relaxed);
     ARACHNE_BEAD_SHRINK_NS.store(0, Ordering::Relaxed);
