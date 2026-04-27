@@ -65,11 +65,108 @@ const PARALLEL_EPSILON: f64 = 1e-12;
 /// and is discarded (avoids emitting zero-length paths).
 const MIN_SEGMENT_LENGTH_SQ: f64 = 1e-12;
 
+/// Clip a multi-point polyline to region boundaries, maintaining connectivity.
+///
+/// This function processes each segment of the polyline, clips it to the region,
+/// and chains together consecutive segments that remain inside the region.
+fn clip_polyline_to_region(pts: &[(f64, f64)], region: &Paths, result: &mut Paths) {
+    let mut current_path: Vec<(f64, f64)> = Vec::new();
+    
+    for i in 0..pts.len() - 1 {
+        let (x0, y0) = pts[i];
+        let (x1, y1) = pts[i + 1];
+        
+        // Collect all t values where this segment intersects a polygon edge
+        let mut t_values: Vec<f64> = vec![0.0, 1.0];
+        
+        for poly in region.iter() {
+            let poly_pts: Vec<(f64, f64)> = poly.iter().map(|p| (p.x(), p.y())).collect();
+            let n = poly_pts.len();
+            if n < 2 {
+                continue;
+            }
+            
+            for k in 0..n {
+                if let Some(t) = segment_edge_t(x0, y0, x1, y1, (poly_pts[k], poly_pts[(k + 1) % n])) {
+                    if t > T_VALUE_EPSILON && t < 1.0 - T_VALUE_EPSILON {
+                        t_values.push(t);
+                    }
+                }
+            }
+        }
+        
+        t_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        t_values.dedup_by(|a, b| (*a - *b).abs() < T_VALUE_EPSILON);
+        
+        // Process each sub-segment
+        for window in t_values.windows(2) {
+            let ta = window[0];
+            let tb = window[1];
+            let t_mid = (ta + tb) * 0.5;
+            
+            let mx = x0 + t_mid * (x1 - x0);
+            let my = y0 + t_mid * (y1 - y0);
+            
+            if point_in_region_even_odd(mx, my, region) {
+                let seg_start = (x0 + ta * (x1 - x0), y0 + ta * (y1 - y0));
+                let seg_end = (x0 + tb * (x1 - x0), y0 + tb * (y1 - y0));
+                
+                // Check if segment is long enough
+                let dx = seg_end.0 - seg_start.0;
+                let dy = seg_end.1 - seg_start.1;
+                if dx * dx + dy * dy <= MIN_SEGMENT_LENGTH_SQ {
+                    continue;
+                }
+                
+                // If current_path is empty or the new segment connects, add to current path
+                if current_path.is_empty() {
+                    current_path.push(seg_start);
+                    current_path.push(seg_end);
+                } else {
+                    let last_pt = *current_path.last().unwrap();
+                    let dist_sq = (seg_start.0 - last_pt.0).powi(2) + (seg_start.1 - last_pt.1).powi(2);
+                    
+                    // If segments connect (within tolerance), continue current path
+                    if dist_sq < MIN_SEGMENT_LENGTH_SQ * 100.0 {
+                        current_path.push(seg_end);
+                    } else {
+                        // Segments don't connect, flush current path and start new one
+                        if current_path.len() >= 2 {
+                            let path: Path = current_path.clone().into();
+                            result.push(path);
+                        }
+                        current_path.clear();
+                        current_path.push(seg_start);
+                        current_path.push(seg_end);
+                    }
+                }
+            } else {
+                // Segment is outside, flush current path if any
+                if current_path.len() >= 2 {
+                    let path: Path = current_path.clone().into();
+                    result.push(path);
+                }
+                current_path.clear();
+            }
+        }
+    }
+    
+    // Flush any remaining path
+    if current_path.len() >= 2 {
+        let path: Path = current_path.into();
+        result.push(path);
+    }
+}
+
 /// Clip generated line segments to the infill region boundaries.
 ///
-/// Each 2-point line in `lines` is clipped against the closed polygon paths in
+/// Each line path in `lines` is clipped against the closed polygon paths in
 /// `region` using a segment–polygon intersection algorithm with even-odd fill
 /// rule (consistent with Clipper2 boolean operations used elsewhere).
+///
+/// For multi-point paths (like gyroid), each segment is clipped individually
+/// and connected segments that remain inside the region are combined into
+/// continuous paths.
 ///
 /// # Algorithm
 /// For every line segment:
@@ -93,9 +190,15 @@ pub fn clip_lines_to_region(lines: &Paths, region: &Paths) -> Paths {
             continue;
         }
 
-        // Use only the first and last point as the segment endpoints.
+        // For multi-point paths (gyroid), clip each segment and maintain connectivity
+        if pts.len() > 2 {
+            clip_polyline_to_region(&pts, region, &mut result);
+            continue;
+        }
+
+        // For simple 2-point lines, use the optimized single-segment clipping
         let (x0, y0) = pts[0];
-        let (x1, y1) = pts[pts.len() - 1];
+        let (x1, y1) = pts[1];
 
         // Collect all t values where this segment intersects a polygon edge.
         let mut t_values: Vec<f64> = vec![0.0, 1.0];
