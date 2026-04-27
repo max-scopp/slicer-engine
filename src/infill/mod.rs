@@ -7,10 +7,10 @@
 //! # Pattern Types
 //!
 //! - **Rectilinear**: Parallel lines alternating direction per layer (fastest)
-//! - **CrossHatch**: Like rectilinear but specifically for cross-hatching (most efficient)
 //! - **Grid**: Perpendicular lines forming a grid pattern (stronger)
 //! - **Honeycomb**: Hexagonal cells (good strength-to-weight ratio)
 //! - **Gyroid**: 3D mathematical pattern (best strength, isotropic)
+//! - **TpmsD**: Triply Periodic Minimal Surface - Diamond (organic, isotropic structure)
 //!
 //! # Usage
 //!
@@ -21,7 +21,7 @@
 //! let perimeter_paths = Paths::default(); // from slice_mesh
 //! let infill_paths = generate_infill(
 //!     &perimeter_paths,
-//!     InfillPattern::CrossHatch,
+//!     InfillPattern::TpmsD,
 //!     0.2,  // 20% density
 //!     0.0,  // layer rotation angle
 //!     0.2,  // Z height in mm
@@ -34,14 +34,14 @@ mod rectilinear;
 mod grid;
 mod honeycomb;
 mod gyroid;
-mod crosshatch;
+mod tpms_d;
 mod utils;
 
 use rectilinear::generate_rectilinear;
 use grid::generate_grid;
 use honeycomb::generate_honeycomb;
 use gyroid::generate_gyroid;
-use crosshatch::generate_crosshatch;
+use tpms_d::generate_tpms_d;
 use utils::{calculate_infill_region, clip_lines_to_region};
 
 /// Supported infill patterns.
@@ -56,8 +56,8 @@ pub enum InfillPattern {
     Honeycomb,
     /// 3D mathematical pattern (experimental, best strength).
     Gyroid,
-    /// Cross-hatch pattern (most material-efficient, alternates per layer).
-    CrossHatch,
+    /// Triply Periodic Minimal Surface - Diamond (organic, isotropic structure).
+    TpmsD,
 }
 
 impl InfillPattern {
@@ -68,7 +68,7 @@ impl InfillPattern {
             "grid" => Some(Self::Grid),
             "honeycomb" | "hexagonal" => Some(Self::Honeycomb),
             "gyroid" => Some(Self::Gyroid),
-            "crosshatch" | "cross-hatch" | "cross_hatch" => Some(Self::CrossHatch),
+            "tpms-d" | "tpmsd" | "tpms_d" => Some(Self::TpmsD),
             _ => None,
         }
     }
@@ -80,7 +80,7 @@ impl InfillPattern {
             Self::Grid => "grid",
             Self::Honeycomb => "honeycomb",
             Self::Gyroid => "gyroid",
-            Self::CrossHatch => "crosshatch",
+            Self::TpmsD => "tpms-d",
         }
     }
 }
@@ -126,7 +126,7 @@ pub fn generate_infill(
         InfillPattern::Grid => generate_grid(&infill_region, density, angle_offset),
         InfillPattern::Honeycomb => generate_honeycomb(&infill_region, density, angle_offset),
         InfillPattern::Gyroid => generate_gyroid(&infill_region, density, z_height),
-        InfillPattern::CrossHatch => generate_crosshatch(&infill_region, density, angle_offset),
+        InfillPattern::TpmsD => generate_tpms_d(&infill_region, density, z_height),
     };
 
     // Clip the generated lines to the infill region boundaries
@@ -150,8 +150,8 @@ mod tests {
         assert_eq!(InfillPattern::parse("GRID"), Some(InfillPattern::Grid));
         assert_eq!(InfillPattern::parse("honeycomb"), Some(InfillPattern::Honeycomb));
         assert_eq!(InfillPattern::parse("gyroid"), Some(InfillPattern::Gyroid));
-        assert_eq!(InfillPattern::parse("crosshatch"), Some(InfillPattern::CrossHatch));
-        assert_eq!(InfillPattern::parse("cross-hatch"), Some(InfillPattern::CrossHatch));
+        assert_eq!(InfillPattern::parse("tpms-d"), Some(InfillPattern::TpmsD));
+        assert_eq!(InfillPattern::parse("tpmsd"), Some(InfillPattern::TpmsD));
         assert_eq!(InfillPattern::parse("invalid"), None);
     }
 
@@ -161,7 +161,7 @@ mod tests {
         assert_eq!(InfillPattern::Grid.name(), "grid");
         assert_eq!(InfillPattern::Honeycomb.name(), "honeycomb");
         assert_eq!(InfillPattern::Gyroid.name(), "gyroid");
-        assert_eq!(InfillPattern::CrossHatch.name(), "crosshatch");
+        assert_eq!(InfillPattern::TpmsD.name(), "tpms-d");
     }
 
     #[test]
@@ -207,7 +207,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "gyroid geometry not yet proven correct — re-enable after manual verification"]
     fn test_generate_infill_gyroid_basic() {
         let mut perimeters = Paths::default();
         let square: Path = vec![(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)].into();
@@ -220,15 +219,14 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "crosshatch geometry not yet proven correct — re-enable after manual verification"]
-    fn test_generate_infill_crosshatch_basic() {
+    fn test_generate_infill_tpms_d_basic() {
         let mut perimeters = Paths::default();
         let square: Path = vec![(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)].into();
         perimeters.push(square);
 
-        let infill = generate_infill(&perimeters, InfillPattern::CrossHatch, 0.2, 0.0, 0.2);
+        let infill = generate_infill(&perimeters, InfillPattern::TpmsD, 0.2, 0.0, 0.2);
         
-        // Should generate crosshatch pattern
-        assert!(!infill.is_empty(), "Expected crosshatch infill to be generated");
+        // Should generate tpms-d pattern
+        assert!(!infill.is_empty(), "Expected tpms-d infill to be generated");
     }
 }

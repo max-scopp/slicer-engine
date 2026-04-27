@@ -1,4 +1,4 @@
-export type InfillPattern = 'rectilinear' | 'grid' | 'honeycomb' | 'gyroid' | 'crosshatch';
+export type InfillPattern = 'rectilinear' | 'grid' | 'honeycomb' | 'gyroid' | 'tpms-d';
 
 export interface SliceSettings {
   layerHeight: number;
