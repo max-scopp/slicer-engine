@@ -36,7 +36,8 @@ graph LR
 ## Documentation
 
 ### Getting Started
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** ⭐ – Complete system architecture with Mermaid diagrams (start here for contributors!)
+- **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** 🚀 – Visual cheat sheets and quick navigation (great for jumping into the code!)
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** ⭐ – Complete system architecture with Mermaid diagrams (detailed reference)
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** – How to contribute, development workflow, coding standards
 
 ### Detailed Guides
