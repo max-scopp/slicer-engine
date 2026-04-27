@@ -254,10 +254,22 @@ pub fn process_mesh(
     crate::arachne::generate_arachne_walls(&mut layers, &arachne_params);
     logger.log_debug("Arachne wall generation complete");
 
-    // Apply single-wall restrictions to first/last layers if configured
+    // Apply single-wall restrictions to first/last layers if configured.
+    //
+    // The "last layer of each top surface run" detection MUST run before
+    // calculate_interior_region so that the interior of single-wall layers
+    // collapses to "everything inside the outer wall" (deflate by 1×nozzle)
+    // instead of a tiny disk inside the would-be innermost wall.  We derive
+    // top-surface layers geometrically from perimeters here because surface
+    // generation hasn't run yet, so path_roles don't carry TopSurface.
     if params.only_one_wall_first_layer || params.only_one_wall_top {
         logger.log_debug("applying single-wall restrictions");
-        apply_single_wall_restrictions(&mut layers, params);
+        let has_top_surface = if params.only_one_wall_top {
+            compute_layers_with_top_surface(&layers, params.top_layers)
+        } else {
+            vec![false; layers.len()]
+        };
+        apply_single_wall_restrictions(&mut layers, params, &has_top_surface);
     }
 
     // Calculate interior regions (inside walls) for each layer where surfaces will go
@@ -769,38 +781,54 @@ fn trim_surfaces_to_walls(layers: &mut [SliceLayer], overlap_percent: f64, nozzl
 /// Apply single-wall restrictions to specific layers based on parameters.
 ///
 /// This function modifies layers to use only the outer wall in specific cases:
-/// 1. First layer (layer 0) if only_one_wall_first_layer is true
-/// 2. Last layer of top surface runs if only_one_wall_top is true
+/// 1. First layer (layer 0) if `only_one_wall_first_layer` is true.
+/// 2. Last layer of every "top surface run" if `only_one_wall_top` is true,
+///    where a run is a contiguous range of layers that have an exposed top
+///    surface (i.e. are not fully covered by perimeters within `top_layers`
+///    above them).
 ///
 /// Inner walls are removed from these layers, leaving only outer walls.
-fn apply_single_wall_restrictions(layers: &mut [SliceLayer], params: &SlicingParams) {
+///
+/// # `has_top_surface`
+///
+/// Caller must pre-compute, per layer, whether a top surface will be drawn
+/// there. This **must** be derived from perimeter geometry (see
+/// [`compute_layers_with_top_surface`]), not from `path_roles`, because the
+/// `TopSurface` role is only assigned later, after surfaces are generated.
+/// Earlier versions used `path_roles.contains(&TopSurface)` and were a
+/// permanent no-op for `only_one_wall_top`, leaving the topmost layer with
+/// every wall and producing a visible inter-wall gap between the top surface
+/// and the outer wall.
+fn apply_single_wall_restrictions(
+    layers: &mut [SliceLayer],
+    params: &SlicingParams,
+    has_top_surface: &[bool],
+) {
     if layers.is_empty() {
         return;
     }
 
     // Process first layer restriction
-    if params.only_one_wall_first_layer && !layers.is_empty() {
+    if params.only_one_wall_first_layer {
         remove_inner_walls_from_layer(&mut layers[0]);
     }
 
-    // Process last top surface layer restriction
+    // Process last-layer-of-each-top-surface-run restriction.
     if params.only_one_wall_top {
-        // Find runs of top surface layers and mark the last layer of each run
+        debug_assert_eq!(
+            has_top_surface.len(),
+            layers.len(),
+            "has_top_surface mask must align with layers"
+        );
+
         let mut in_top_surface_run = false;
         let mut last_top_surface_idx = None;
 
-        for i in 0..layers.len() {
-            let has_top_surface = layers[i]
-                .path_roles
-                .contains(&ExtrusionRole::TopSurface);
-
-            if has_top_surface {
-                // We're in a top surface run
+        for (i, &has_top) in has_top_surface.iter().enumerate() {
+            if has_top {
                 in_top_surface_run = true;
                 last_top_surface_idx = Some(i);
             } else if in_top_surface_run {
-                // We just exited a top surface run
-                // Apply single wall to the last layer of that run
                 if let Some(idx) = last_top_surface_idx {
                     remove_inner_walls_from_layer(&mut layers[idx]);
                 }
@@ -809,11 +837,58 @@ fn apply_single_wall_restrictions(layers: &mut [SliceLayer], params: &SlicingPar
             }
         }
 
-        // Handle case where top surface run extends to the end
+        // Handle the case where a top-surface run extends to the very last layer.
         if let Some(idx) = last_top_surface_idx {
             remove_inner_walls_from_layer(&mut layers[idx]);
         }
     }
+}
+
+/// Pre-compute, for every layer, whether it will receive a top surface.
+///
+/// Mirrors the geometric "covered above" test in
+/// [`generate_top_bottom_surfaces_with_interior`] so that callers running
+/// **before** surface generation (e.g. [`apply_single_wall_restrictions`])
+/// can identify top-surface layers without inspecting `path_roles`.
+///
+/// A layer has a top surface iff its perimeter region is not fully covered
+/// by the EvenOdd intersection of perimeters of the next `top_layers` layers
+/// above it (or it sits within `top_layers` of the model top).
+fn compute_layers_with_top_surface(layers: &[SliceLayer], top_layers: usize) -> Vec<bool> {
+    if top_layers == 0 || layers.is_empty() {
+        return vec![false; layers.len()];
+    }
+
+    let perimeters: Vec<Paths> = layers.iter().map(perimeter_paths_of).collect();
+    let total = perimeters.len();
+
+    (0..total)
+        .map(|i| {
+            // Same loop shape as the top branch of
+            // generate_top_bottom_surfaces_with_interior so the two stay in
+            // lock-step.
+            let mut covered = perimeters[i].clone();
+            for j in 1..=top_layers {
+                if i + j >= total {
+                    covered = Paths::new(vec![]);
+                    break;
+                }
+                let neighbor = &perimeters[i + j];
+                if neighbor.is_empty() {
+                    covered = Paths::new(vec![]);
+                    break;
+                }
+                covered =
+                    intersect(covered, neighbor.clone(), FillRule::EvenOdd).unwrap_or_default();
+                if covered.is_empty() {
+                    break;
+                }
+            }
+            let region =
+                difference(perimeters[i].clone(), covered, FillRule::EvenOdd).unwrap_or_default();
+            !region.is_empty()
+        })
+        .collect()
 }
 
 /// Remove all inner walls from a layer, keeping only outer walls.
@@ -1201,44 +1276,103 @@ mod tests {
         assert!(layer.path_roles.is_empty());
     }
 
-    /// Diagnostic: with default params (only_one_wall_first_layer=true, only_one_wall_top=true),
-    /// inspect cube top vs bottom surface points. Used to debug "between walls on top" issue.
+    /// Regression test: with `only_one_wall_top = true`, the topmost layer
+    /// of each top-surface run must be reduced to a single (outer) wall, and
+    /// its TopSurface must extend out to the outer-wall edge — mirroring the
+    /// behaviour of `only_one_wall_first_layer` on layer 0.
+    ///
+    /// The previous role-based detection in `apply_single_wall_restrictions`
+    /// was a no-op (TopSurface roles are assigned later, after this runs),
+    /// so the topmost layer kept all walls and the top surface was confined
+    /// to a tiny disk inside the innermost wall — leaving a visible
+    /// inter-wall gap that users perceived as the "between walls" bug
+    /// persisting on top surfaces.
     #[test]
-    #[ignore]
-    fn diagnose_top_vs_bottom_default_params() {
+    fn test_only_one_wall_top_reduces_topmost_layer() {
         use crate::logging::NullLogger;
         let mesh = make_cube_mesh();
-        let mut params = SlicingParams::default();
-        params.layer_height = 2.0;
-        params.top_layers = 2;
-        params.bottom_layers = 2;
-        let layers = process_mesh(&mesh, &params, &NullLogger);
-        eprintln!("only_one_wall_first_layer={}, only_one_wall_top={}, wall_count={}",
-            params.only_one_wall_first_layer, params.only_one_wall_top, params.wall_count);
-        for (idx, layer) in layers.iter().enumerate() {
-            let n_outer = layer.path_roles.iter().filter(|r| **r == ExtrusionRole::OuterWall).count();
-            let n_inner = layer.path_roles.iter().filter(|r| **r == ExtrusionRole::InnerWall).count();
-            let n_top = layer.path_roles.iter().filter(|r| **r == ExtrusionRole::TopSurface).count();
-            let n_bot = layer.path_roles.iter().filter(|r| **r == ExtrusionRole::BottomSurface).count();
-            eprintln!("layer {} z={:.2}: outer={} inner={} top={} bot={}",
-                idx, layer.z, n_outer, n_inner, n_top, n_bot);
-            // Bounding box of any top/bottom surface points on this layer
-            for role in [ExtrusionRole::TopSurface, ExtrusionRole::BottomSurface] {
-                let pts: Vec<(f64, f64)> = layer.paths.iter().enumerate()
-                    .filter(|(i, _)| layer.role_for_path(*i) == role)
-                    .flat_map(|(_, p)| p.iter().map(|pt| (pt.x(), pt.y())).collect::<Vec<_>>())
-                    .collect();
-                if pts.is_empty() { continue; }
-                let xmin = pts.iter().map(|(x,_)| *x).fold(f64::INFINITY, f64::min);
-                let xmax = pts.iter().map(|(x,_)| *x).fold(f64::NEG_INFINITY, f64::max);
-                let ymin = pts.iter().map(|(_,y)| *y).fold(f64::INFINITY, f64::min);
-                let ymax = pts.iter().map(|(_,y)| *y).fold(f64::NEG_INFINITY, f64::max);
-                eprintln!("  {:?} AABB: x=[{:.2},{:.2}] y=[{:.2},{:.2}] (cube edges at 0,10)",
-                    role, xmin, xmax, ymin, ymax);
-            }
-        }
-    }
+        let params = SlicingParams {
+            layer_height: 2.0,
+            top_layers: 2,
+            bottom_layers: 2,
+            surface_infill_angle: 0.0,
+            only_one_wall_first_layer: true,
+            only_one_wall_top: true,
+            wall_count: 3,
+            nozzle_diameter_mm: 0.4,
+            infill_overlap_percent: 0.25,
+            ..SlicingParams::default()
+        };
 
+        let layers = process_mesh(&mesh, &params, &NullLogger);
+        assert!(!layers.is_empty(), "expected sliced layers");
+
+        let last = layers.len() - 1;
+        let n_outer_top = layers[last]
+            .path_roles
+            .iter()
+            .filter(|r| **r == ExtrusionRole::OuterWall)
+            .count();
+        let n_inner_top = layers[last]
+            .path_roles
+            .iter()
+            .filter(|r| **r == ExtrusionRole::InnerWall)
+            .count();
+        assert!(n_outer_top >= 1, "topmost layer must keep its outer wall");
+        assert_eq!(
+            n_inner_top, 0,
+            "only_one_wall_top should strip all InnerWall paths from the topmost \
+             layer of a top-surface run, but {n_inner_top} remain"
+        );
+
+        // The layer below the topmost is also part of the top-surface run
+        // (top_layers = 2) but is NOT the last layer of the run — it must
+        // keep its inner walls.
+        let n_inner_below_top = layers[last - 1]
+            .path_roles
+            .iter()
+            .filter(|r| **r == ExtrusionRole::InnerWall)
+            .count();
+        assert!(
+            n_inner_below_top > 0,
+            "only_one_wall_top must NOT strip inner walls from layers in the \
+             middle of a top-surface run (only the very topmost)"
+        );
+
+        // With only the outer wall remaining on the topmost layer, the
+        // TopSurface should now extend to the outer-wall edge (within the
+        // configured overlap), exactly mirroring the BottomSurface AABB on
+        // layer 0 where only_one_wall_first_layer has the same effect.
+        let top_pts: Vec<(f64, f64)> = layers[last]
+            .paths
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| layers[last].role_for_path(*i) == ExtrusionRole::TopSurface)
+            .flat_map(|(_, p)| p.iter().map(|pt| (pt.x(), pt.y())).collect::<Vec<_>>())
+            .collect();
+        assert!(
+            !top_pts.is_empty(),
+            "topmost layer should have TopSurface paths"
+        );
+        let xmax = top_pts
+            .iter()
+            .map(|(x, _)| *x)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let xmin = top_pts
+            .iter()
+            .map(|(x, _)| *x)
+            .fold(f64::INFINITY, f64::min);
+        // Cube spans [0, 10]. With 1 wall (centerline ~0.2mm in) plus 25%
+        // overlap, the surface should reach within ~0.5mm of each edge.
+        // The buggy 3-wall behaviour confined it to ~[1.1, 8.9] (≥1.1mm from
+        // each edge), so this threshold reliably separates fixed vs broken.
+        assert!(
+            xmax >= 9.5 && xmin <= 0.5,
+            "top surface should extend close to the outer wall edge \
+             (got xmin={xmin:.2}, xmax={xmax:.2}); the buggy multi-wall behaviour \
+             would confine it to ~[1.1, 8.9]"
+        );
+    }
 
     #[test]
     fn test_slice_layer_role_for_path_default() {
@@ -1677,10 +1811,8 @@ mod tests {
                     total_surface_points += 1;
                     let (x, y) = (pt.x(), pt.y());
                     assert!(
-                        x >= SAFE_MARGIN_MM
-                            && x <= 10.0 - SAFE_MARGIN_MM
-                            && y >= SAFE_MARGIN_MM
-                            && y <= 10.0 - SAFE_MARGIN_MM,
+                        (SAFE_MARGIN_MM..=10.0 - SAFE_MARGIN_MM).contains(&x)
+                            && (SAFE_MARGIN_MM..=10.0 - SAFE_MARGIN_MM).contains(&y),
                         "surface point ({x}, {y}) lies in the inter-wall band on \
                          layer z={} (role={:?}) – smart surface skipping regressed",
                         layer.z,
