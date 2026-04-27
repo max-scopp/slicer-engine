@@ -29,6 +29,7 @@
 .app-content {
   display: grid;
   grid-template-columns: 300px 1fr 1fr;
+  grid-template-rows: auto 1fr;
   gap: 1.5rem;
   padding: 1.5rem 2rem;
   flex: 1;
@@ -60,6 +61,15 @@
 
 .settings-section {
   height: fit-content;
+}
+
+.debug-section {
+  grid-column: 1 / -1;
+  min-height: 500px;
+
+  @media (max-width: 768px) {
+    min-height: 400px;
+  }
 }
 
 .panel {

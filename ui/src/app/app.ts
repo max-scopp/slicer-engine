@@ -3,11 +3,12 @@ import { FileUploadComponent } from './components/file-upload/file-upload.compon
 import { SettingsPanelComponent } from './components/settings-panel/settings-panel.component';
 import { StatusPanelComponent } from './components/status-panel/status-panel.component';
 import { HistoryPanelComponent } from './components/history-panel/history-panel.component';
+import { DebugViewerComponent } from './components/debug-viewer/debug-viewer.component';
 
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [FileUploadComponent, SettingsPanelComponent, StatusPanelComponent, HistoryPanelComponent],
+  imports: [FileUploadComponent, SettingsPanelComponent, StatusPanelComponent, HistoryPanelComponent, DebugViewerComponent],
   templateUrl: './app.html',
   styleUrl: './app.scss',
 })

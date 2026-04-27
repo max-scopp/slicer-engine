@@ -1,0 +1,73 @@
+<div class="debug-viewer">
+  <div class="header">
+    <h2>Layer Viewer</h2>
+    @if (loading()) {
+      <span class="loading">Loading...</span>
+    }
+    @if (error()) {
+      <span class="error">{{ error() }}</span>
+    }
+  </div>
+
+  @if (layers().length > 0) {
+    <div class="controls">
+      <div class="layer-control">
+        <label>
+          Layer {{ currentLayerIndex() + 1 }} / {{ layers().length }}
+          @if (currentLayer(); as layer) {
+            (Z = {{ layer.z.toFixed(2) }}mm)
+          }
+        </label>
+        <input
+          type="range"
+          min="0"
+          [max]="layers().length - 1"
+          [value]="currentLayerIndex()"
+          (input)="currentLayerIndex.set(+$any($event.target).value)"
+          class="layer-slider"
+        />
+      </div>
+
+      <div class="role-toggles">
+        <label class="toggle-label">Show:</label>
+        @for (toggle of roleToggles(); track toggle.role) {
+          <label class="role-toggle">
+            <input
+              type="checkbox"
+              [checked]="toggle.enabled"
+              (change)="toggleRole(toggle.role)"
+            />
+            <span class="role-color" [style.background-color]="toggle.color"></span>
+            <span>{{ toggle.role }}</span>
+          </label>
+        }
+      </div>
+    </div>
+
+    <div class="viewport">
+      <svg
+        [attr.viewBox]="viewBox()"
+        preserveAspectRatio="xMidYMid meet"
+        class="layer-svg"
+      >
+        @if (currentLayer(); as layer) {
+          @for (item of getPathsForLayer(layer); track $index) {
+            <path
+              [attr.d]="pathToSvgString(item.path)"
+              [attr.stroke]="getRoleColor(item.role)"
+              [attr.fill]="getRoleColor(item.role)"
+              fill-opacity="0.3"
+              stroke-width="0.2"
+              vector-effect="non-scaling-stroke"
+            />
+          }
+        }
+      </svg>
+    </div>
+  } @else if (!loading() && !error()) {
+    <div class="empty-state">
+      <p>No debug data available.</p>
+      <p>Complete a slice to see layer visualization.</p>
+    </div>
+  }
+</div>
