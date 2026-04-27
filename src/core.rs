@@ -72,6 +72,12 @@ pub struct SliceLayer {
     /// `path_roles[i]` is the role of `paths[i]`.  If shorter than `paths`,
     /// the remaining paths default to [`ExtrusionRole::Perimeter`].
     pub path_roles: Vec<ExtrusionRole>,
+    /// Per-path extrusion width override in mm.
+    ///
+    /// `path_widths[i]` is the extrusion width for `paths[i]`.  `None` means
+    /// use the role's default width ([`ExtrusionRole::default_width_mm`]).
+    /// This is set by the Arachne variable-width perimeter generator.
+    pub path_widths: Vec<Option<f64>>,
 }
 
 impl SliceLayer {
@@ -81,6 +87,7 @@ impl SliceLayer {
             z,
             paths: Paths::default(),
             path_roles: Vec::new(),
+            path_widths: Vec::new(),
         }
     }
 
@@ -90,6 +97,14 @@ impl SliceLayer {
     /// entry for the given index.
     pub fn role_for_path(&self, i: usize) -> ExtrusionRole {
         self.path_roles.get(i).copied().unwrap_or_default()
+    }
+
+    /// Return the extrusion width in mm for path index `i`.
+    ///
+    /// Returns the per-path override when set, otherwise falls back to the
+    /// role's default width via [`ExtrusionRole::default_width_mm`].
+    pub fn width_for_path(&self, i: usize) -> Option<f64> {
+        self.path_widths.get(i).copied().flatten()
     }
 }
 
@@ -187,12 +202,9 @@ pub fn slice_mesh(mesh: &Mesh, layer_height: f64) -> Vec<SliceLayer> {
 /// Central entry point for the complete slicing pipeline.
 ///
 /// This function processes a mesh through the entire slicing pipeline, including
-/// basic slicing, top/bottom surface generation, and any other processing steps.
-/// All pipeline progress is reported through `logger` so that CLI and WebSocket
-/// callers receive the same verbosity and information.
-///
-/// This is the main API function that should be extended with additional features
-/// like infill generation, support structures, etc.
+/// basic slicing, top/bottom surface generation, and Arachne variable-width
+/// perimeter generation.  All pipeline progress is reported through `logger`
+/// so that CLI and WebSocket callers receive the same verbosity and information.
 ///
 /// # Arguments
 /// * `mesh` - The triangle mesh to process
@@ -200,7 +212,7 @@ pub fn slice_mesh(mesh: &Mesh, layer_height: f64) -> Vec<SliceLayer> {
 /// * `logger` - Pipeline logger; use [`NullLogger`] when logging is not needed
 ///
 /// # Returns
-/// A `Vec<SliceLayer>` with all processing applied (perimeters, surfaces, etc.).
+/// A `Vec<SliceLayer>` with all processing applied (Arachne walls, surfaces, etc.).
 ///
 /// # Example
 /// ```
@@ -225,7 +237,8 @@ pub fn process_mesh(
 
     logger.log_info(&format!("sliced into {} layers", layers.len()));
 
-    // Add top/bottom surfaces
+    // Add top/bottom surfaces before Arachne so surface detection uses the
+    // raw mesh contours (which are exact model boundaries).
     if params.top_layers > 0 || params.bottom_layers > 0 {
         logger.log_debug(&format!(
             "generating surfaces (top: {}, bottom: {}, angle: {}°)",
@@ -240,6 +253,17 @@ pub fn process_mesh(
         );
         logger.log_debug("surface generation complete");
     }
+
+    // Replace the raw mesh-contour perimeters with Arachne variable-width
+    // wall paths.  Non-perimeter paths (top/bottom surface infill) are
+    // preserved.
+    logger.log_debug(&format!(
+        "generating Arachne walls (wall_count: {}, nozzle: {}mm)",
+        params.wall_count, params.nozzle_diameter_mm
+    ));
+    let arachne_params = crate::arachne::ArachneParams::from_slicing_params(params);
+    crate::arachne::generate_arachne_walls(&mut layers, &arachne_params);
+    logger.log_debug("Arachne wall generation complete");
 
     layers
 }

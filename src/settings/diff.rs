@@ -26,7 +26,7 @@ pub fn compare_settings(global: &GlobalSettings, object: &ObjectSettings) -> Vec
     let g = &global.params;
     let o: &SlicingParams = object.overrides.as_ref().unwrap_or(g);
 
-    macro_rules! diff {
+    macro_rules! diff_f64 {
         ($field:ident) => {
             SettingsDiff {
                 field_name: stringify!($field).to_string(),
@@ -37,13 +37,29 @@ pub fn compare_settings(global: &GlobalSettings, object: &ObjectSettings) -> Vec
         };
     }
 
+    macro_rules! diff_usize {
+        ($field:ident) => {
+            SettingsDiff {
+                field_name: stringify!($field).to_string(),
+                global_value: g.$field.to_string(),
+                object_value: o.$field.to_string(),
+                is_override: g.$field != o.$field,
+            }
+        };
+    }
+
     vec![
-        diff!(layer_height),
-        diff!(wall_thickness),
-        diff!(infill_density),
-        diff!(print_speed),
-        diff!(nozzle_temp),
-        diff!(bed_temp),
+        diff_f64!(layer_height),
+        diff_usize!(wall_count),
+        diff_f64!(wall_line_width_min),
+        diff_f64!(wall_line_width_max),
+        diff_f64!(wall_transition_threshold),
+        diff_f64!(wall_transition_length),
+        diff_usize!(wall_distribution_count),
+        diff_f64!(infill_density),
+        diff_f64!(print_speed),
+        diff_f64!(nozzle_temp),
+        diff_f64!(bed_temp),
     ]
 }
 
@@ -60,7 +76,7 @@ mod tests {
             overrides: None,
         };
         let diff = compare_settings(&global, &object);
-        assert_eq!(diff.len(), 6, "Should have 6 fields");
+        assert_eq!(diff.len(), 11, "Should have 11 fields");
         for d in &diff {
             assert!(
                 !d.is_override,
@@ -111,10 +127,32 @@ mod tests {
         let diff = compare_settings(&global, &object);
         let field_names: Vec<&str> = diff.iter().map(|d| d.field_name.as_str()).collect();
         assert!(field_names.contains(&"layer_height"));
-        assert!(field_names.contains(&"wall_thickness"));
+        assert!(field_names.contains(&"wall_count"));
+        assert!(field_names.contains(&"wall_line_width_min"));
+        assert!(field_names.contains(&"wall_line_width_max"));
+        assert!(field_names.contains(&"wall_transition_threshold"));
+        assert!(field_names.contains(&"wall_transition_length"));
+        assert!(field_names.contains(&"wall_distribution_count"));
         assert!(field_names.contains(&"infill_density"));
         assert!(field_names.contains(&"print_speed"));
         assert!(field_names.contains(&"nozzle_temp"));
         assert!(field_names.contains(&"bed_temp"));
+    }
+
+    #[test]
+    fn test_wall_count_override_detected() {
+        let global = GlobalSettings::default();
+        let object = ObjectSettings {
+            object_name: "obj".to_string(),
+            overrides: Some(SlicingParams {
+                wall_count: 5,
+                ..SlicingParams::default()
+            }),
+        };
+        let diff = compare_settings(&global, &object);
+        let wc = diff.iter().find(|d| d.field_name == "wall_count").unwrap();
+        assert!(wc.is_override, "wall_count should be flagged as override");
+        assert_eq!(wc.global_value, "3");
+        assert_eq!(wc.object_value, "5");
     }
 }

@@ -11,6 +11,7 @@
 //! - Printer profile and slicing parameter validation
 //! - User-friendly CLI layer for command-line usage
 
+pub mod arachne;
 pub mod cli;
 pub mod core;
 pub mod gcode;
