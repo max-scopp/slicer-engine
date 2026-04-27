@@ -374,18 +374,30 @@ fn chain_segments(segments: Vec<[(f64, f64); 2]>) -> Vec<Vec<(f64, f64)>> {
 
 /// Generate solid infill patterns for top and bottom surfaces.
 ///
-/// For each layer, the surface region is computed by comparing the layer's
-/// perimeter with the perimeter of the layer `top_layers` / `bottom_layers`
-/// away. Any area **not covered** by that neighbour is a surface:
+/// For each layer the function computes the region that needs solid infill by
+/// asking: *"what area of this layer is NOT covered by all N layers
+/// above/below it simultaneously?"*
 ///
-/// - If the neighbour layer does not exist (we are near the top/bottom of the
-///   model) the whole slice is a surface.
-/// - If the neighbour exists, `difference(current, neighbour)` yields the
-///   overhanging / newly-exposed region.
+/// Formally, the top-surface region at layer `i` is:
 ///
-/// This correctly handles mid-model surfaces such as the cabin roof on a
-/// Benchy, internal floors, ledges, etc., rather than only marking the
-/// absolute top and bottom of the bounding box.
+/// ```text
+/// top_region[i] = layer[i]  −  ∩(layer[i+1], layer[i+2], …, layer[i+N])
+/// ```
+///
+/// The intersection of the N successor layers represents the area that has
+/// continuous solid support for every one of those layers.  Any part of
+/// `layer[i]` that is **not** in that intersection is exposed within the next
+/// N layers and therefore needs solid top infill.
+///
+/// This correctly handles:
+/// - Absolute top/bottom of the model (no layers above/below → intersection
+///   is empty → entire layer is a surface).
+/// - Small features sitting on a larger body (e.g. the Benchy cabin on the
+///   boat deck): a wall layer of the cabin is *not* falsely marked as a
+///   surface, because the intermediate cabin layers above it still cover it.
+///   Only the cabin **roof** layers (the topmost N) are correctly marked as
+///   top surfaces, since above them there are no more cabin layers.
+/// - Mid-model surfaces: ledges, internal floors, porthole rims, etc.
 ///
 /// # Arguments
 /// * `layers`        – Mutable reference to the slice layers
@@ -414,24 +426,31 @@ pub fn generate_top_bottom_surfaces(
     for i in 0..total {
         // ── Bottom surfaces ──────────────────────────────────────────────────
         if bottom_layers > 0 {
-            // Neighbour is the layer `bottom_layers` below.
-            // If it does not exist, the entire current slice is a bottom surface.
-            let bottom_region: Paths = if i < bottom_layers {
-                perimeters[i].clone()
-            } else {
-                let neighbor = &perimeters[i - bottom_layers];
-                if neighbor.is_empty() {
-                    perimeters[i].clone()
-                } else {
-                    difference(
-                        perimeters[i].clone(),
-                        neighbor.clone(),
-                        FillRule::NonZero,
-                    )
-                    .unwrap_or_default()
+            // Compute the area of layer[i] covered by ALL bottom_layers layers
+            // below it via progressive intersection.  Any part of layer[i] not
+            // in that intersection is a bottom surface.
+            let mut covered = perimeters[i].clone();
+            for j in 1..=bottom_layers {
+                if i < j {
+                    // Ran off the model bottom — no coverage from here on.
+                    covered = Paths::new(vec![]);
+                    break;
                 }
-            };
+                let neighbor = &perimeters[i - j];
+                if neighbor.is_empty() {
+                    // Empty layer below counts as no coverage.
+                    covered = Paths::new(vec![]);
+                    break;
+                }
+                covered =
+                    intersect(covered, neighbor.clone(), FillRule::NonZero).unwrap_or_default();
+                if covered.is_empty() {
+                    break;
+                }
+            }
 
+            let bottom_region =
+                difference(perimeters[i].clone(), covered, FillRule::NonZero).unwrap_or_default();
             if !bottom_region.is_empty() {
                 add_solid_infill_for_region(
                     &mut layers[i],
@@ -445,24 +464,28 @@ pub fn generate_top_bottom_surfaces(
 
         // ── Top surfaces ─────────────────────────────────────────────────────
         if top_layers > 0 {
-            // Neighbour is the layer `top_layers` above.
-            // If it does not exist, the entire current slice is a top surface.
-            let top_region: Paths = if i + top_layers >= total {
-                perimeters[i].clone()
-            } else {
-                let neighbor = &perimeters[i + top_layers];
-                if neighbor.is_empty() {
-                    perimeters[i].clone()
-                } else {
-                    difference(
-                        perimeters[i].clone(),
-                        neighbor.clone(),
-                        FillRule::NonZero,
-                    )
-                    .unwrap_or_default()
+            // Symmetric to the bottom-surface logic above, but looking upward.
+            let mut covered = perimeters[i].clone();
+            for j in 1..=top_layers {
+                if i + j >= total {
+                    // Ran off the model top — no coverage from here on.
+                    covered = Paths::new(vec![]);
+                    break;
                 }
-            };
+                let neighbor = &perimeters[i + j];
+                if neighbor.is_empty() {
+                    covered = Paths::new(vec![]);
+                    break;
+                }
+                covered =
+                    intersect(covered, neighbor.clone(), FillRule::NonZero).unwrap_or_default();
+                if covered.is_empty() {
+                    break;
+                }
+            }
 
+            let top_region =
+                difference(perimeters[i].clone(), covered, FillRule::NonZero).unwrap_or_default();
             if !top_region.is_empty() {
                 add_solid_infill_for_region(
                     &mut layers[i],
@@ -881,21 +904,24 @@ mod tests {
         //   layer 2  z=5 – column (6×6)
         //   layer 3  z=7 – column (6×6)
         //
-        // With top_layers=1, bottom_layers=1:
+        // With top_layers=1, bottom_layers=1 (intersection-based algorithm):
         //
         //   TopSurface on layer 1 (z=3):
-        //     difference(10×10, layer_above=6×6) is the annular region → non-empty
+        //     covered = intersect(10×10, layer_above=6×6) = 6×6
+        //     top_region = diff(10×10, 6×6) = annular region → non-empty
         //     → layer 1 must have TopSurface infill
         //
         //   No TopSurface on layer 2 (z=5):
-        //     difference(6×6, layer_above=6×6) = empty
+        //     covered = intersect(6×6, layer_above=6×6) = 6×6
+        //     top_region = diff(6×6, 6×6) = empty
         //     → layer 2 is fully covered by layer 3 and must NOT have TopSurface infill
         //
         //   BottomSurface on layer 0 (z=1):
-        //     i < bottom_layers → entire first layer is a bottom surface
+        //     i < j → covered = empty → bottom_region = perimeters[0] (first layer)
         //
         //   No BottomSurface on layer 2 (z=5):
-        //     difference(6×6, layer_below=10×10) = empty (column is inside the base)
+        //     covered = intersect(6×6, layer_below=10×10) = 6×6 (column inside base)
+        //     bottom_region = diff(6×6, 6×6) = empty
         //     → the column is fully supported; it must NOT get spurious BottomSurface infill
 
         let v: Vec<Vertex> = vec![
@@ -1097,5 +1123,77 @@ mod tests {
 
         let infill = generate_rectilinear_infill(&paths, 0.0, 45.0);
         assert!(infill.is_empty());
+    }
+
+    /// Regression test: the surface detection algorithm must use progressive
+    /// intersection, not a single comparison against the N-th neighbour.
+    ///
+    /// The "hourglass" scenario has a wide layer, a narrow intermediate layer,
+    /// and then wide layers again.  The old `difference(layer[i], layer[i+N])`
+    /// approach compared a wide layer against a later wide layer and returned
+    /// empty → no top surface, silently missing the narrow gap in between.
+    /// With the intersection-based approach the coverage is narrowed by the
+    /// intermediate narrow layer, so the annular region is correctly flagged.
+    #[test]
+    fn test_surface_detection_non_monotonic_shape() {
+        // Layers (manual construction, not mesh-derived):
+        //   layer 0: 10×10 wide
+        //   layer 1: 10×10 wide
+        //   layer 2:  4×4  narrow  ← the "waist"
+        //   layer 3: 10×10 wide
+        //   layer 4: 10×10 wide
+        //   layer 5: 10×10 wide
+        //
+        // With top_layers=3:
+        //
+        //   layer 2 (narrow, 4×4): covered by layers 3,4,5 (all 10×10 ⊇ 4×4)
+        //     → NOT a top surface ✓
+        //
+        //   layer 0 (wide, 10×10):
+        //     NEW: j=1 → intersect(10×10, 10×10) = 10×10
+        //          j=2 → intersect(10×10, 4×4)   = 4×4   ← narrows
+        //          j=3 → intersect(4×4,  10×10)  = 4×4
+        //          top_region = diff(10×10, 4×4) = annular  ← TOP SURFACE ✓
+        //     OLD: diff(layer[0], layer[3]) = diff(10×10, 10×10) = empty  ✗
+        let make_rect_layer = |z: f64, w: f64, h: f64| -> SliceLayer {
+            let mut layer = SliceLayer::new(z);
+            let path: Path = vec![(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)].into();
+            layer.paths.push(path);
+            layer.path_roles.push(ExtrusionRole::Perimeter);
+            layer
+        };
+
+        let mut layers = vec![
+            make_rect_layer(1.0, 10.0, 10.0), // 0 – wide
+            make_rect_layer(2.0, 10.0, 10.0), // 1 – wide
+            make_rect_layer(3.0, 4.0, 4.0),   // 2 – narrow
+            make_rect_layer(4.0, 10.0, 10.0), // 3 – wide
+            make_rect_layer(5.0, 10.0, 10.0), // 4 – wide
+            make_rect_layer(6.0, 10.0, 10.0), // 5 – wide
+        ];
+
+        generate_top_bottom_surfaces(&mut layers, 3, 0, 1.0, 45.0);
+
+        // Layer 2 (narrow): fully covered by the three wide layers above it.
+        assert!(
+            !layers[2].path_roles.contains(&ExtrusionRole::TopSurface),
+            "Narrow layer 2 is fully covered above and must NOT have TopSurface infill"
+        );
+
+        // Layer 0: the 10×10 annular area is NOT covered at layer 2 (only 4×4)
+        // → must be flagged as a top surface even though layer[0+3]=layer3 is
+        //   also 10×10 (the gap at layer 2 is in between).
+        assert!(
+            layers[0].path_roles.contains(&ExtrusionRole::TopSurface),
+            "Layer 0 should have TopSurface infill: the annular region is exposed at layer 2"
+        );
+
+        // Layers 3, 4, 5 are the top-3 wide layers → must all be top surfaces.
+        for idx in [3, 4, 5] {
+            assert!(
+                layers[idx].path_roles.contains(&ExtrusionRole::TopSurface),
+                "Layer {idx} is within top_layers=3 of the model top and must have TopSurface"
+            );
+        }
     }
 }
