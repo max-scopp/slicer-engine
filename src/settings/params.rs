@@ -21,6 +21,30 @@ pub struct SlicingParams {
     pub nozzle_temp: f64,
     /// Heated bed temperature in °C.
     pub bed_temp: f64,
+    /// Number of solid top layers (horizontal surfaces facing up).
+    #[serde(default = "SlicingParams::default_top_layers")]
+    pub top_layers: usize,
+    /// Number of solid bottom layers (horizontal surfaces facing down).
+    #[serde(default = "SlicingParams::default_bottom_layers")]
+    pub bottom_layers: usize,
+    /// Angle in degrees for top/bottom surface infill lines (e.g. 45 for diagonal).
+    #[serde(default = "SlicingParams::default_surface_infill_angle")]
+    pub surface_infill_angle: f64,
+    /// Filament diameter in mm (e.g. 1.75 for standard PLA/PETG).
+    #[serde(default = "SlicingParams::default_filament_diameter_mm")]
+    pub filament_diameter_mm: f64,
+    /// Nozzle diameter in mm (e.g. 0.4 for a standard 0.4 mm nozzle).
+    #[serde(default = "SlicingParams::default_nozzle_diameter_mm")]
+    pub nozzle_diameter_mm: f64,
+    /// Non-print (travel) speed in mm/min (e.g. 9000 = 150 mm/s).
+    #[serde(default = "SlicingParams::default_travel_speed_mm_min")]
+    pub travel_speed_mm_min: f64,
+    /// Z-hop height in mm applied during travel moves to avoid stringing.
+    #[serde(default = "SlicingParams::default_z_hop_mm")]
+    pub z_hop_mm: f64,
+    /// Retraction distance in mm on travel moves.
+    #[serde(default = "SlicingParams::default_retract_mm")]
+    pub retract_mm: f64,
 }
 
 impl Default for SlicingParams {
@@ -33,7 +57,49 @@ impl Default for SlicingParams {
             print_speed: 60.0,
             nozzle_temp: 210.0,
             bed_temp: 60.0,
+            top_layers: Self::default_top_layers(),
+            bottom_layers: Self::default_bottom_layers(),
+            surface_infill_angle: Self::default_surface_infill_angle(),
+            filament_diameter_mm: Self::default_filament_diameter_mm(),
+            nozzle_diameter_mm: Self::default_nozzle_diameter_mm(),
+            travel_speed_mm_min: Self::default_travel_speed_mm_min(),
+            z_hop_mm: Self::default_z_hop_mm(),
+            retract_mm: Self::default_retract_mm(),
         }
+    }
+}
+
+impl SlicingParams {
+    fn default_top_layers() -> usize {
+        3
+    }
+
+    fn default_bottom_layers() -> usize {
+        3
+    }
+
+    fn default_surface_infill_angle() -> f64 {
+        45.0
+    }
+
+    fn default_filament_diameter_mm() -> f64 {
+        1.75
+    }
+
+    fn default_nozzle_diameter_mm() -> f64 {
+        0.4
+    }
+
+    fn default_travel_speed_mm_min() -> f64 {
+        9000.0
+    }
+
+    fn default_z_hop_mm() -> f64 {
+        0.2
+    }
+
+    fn default_retract_mm() -> f64 {
+        1.0
     }
 }
 
@@ -349,5 +415,88 @@ mod tests {
         let klipper_cfg = back.lifecycle_markers.get("klipper").unwrap();
         assert!(klipper_cfg.enabled);
         assert_eq!(klipper_cfg.layer_change.as_deref(), Some(";LAYER_CHANGE"));
+    }
+
+    #[test]
+    fn test_slicing_params_top_bottom_layers_defaults() {
+        let params = SlicingParams::default();
+        assert_eq!(params.top_layers, 3, "Default top layers should be 3");
+        assert_eq!(params.bottom_layers, 3, "Default bottom layers should be 3");
+        assert_eq!(
+            params.surface_infill_angle, 45.0,
+            "Default surface infill angle should be 45°"
+        );
+    }
+
+    #[test]
+    fn test_slicing_params_top_bottom_layers_serialization() {
+        let params = SlicingParams {
+            top_layers: 5,
+            bottom_layers: 4,
+            surface_infill_angle: 60.0,
+            ..SlicingParams::default()
+        };
+        let json = serde_json::to_string(&params).expect("serialize");
+        let back: SlicingParams = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.top_layers, 5);
+        assert_eq!(back.bottom_layers, 4);
+        assert_eq!(back.surface_infill_angle, 60.0);
+    }
+
+    #[test]
+    fn test_slicing_params_legacy_json_without_surface_layers() {
+        // Test that old JSON without top_layers/bottom_layers/surface_infill_angle still deserializes
+        let json = r#"{"layer_height":0.2,"wall_thickness":1.2,"infill_density":0.2,"print_speed":60.0,"nozzle_temp":210.0,"bed_temp":60.0}"#;
+        let params: SlicingParams = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(params.top_layers, 3, "Should default to 3 for legacy JSON");
+        assert_eq!(
+            params.bottom_layers, 3,
+            "Should default to 3 for legacy JSON"
+        );
+        assert_eq!(
+            params.surface_infill_angle, 45.0,
+            "Should default to 45.0 for legacy JSON"
+        );
+    }
+
+    #[test]
+    fn test_slicing_params_hardware_defaults() {
+        let params = SlicingParams::default();
+        assert_eq!(params.filament_diameter_mm, 1.75);
+        assert_eq!(params.nozzle_diameter_mm, 0.4);
+        assert_eq!(params.travel_speed_mm_min, 9000.0);
+        assert_eq!(params.z_hop_mm, 0.2);
+        assert_eq!(params.retract_mm, 1.0);
+    }
+
+    #[test]
+    fn test_slicing_params_hardware_fields_round_trip() {
+        let params = SlicingParams {
+            filament_diameter_mm: 2.85,
+            nozzle_diameter_mm: 0.6,
+            travel_speed_mm_min: 12000.0,
+            z_hop_mm: 0.4,
+            retract_mm: 2.0,
+            ..SlicingParams::default()
+        };
+        let json = serde_json::to_string(&params).expect("serialize");
+        let back: SlicingParams = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.filament_diameter_mm, 2.85);
+        assert_eq!(back.nozzle_diameter_mm, 0.6);
+        assert_eq!(back.travel_speed_mm_min, 12000.0);
+        assert_eq!(back.z_hop_mm, 0.4);
+        assert_eq!(back.retract_mm, 2.0);
+    }
+
+    #[test]
+    fn test_slicing_params_hardware_fields_default_when_absent() {
+        // Legacy JSON without the new fields should still deserialize with defaults
+        let json = r#"{"layer_height":0.2,"wall_thickness":1.2,"infill_density":0.2,"print_speed":60.0,"nozzle_temp":210.0,"bed_temp":60.0}"#;
+        let params: SlicingParams = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(params.filament_diameter_mm, 1.75, "default filament diameter");
+        assert_eq!(params.nozzle_diameter_mm, 0.4, "default nozzle diameter");
+        assert_eq!(params.travel_speed_mm_min, 9000.0, "default travel speed");
+        assert_eq!(params.z_hop_mm, 0.2, "default z-hop");
+        assert_eq!(params.retract_mm, 1.0, "default retract");
     }
 }

@@ -77,26 +77,12 @@ pub fn find_project_config() -> Option<PathBuf> {
 /// The file may be a partial `GlobalSettings` object — only the keys present
 /// are used as overrides.  Returns an error for missing or malformed files.
 pub fn load_project_config(path: &Path) -> Result<Value, Box<dyn std::error::Error>> {
-    let content = fs::read_to_string(path).map_err(|e| {
-        format!(
-            "Cannot read project config '{}': {}",
-            path.display(),
-            e
-        )
-    })?;
-    let value: Value = serde_json::from_str(&content).map_err(|e| {
-        format!(
-            "Invalid JSON in project config '{}': {}",
-            path.display(),
-            e
-        )
-    })?;
+    let content = fs::read_to_string(path)
+        .map_err(|e| format!("Cannot read project config '{}': {}", path.display(), e))?;
+    let value: Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Invalid JSON in project config '{}': {}", path.display(), e))?;
     if !value.is_object() {
-        return Err(format!(
-            "Project config '{}' must be a JSON object",
-            path.display()
-        )
-        .into());
+        return Err(format!("Project config '{}' must be a JSON object", path.display()).into());
     }
     Ok(value)
 }
@@ -265,7 +251,10 @@ mod tests {
         assert!(result.is_ok());
         // Verify the defaults came through
         let settings = result.unwrap();
-        assert_eq!(settings.params.layer_height, SlicingParams::default().layer_height);
+        assert_eq!(
+            settings.params.layer_height,
+            SlicingParams::default().layer_height
+        );
     }
 
     #[test]
@@ -273,15 +262,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("slicer.json");
         // Project config sets layer_height to 0.15, leaving other params at default
-        fs::write(
-            &path,
-            r#"{"params":{"layer_height":0.15}}"#,
-        )
-        .unwrap();
+        fs::write(&path, r#"{"params":{"layer_height":0.15}}"#).unwrap();
         let settings = load_and_merge_settings(Some(&path)).unwrap();
         assert_eq!(settings.params.layer_height, 0.15);
         // Other params still at default
-        assert_eq!(settings.params.nozzle_temp, SlicingParams::default().nozzle_temp);
+        assert_eq!(
+            settings.params.nozzle_temp,
+            SlicingParams::default().nozzle_temp
+        );
     }
 
     #[test]

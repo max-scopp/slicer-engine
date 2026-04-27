@@ -22,6 +22,7 @@
 use serde_json::{json, Value};
 
 use crate::cli::output::{EmitPayload, OutputFormat};
+use crate::logging::ProcessLogger;
 
 /// Central emitter that routes log messages to stderr and results to stdout.
 #[derive(Clone)]
@@ -156,6 +157,48 @@ impl Emitter {
                 }
             }
         }
+    }
+}
+
+// ── CliLogger ────────────────────────────────────────────────────────────────
+
+/// A [`ProcessLogger`] backed by a CLI [`Emitter`].
+///
+/// This is the request-specific logger for CLI-initiated slicing runs. Because
+/// the [`Emitter`] writes to stderr it automatically satisfies the "global
+/// logger" requirement – every message reaches the operator's terminal.
+///
+/// Debug messages are gated on the `verbose` flag so that `--verbose` output
+/// from the CLI maps cleanly to the pipeline's `log_debug` calls.
+#[derive(Clone)]
+pub struct CliLogger {
+    emitter: Emitter,
+    verbose: bool,
+}
+
+impl CliLogger {
+    /// Create a new `CliLogger`.
+    ///
+    /// When `verbose` is `false`, calls to [`ProcessLogger::log_debug`] are
+    /// silently suppressed, matching the existing `--verbose` CLI behaviour.
+    pub fn new(emitter: Emitter, verbose: bool) -> Self {
+        Self { emitter, verbose }
+    }
+}
+
+impl ProcessLogger for CliLogger {
+    fn log_info(&self, msg: &str) {
+        self.emitter.log(msg);
+    }
+
+    fn log_debug(&self, msg: &str) {
+        if self.verbose {
+            self.emitter.log_debug(msg);
+        }
+    }
+
+    fn log_warn(&self, msg: &str) {
+        self.emitter.log_warn(msg);
     }
 }
 
