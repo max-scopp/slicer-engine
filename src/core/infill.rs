@@ -101,6 +101,15 @@ pub(crate) fn calculate_interior_region(
 /// * `infill_density` - Infill density as a fraction (0.0 = no infill, 1.0 = solid)
 /// * `infill_pattern` - The pattern type to generate (rectilinear, grid, etc.)
 /// * `infill_base_angle` - Base angle in degrees (alternating layers rotate +90° on top of this)
+/// * `nozzle_diameter_mm` - Nozzle diameter used when computing infill regions on the fly
+/// * `precomputed_infill_regions` - Optional per-layer interior regions computed **before**
+///   any single-wall restrictions were applied.  When provided, these regions are used
+///   instead of calling [`calculate_interior_region`] on each layer, which prevents
+///   [`apply_single_wall_restrictions`] from inadvertently expanding the infill area into
+///   the space that was occupied by stripped inner walls.
+///
+///   Pass `None` when calling outside of the full pipeline (e.g. in tests), in which
+///   case the regions are derived from the current layer state.
 ///
 /// # Example
 /// ```rust,no_run
@@ -110,7 +119,7 @@ pub(crate) fn calculate_interior_region(
 /// # let mesh = Mesh::new();
 ///
 /// let mut layers = slice_mesh(&mesh, 0.2);
-/// add_infill_to_layers(&mut layers, 0.2, InfillPattern::Rectilinear, 45.0, 0.4);
+/// add_infill_to_layers(&mut layers, 0.2, InfillPattern::Rectilinear, 45.0, 0.4, None);
 /// ```
 pub fn add_infill_to_layers(
     layers: &mut [SliceLayer],
@@ -118,6 +127,7 @@ pub fn add_infill_to_layers(
     infill_pattern: crate::infill::InfillPattern,
     infill_base_angle: f64,
     nozzle_diameter_mm: f64,
+    precomputed_infill_regions: Option<&[Paths]>,
 ) {
     use crate::infill::generate_infill;
 
@@ -133,13 +143,25 @@ pub fn add_infill_to_layers(
 
         // Compute the infill boundary: the region inside the innermost wall.
         //
-        // `calculate_interior_region` builds the outer extent of all wall
-        // centerlines (inflated by their half-widths), then deflates inward by
-        // the total accumulated wall thickness — giving the exact inner face of
-        // the innermost wall regardless of wall count or variable bead widths.
-        // overlap_percent = 0.0 so sparse infill starts right at the inner
-        // wall face; `generate_infill` adds its own small adhesion gap on top.
-        let infill_area = calculate_interior_region(layer, 0.0, nozzle_diameter_mm);
+        // When `precomputed_infill_regions` is provided (set by the pipeline
+        // before `apply_single_wall_restrictions` runs), use those regions
+        // directly.  This prevents a bug where stripping inner walls from a
+        // layer (because some small sub-feature has a top surface there) causes
+        // `calculate_interior_region` to see `walls_per_island = 1` and expand
+        // the infill boundary into the space that was occupied by the stripped
+        // inner walls, producing infill that bleeds through the wall zone.
+        //
+        // When `None` is supplied the region is derived from the current layer
+        // state as before (correct when no stripping has occurred).
+        let infill_area = if let Some(regions) = precomputed_infill_regions {
+            if layer_idx < regions.len() && !regions[layer_idx].is_empty() {
+                regions[layer_idx].clone()
+            } else {
+                calculate_interior_region(layer, 0.0, nozzle_diameter_mm)
+            }
+        } else {
+            calculate_interior_region(layer, 0.0, nozzle_diameter_mm)
+        };
 
         if infill_area.is_empty() {
             continue;

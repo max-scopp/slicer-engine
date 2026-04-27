@@ -309,7 +309,7 @@ mod tests {
         }
 
         // Add infill
-        add_infill_to_layers(&mut layers, 0.2, InfillPattern::Rectilinear, 45.0, 0.4);
+        add_infill_to_layers(&mut layers, 0.2, InfillPattern::Rectilinear, 45.0, 0.4, None);
 
         // After infill: should have both wall and infill paths
         for layer in &layers {
@@ -332,7 +332,7 @@ mod tests {
         let initial_path_count: usize = layers.iter().map(|l| l.paths.len()).sum();
 
         // Add zero-density infill (should do nothing)
-        add_infill_to_layers(&mut layers, 0.0, InfillPattern::Rectilinear, 45.0, 0.4);
+        add_infill_to_layers(&mut layers, 0.0, InfillPattern::Rectilinear, 45.0, 0.4, None);
 
         let final_path_count: usize = layers.iter().map(|l| l.paths.len()).sum();
         assert_eq!(
@@ -349,7 +349,7 @@ mod tests {
         let mut layers = slice_mesh(&mesh, 2.0);
 
         // Add grid infill
-        add_infill_to_layers(&mut layers, 0.3, InfillPattern::Grid, 45.0, 0.4);
+        add_infill_to_layers(&mut layers, 0.3, InfillPattern::Grid, 45.0, 0.4, None);
 
         // Grid pattern should produce more infill paths than rectilinear
         for layer in &layers {
@@ -403,7 +403,7 @@ mod tests {
             .collect();
 
         // Now add sparse infill.
-        add_infill_to_layers(&mut layers, 0.3, InfillPattern::Rectilinear, 45.0, 0.4);
+        add_infill_to_layers(&mut layers, 0.3, InfillPattern::Rectilinear, 45.0, 0.4, None);
 
         // For a layer that is entirely solid (solid_regions == perimeter area),
         // no new Infill paths should have been added.

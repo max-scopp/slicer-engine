@@ -58,6 +58,31 @@ pub fn process_mesh(
     crate::arachne::generate_arachne_walls(&mut layers, &arachne_params);
     logger.log_debug("Arachne wall generation complete");
 
+    // Pre-compute infill interior regions while all Arachne walls are still
+    // present.  These are passed to add_infill_to_layers so that the
+    // subsequent apply_single_wall_restrictions step (which strips inner walls
+    // from certain layers) cannot accidentally expand the infill boundary into
+    // the space the stripped walls occupied.
+    //
+    // Without this, a layer that has a small top-surface feature (e.g. the top
+    // of an embossed letter on a calibration cube) loses inner walls for ALL
+    // of its islands, causing calculate_interior_region to see walls_per_island
+    // = 1 everywhere and place sparse infill far into the wall zone.
+    let pre_strip_infill_regions: Option<Vec<Paths>> = if params.infill_density > 0.0
+        && (params.only_one_wall_first_layer || params.only_one_wall_top)
+    {
+        Some(
+            layers
+                .iter()
+                .map(|layer| {
+                    calculate_interior_region(layer, 0.0, params.nozzle_diameter_mm)
+                })
+                .collect(),
+        )
+    } else {
+        None
+    };
+
     // Apply single-wall restrictions to first/last layers if configured.
     //
     // The "last layer of each top surface run" detection MUST run before
@@ -132,6 +157,7 @@ pub fn process_mesh(
             infill_pattern,
             params.infill_base_angle,
             params.nozzle_diameter_mm,
+            pre_strip_infill_regions.as_deref(),
         );
         logger.log_debug("infill generation complete");
     }
