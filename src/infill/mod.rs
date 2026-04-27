@@ -126,7 +126,7 @@ pub fn generate_infill(
         InfillPattern::Grid => generate_grid(&infill_region, density, angle_offset),
         InfillPattern::Honeycomb => generate_honeycomb(&infill_region, density, angle_offset),
         InfillPattern::Gyroid => generate_gyroid(&infill_region, density, z_height),
-        InfillPattern::CrossHatch => generate_crosshatch(&infill_region, density, angle_offset, z_height),
+        InfillPattern::CrossHatch => generate_crosshatch(&infill_region, density, angle_offset),
     };
 
     // Clip the generated lines to the infill region boundaries

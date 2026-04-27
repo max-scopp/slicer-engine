@@ -45,20 +45,15 @@ pub fn generate_gyroid(region: &Paths, density: f64, z_height: f64) -> Paths {
         return Paths::default();
     };
 
-    // Pitch calculation from Cura: produces similar density to line infill
-    let mut pitch = (line_distance * 2.41) as i32;
-    let mut num_steps = 4;
-    let mut step = pitch / num_steps;
-    
-    // Adjust step size for reasonable resolution
-    while step > 500 && num_steps < 16 {
-        num_steps *= 2;
-        step = pitch / num_steps;
-    }
-    pitch = step * num_steps; // Recalculate to avoid precision errors
-    
-    let pitch_f = pitch as f64;
-    let step_f = step as f64;
+    // Pitch calculation from Cura: produces similar density to line infill.
+    // Cura works in microns and uses `while step > 500` to subdivide. We work
+    // in millimeters (step ≈ 1mm), so that condition would never trigger and
+    // we'd be left with only 4 sample points per pitch — producing extremely
+    // jagged waves. Always force at least 16 samples per pitch, matching the
+    // smoothness Cura achieves in its native units.
+    let pitch_f = line_distance * 2.41;
+    let num_steps: i32 = 16;
+    let step_f = pitch_f / num_steps as f64;
     
     // Convert Z height to radians based on pitch
     let z_rads = 2.0 * PI * z_height / pitch_f;
