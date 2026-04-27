@@ -3,7 +3,7 @@
 use crate::cli::emit::{CliLogger, Emitter};
 use crate::cli::output::{EmitPayload, OutputFormat};
 use crate::gcode::{resolve_gcode_source, GcodeFlavor, GcodeGenerator};
-use crate::logging::ProcessLogger;
+use crate::logging::{phases, PhaseTimer, ProcessLogger};
 use crate::mesh::analysis::{calculate_aabb, calculate_surface_area, calculate_volume};
 use crate::mesh::io::read_stl;
 use crate::mesh::transforms::{center_mesh, drop_to_floor};
@@ -172,12 +172,17 @@ impl SliceCommand {
         // is only emitted when --verbose is active.
         let logger = CliLogger::new(emitter.clone(), self.verbose);
 
+        // Start overall timing for the entire process
+        let t_total = PhaseTimer::start(phases::TOTAL, &logger);
+
         logger.log_debug(&format!("loading mesh: {:?}", self.input));
         logger.log_debug(&format!("G-code flavor: {}", flavor));
 
         // Load the STL mesh
+        let t_load = PhaseTimer::start(phases::MESH_LOAD, &logger);
         let mut mesh = read_stl(&self.input)
             .map_err(|e| format!("Failed to load mesh '{}': {}", self.input.display(), e))?;
+        t_load.finish();
 
         // Apply optional transforms
         if self.center {
@@ -191,6 +196,7 @@ impl SliceCommand {
 
         // Compute and log mesh geometry (verbose detail available to this CLI request).
         {
+            let t_analysis = PhaseTimer::start(phases::MESH_ANALYSIS, &logger);
             let aabb = calculate_aabb(&mesh);
             logger.log_debug(&format!(
                 "AABB: ({:.3}, {:.3}, {:.3}) → ({:.3}, {:.3}, {:.3})",
@@ -217,6 +223,7 @@ impl SliceCommand {
                 mesh.vertices.len()
             ));
             logger.log_debug(&format!("layer height: {:.3} mm", layer_height));
+            t_analysis.finish();
         }
 
         // Run the unified slicing pipeline. All step-level logging is handled
@@ -274,7 +281,9 @@ impl SliceCommand {
             generator = generator.with_end_script(lines);
         }
 
+        let t_gcode = PhaseTimer::start(phases::GCODE_GENERATION, &logger);
         let gcode = generator.generate(&layers, &slice_params);
+        t_gcode.finish();
 
         // Determine output path
         let output_path = self.output.clone().or_else(|| {
@@ -289,8 +298,10 @@ impl SliceCommand {
 
         // Write G-code to file
         if let Some(ref path) = output_path {
+            let t_write = PhaseTimer::start(phases::FILE_WRITE, &logger);
             std::fs::write(path, &gcode)
                 .map_err(|e| format!("Failed to write G-code to '{}': {}", path.display(), e))?;
+            t_write.finish();
             logger.log_debug(&format!("wrote G-code to {}", path.display()));
         }
 
@@ -310,6 +321,10 @@ impl SliceCommand {
         };
 
         emitter.emit(&result);
+        
+        // Finish overall timing
+        t_total.finish();
+        
         Ok(())
     }
 }

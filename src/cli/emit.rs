@@ -96,7 +96,42 @@ impl Emitter {
         }
     }
 
-    // ── Results (stdout) ────────────────────────────────────────────────────
+    /// Emit a phase-start marker to **stderr**.
+    ///
+    /// - **Human mode**: `[phase] <phase> → start`
+    /// - **JSON mode**: JSON with `"level": "phase_start"` and `"phase"` field.
+    pub fn log_phase_start(&self, phase: &str) {
+        match self.format {
+            OutputFormat::Json => {
+                let entry = json!({
+                    "$schema": "slicer-engine/log-v1",
+                    "level": "phase_start",
+                    "phase": phase,
+                });
+                eprintln!("{}", entry);
+            }
+            OutputFormat::Human => eprintln!("[phase] {} → start", phase),
+        }
+    }
+
+    /// Emit a phase-end marker with elapsed time to **stderr**.
+    ///
+    /// - **Human mode**: `[phase] <phase> ✓ <ms> ms`
+    /// - **JSON mode**: JSON with `"level": "phase_end"`, `"phase"`, and `"elapsed_ms"`.
+    pub fn log_phase_end(&self, phase: &str, elapsed_ms: u64) {
+        match self.format {
+            OutputFormat::Json => {
+                let entry = json!({
+                    "$schema": "slicer-engine/log-v1",
+                    "level": "phase_end",
+                    "phase": phase,
+                    "elapsed_ms": elapsed_ms,
+                });
+                eprintln!("{}", entry);
+            }
+            OutputFormat::Human => eprintln!("[phase] {} ✓ {} ms", phase, elapsed_ms),
+        }
+    }
 
     /// Emit a typed result payload to **stdout**.
     ///
@@ -199,6 +234,14 @@ impl ProcessLogger for CliLogger {
 
     fn log_warn(&self, msg: &str) {
         self.emitter.log_warn(msg);
+    }
+
+    fn log_phase_start(&self, phase: &str) {
+        self.emitter.log_phase_start(phase);
+    }
+
+    fn log_phase_end(&self, phase: &str, elapsed_ms: u64) {
+        self.emitter.log_phase_end(phase, elapsed_ms);
     }
 }
 

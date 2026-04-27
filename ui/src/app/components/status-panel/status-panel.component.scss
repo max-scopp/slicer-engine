@@ -68,6 +68,116 @@
     }
   }
 
+  .phase-timings {
+    background: #0f0f0f;
+    border: 1px solid #2a2a2a;
+    border-radius: 6px;
+    padding: 1rem;
+
+    h3 {
+      margin: 0 0 0.75rem 0;
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: #a78bfa;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .timing-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+      font-size: 0.8rem;
+
+      thead {
+        tr {
+          border-bottom: 2px solid #2a2a2a;
+
+          th {
+            padding: 0.5rem 0.75rem;
+            text-align: left;
+            font-weight: 600;
+            color: #888;
+            text-transform: uppercase;
+            font-size: 0.7rem;
+            letter-spacing: 0.05em;
+          }
+        }
+      }
+
+      tbody {
+        tr {
+          border-bottom: 1px solid #1a1a1a;
+
+          &:last-child {
+            border-bottom: none;
+          }
+
+          &.completed {
+            .phase-name {
+              color: #86efac;
+            }
+            .phase-duration {
+              color: #60a5fa;
+              font-weight: 600;
+            }
+          }
+
+          td {
+            padding: 0.6rem 0.75rem;
+          }
+
+          .phase-name {
+            color: #ccc;
+            font-weight: 500;
+          }
+
+          .phase-duration {
+            text-align: right;
+            color: #888;
+
+            .running {
+              color: #facc15;
+              font-style: italic;
+              animation: pulse 2s infinite;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  .log-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+
+    .auto-scroll-checkbox {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.85rem;
+      color: #888;
+      cursor: pointer;
+      user-select: none;
+
+      input[type='checkbox'] {
+        cursor: pointer;
+        accent-color: #7c3aed;
+        width: 16px;
+        height: 16px;
+      }
+
+      span {
+        transition: color 0.2s;
+      }
+
+      &:hover span {
+        color: #aaa;
+      }
+    }
+  }
+
   .log {
     background: #111;
     border: 1px solid #2a2a2a;
@@ -93,5 +203,15 @@
         border-bottom: none;
       }
     }
+  }
+}
+
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
   }
 }
