@@ -144,3 +144,32 @@ pub async fn download_handler(
         ))
         .body(content))
 }
+
+/// Handle debug layer data request: return serialized layer geometry
+pub async fn debug_handler(
+    state: web::Data<AppState>,
+    request_uuid: web::Path<String>,
+) -> Result<actix_web::HttpResponse, actix_web::Error> {
+    let uuid_str = request_uuid.into_inner();
+    let uuid = uuid::Uuid::parse_str(&uuid_str)
+        .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
+
+    // Construct expected debug file path
+    let debug_path = state.work_dir.join(format!("{}.layers.json", uuid));
+
+    // Check if debug file exists
+    if !debug_path.exists() {
+        return Err(actix_web::error::ErrorNotFound(
+            "Debug layer data not available for this request",
+        ));
+    }
+
+    // Read and return the JSON file
+    let content = tokio::fs::read(&debug_path)
+        .await
+        .map_err(|_| actix_web::error::ErrorNotFound("Debug file not found"))?;
+
+    Ok(actix_web::HttpResponse::Ok()
+        .content_type("application/json")
+        .body(content))
+}

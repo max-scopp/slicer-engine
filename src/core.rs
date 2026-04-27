@@ -11,7 +11,7 @@ use crate::settings::params::SlicingParams;
 ///
 /// Each variant maps to a named type that is emitted in the G-code output and
 /// carries a default extrusion width for that role.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum ExtrusionRole {
     /// Outer or inner perimeter / wall contour (default role).
     #[default]
@@ -91,6 +91,39 @@ impl SliceLayer {
     pub fn role_for_path(&self, i: usize) -> ExtrusionRole {
         self.path_roles.get(i).copied().unwrap_or_default()
     }
+
+    /// Convert to a serializable format for debug visualization.
+    pub fn to_serializable(&self) -> SerializableLayer {
+        let paths: Vec<Vec<[f64; 2]>> = self
+            .paths
+            .iter()
+            .map(|path| {
+                path.iter()
+                    .map(|pt| [pt.x() as f64 / 100.0, pt.y() as f64 / 100.0])
+                    .collect()
+            })
+            .collect();
+
+        SerializableLayer {
+            z: self.z,
+            paths,
+            path_roles: self.path_roles.clone(),
+        }
+    }
+}
+
+/// Serializable version of [`SliceLayer`] for debug visualization.
+///
+/// Clipper2's `Paths` type uses Centi (integer centimeters), which we convert
+/// to floating-point millimeters for easier debugging in the browser.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SerializableLayer {
+    /// Z-coordinate of this layer in mm
+    pub z: f64,
+    /// Paths as arrays of [x, y] points in mm
+    pub paths: Vec<Vec<[f64; 2]>>,
+    /// Extrusion role for each path
+    pub path_roles: Vec<ExtrusionRole>,
 }
 
 /// Interpolate the XY intersection point of a triangle edge with a Z plane.

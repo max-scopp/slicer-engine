@@ -221,6 +221,7 @@ async fn handle_slice(
 
     let gcode_output_path = work_dir.join(format!("{}.gcode", uuid));
     let gcode_output_path_clone = gcode_output_path.clone();
+    let debug_output_path = work_dir.join(format!("{}.layers.json", uuid));
 
     tokio::task::spawn_blocking(move || {
         /// Serializes `msg` to JSON; returns a hard-coded error frame on failure.
@@ -264,6 +265,19 @@ async fn handle_slice(
             total_layers: layer_count,
         };
         let _ = tx.blocking_send(to_json(&progress));
+
+        // Save debug layer data for visualization
+        let serializable_layers: Vec<crate::core::SerializableLayer> = layers
+            .iter()
+            .map(|layer| layer.to_serializable())
+            .collect();
+        
+        if let Err(e) = std::fs::write(
+            &debug_output_path,
+            serde_json::to_string(&serializable_layers).unwrap_or_default(),
+        ) {
+            eprintln!("[warn] Failed to write debug layer data: {}", e);
+        }
 
         let gcode = crate::gcode::generate_gcode(&layers, &params);
 
