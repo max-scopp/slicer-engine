@@ -398,6 +398,12 @@ fn chain_segments(segments: Vec<[(f64, f64); 2]>) -> Vec<Vec<(f64, f64)>> {
 ///   Only the cabin **roof** layers (the topmost N) are correctly marked as
 ///   top surfaces, since above them there are no more cabin layers.
 /// - Mid-model surfaces: ledges, internal floors, porthole rims, etc.
+/// - Holes (debossed text, portholes, etc.): the `chain_segments` function
+///   does not guarantee a specific winding order for inner contours produced
+///   by the mesh slicer.  All Clipper2 boolean operations therefore use
+///   [`FillRule::EvenOdd`] which is winding-order–independent: a point is
+///   "inside" when surrounded by an **odd** number of boundaries, naturally
+///   treating nested contours as holes without relying on CW vs CCW direction.
 ///
 /// # Arguments
 /// * `layers`        – Mutable reference to the slice layers
@@ -429,6 +435,12 @@ pub fn generate_top_bottom_surfaces(
             // Compute the area of layer[i] covered by ALL bottom_layers layers
             // below it via progressive intersection.  Any part of layer[i] not
             // in that intersection is a bottom surface.
+            //
+            // EvenOdd fill rule is used throughout so that the operations are
+            // winding-order–independent.  The mesh slicer (chain_segments) does
+            // not guarantee a consistent winding direction for inner contours
+            // (holes such as debossed text); NonZero would misidentify a hole
+            // whose winding happens to match the outer contour as solid material.
             let mut covered = perimeters[i].clone();
             for j in 1..=bottom_layers {
                 if i < j {
@@ -443,14 +455,14 @@ pub fn generate_top_bottom_surfaces(
                     break;
                 }
                 covered =
-                    intersect(covered, neighbor.clone(), FillRule::NonZero).unwrap_or_default();
+                    intersect(covered, neighbor.clone(), FillRule::EvenOdd).unwrap_or_default();
                 if covered.is_empty() {
                     break;
                 }
             }
 
             let region =
-                difference(perimeters[i].clone(), covered, FillRule::NonZero).unwrap_or_default();
+                difference(perimeters[i].clone(), covered, FillRule::EvenOdd).unwrap_or_default();
             if !region.is_empty() {
                 add_solid_infill_for_region(
                     &mut layers[i],
@@ -483,18 +495,18 @@ pub fn generate_top_bottom_surfaces(
                     break;
                 }
                 covered =
-                    intersect(covered, neighbor.clone(), FillRule::NonZero).unwrap_or_default();
+                    intersect(covered, neighbor.clone(), FillRule::EvenOdd).unwrap_or_default();
                 if covered.is_empty() {
                     break;
                 }
             }
 
             let mut top_region =
-                difference(perimeters[i].clone(), covered, FillRule::NonZero).unwrap_or_default();
+                difference(perimeters[i].clone(), covered, FillRule::EvenOdd).unwrap_or_default();
 
             // Subtract bottom_region to avoid overlap
             if !bottom_region.is_empty() && !top_region.is_empty() {
-                top_region = difference(top_region, bottom_region, FillRule::NonZero)
+                top_region = difference(top_region, bottom_region, FillRule::EvenOdd)
                     .unwrap_or_default();
             }
 
@@ -1282,18 +1294,24 @@ mod tests {
 
     /// Test that surface generation correctly handles holes (inner contours).
     /// When a layer has a hole, the surface infill should not fill the hole.
+    ///
+    /// Critically, this test uses the **same winding order** for both outer
+    /// and hole contours — the exact case that `FillRule::NonZero` gets wrong
+    /// (it treats the hole as doubly-wound solid material).  `EvenOdd` handles
+    /// it correctly regardless of winding direction.
     #[test]
     fn test_surface_generation_with_holes() {
         use clipper2::Path;
 
-        // Create a layer with an outer square and an inner square (hole)
+        // Create a layer with an outer square and an inner square (hole).
+        // Both contours use the same winding order (right → up → left → down),
+        // which is the problematic case for NonZero but handled correctly by EvenOdd.
         let mut layer = SliceLayer::new(1.0);
 
-        // Outer square 10x10 (counter-clockwise winding)
+        // Outer square 10x10 (same winding as inner = the hard case)
         let outer: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
 
-        // Inner square 4x4 centered (clockwise winding = hole)
-        // Note: Reversing the winding order to make it a hole
+        // Inner square 4x4 (same winding as outer — NonZero would treat this as solid)
         let hole: Path = vec![(3.0, 3.0), (7.0, 3.0), (7.0, 7.0), (3.0, 7.0)].into();
 
         layer.paths.push(outer);
@@ -1332,7 +1350,9 @@ mod tests {
         println!("Generated {} bottom surface paths", surface_paths.len());
 
         // Check if any surface path segments pass through the hole region
-        // The hole is at (3,3) to (7,7)
+        // The hole is at (3,3) to (7,7).
+        // With EvenOdd fill rule, holes are correctly excluded regardless of
+        // the winding order of the contours, so no infill should be inside.
         let mut paths_in_hole = 0;
         for path in &surface_paths {
             for pt in path.iter() {
@@ -1341,24 +1361,16 @@ mod tests {
                 // Check if point is inside the hole region (with small margin)
                 if x > 3.5 && x < 6.5 && y > 3.5 && y < 6.5 {
                     paths_in_hole += 1;
-                    println!("Found infill point inside hole at ({}, {})", x, y);
                     break; // Count each path only once
                 }
             }
         }
 
-        // This documents the current behavior - if holes are not handled,
-        // we expect some paths in the hole
-        if paths_in_hole > 0 {
-            println!(
-                "INFO: {} infill paths found in hole region - holes may not be properly handled",
-                paths_in_hole
-            );
-        } else {
-            println!("SUCCESS: No infill paths found in hole region - holes are properly handled!");
-        }
-
-        // TODO: Once hole handling is confirmed working, make this a hard assertion:
-        // assert_eq!(paths_in_hole, 0, "Surface infill should not overlap with hole regions");
+        assert_eq!(
+            paths_in_hole, 0,
+            "Surface infill must not penetrate the hole region (found {} paths inside hole). \
+             EvenOdd fill rule should handle this regardless of contour winding order.",
+            paths_in_hole
+        );
     }
 }
