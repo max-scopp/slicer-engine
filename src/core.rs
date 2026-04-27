@@ -262,6 +262,11 @@ pub fn process_mesh(
         logger.log_debug("surface generation complete");
     }
 
+    // Before generating walls, subtract solid surface regions from perimeters
+    // so that walls don't overlap with top/bottom surfaces.
+    logger.log_debug("subtracting solid surfaces from perimeters");
+    subtract_solid_surfaces_from_perimeters(&mut layers);
+
     // Replace the raw mesh-contour perimeters with Arachne variable-width
     // wall paths.  Non-perimeter paths (top/bottom surface infill) are
     // preserved.
@@ -552,6 +557,66 @@ pub fn generate_top_bottom_surfaces(
                 );
             }
         }
+    }
+}
+
+/// Subtract solid surface regions from perimeter paths in each layer.
+///
+/// After top/bottom surface generation, the original perimeter contours still
+/// cover the entire layer footprint, including areas where solid top/bottom
+/// infill was added.  This function subtracts those solid regions from the
+/// perimeters so that wall generation (Arachne) doesn't place walls over
+/// solid surfaces.
+fn subtract_solid_surfaces_from_perimeters(layers: &mut [SliceLayer]) {
+    for layer in layers.iter_mut() {
+        // Collect solid surface regions (TopSurface and BottomSurface paths).
+        let solid_regions: Vec<Path> = layer
+            .paths
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| {
+                let role = layer.role_for_path(*i);
+                role == ExtrusionRole::TopSurface || role == ExtrusionRole::BottomSurface
+            })
+            .map(|(_, p)| p.clone())
+            .collect();
+
+        if solid_regions.is_empty() {
+            continue;
+        }
+
+        let solid_paths = Paths::new(solid_regions);
+
+        // Subtract solid regions from all perimeter paths.
+        let mut new_paths = Paths::new(vec![]);
+        let mut new_roles = Vec::new();
+        let mut new_widths = Vec::new();
+
+        for (i, path) in layer.paths.iter().enumerate() {
+            let role = layer.role_for_path(i);
+            if role == ExtrusionRole::OuterWall || role == ExtrusionRole::InnerWall {
+                // Subtract solid regions from this perimeter path.
+                let path_as_paths = Paths::new(vec![path.clone()]);
+                let subtracted = difference(path_as_paths, solid_paths.clone(), FillRule::EvenOdd)
+                    .unwrap_or_default();
+
+                // Add all resulting paths (may be split into multiple pieces).
+                for p in subtracted.iter() {
+                    new_paths.push(p.clone());
+                    new_roles.push(role);
+                    new_widths.push(layer.width_for_path(i));
+                }
+            } else {
+                // Keep non-perimeter paths as-is.
+                new_paths.push(path.clone());
+                new_roles.push(role);
+                new_widths.push(layer.width_for_path(i));
+            }
+        }
+
+        layer.paths = new_paths;
+        layer.path_roles = new_roles;
+        layer.path_widths = new_widths;
     }
 }
 
