@@ -2,7 +2,7 @@
 
 use clipper2::*;
 
-use crate::logging::ProcessLogger;
+use crate::logging::{phases, PhaseTimer, ProcessLogger};
 use crate::mesh::types::{Mesh, Vertex};
 use crate::settings::params::SlicingParams;
 
@@ -219,14 +219,16 @@ pub fn process_mesh(
     logger: &dyn ProcessLogger,
 ) -> Vec<SliceLayer> {
     logger.log_info(&format!("processing mesh: {} triangles", mesh.faces.len()));
+
+    let t_slicing = PhaseTimer::start(phases::SLICING, logger);
     logger.log_debug("slicing mesh…");
-
     let mut layers = slice_mesh(mesh, params.layer_height);
-
     logger.log_info(&format!("sliced into {} layers", layers.len()));
+    t_slicing.finish();
 
     // Add top/bottom surfaces
     if params.top_layers > 0 || params.bottom_layers > 0 {
+        let t_surfaces = PhaseTimer::start(phases::SURFACES, logger);
         logger.log_debug(&format!(
             "generating surfaces (top: {}, bottom: {}, angle: {}°)",
             params.top_layers, params.bottom_layers, params.surface_infill_angle
@@ -239,6 +241,7 @@ pub fn process_mesh(
             params.surface_infill_angle,
         );
         logger.log_debug("surface generation complete");
+        t_surfaces.finish();
     }
 
     layers
