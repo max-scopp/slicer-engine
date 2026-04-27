@@ -172,6 +172,9 @@ impl SliceCommand {
         // is only emitted when --verbose is active.
         let logger = CliLogger::new(emitter.clone(), self.verbose);
 
+        // Start overall timing for the entire process
+        let t_total = PhaseTimer::start(phases::TOTAL, &logger);
+
         logger.log_debug(&format!("loading mesh: {:?}", self.input));
         logger.log_debug(&format!("G-code flavor: {}", flavor));
 
@@ -318,6 +321,10 @@ impl SliceCommand {
         };
 
         emitter.emit(&result);
+        
+        // Finish overall timing
+        t_total.finish();
+        
         Ok(())
     }
 }

@@ -268,6 +268,9 @@ async fn handle_slice(
         // client as a Log/PhaseMarker frame and is also written to stderr.
         let logger = WsLogger::new(tx.clone());
 
+        // Start overall timing for the entire process
+        let t_total = PhaseTimer::start(phases::TOTAL, &logger);
+
         let stl_bytes = match std::fs::read(&stl_file_path) {
             Ok(b) => b,
             Err(e) => {
@@ -317,6 +320,9 @@ async fn handle_slice(
             download_url: format!("/api/download/{}", uuid),
         };
         let _ = tx.blocking_send(to_json(&complete));
+        
+        // Finish overall timing
+        t_total.finish();
     });
 
     // Forward channel messages to the WebSocket until the task finishes
