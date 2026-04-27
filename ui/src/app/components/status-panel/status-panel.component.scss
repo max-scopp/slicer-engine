@@ -68,6 +68,37 @@
     }
   }
 
+  .log-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+
+    .auto-scroll-checkbox {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.85rem;
+      color: #888;
+      cursor: pointer;
+      user-select: none;
+
+      input[type='checkbox'] {
+        cursor: pointer;
+        accent-color: #7c3aed;
+        width: 16px;
+        height: 16px;
+      }
+
+      span {
+        transition: color 0.2s;
+      }
+
+      &:hover span {
+        color: #aaa;
+      }
+    }
+  }
+
   .log {
     background: #111;
     border: 1px solid #2a2a2a;

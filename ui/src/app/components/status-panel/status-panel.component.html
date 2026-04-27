@@ -21,7 +21,14 @@
     </div>
   </div>
 
-  <div class="log">
+  <div class="log-header">
+    <label class="auto-scroll-checkbox">
+      <input type="checkbox" [(ngModel)]="autoScroll" />
+      <span>Always scroll to bottom</span>
+    </label>
+  </div>
+
+  <div class="log" #logContainer>
     @if (outputLog().length === 0) {
       <span class="log-empty">No output yet.</span>
     } @else {
