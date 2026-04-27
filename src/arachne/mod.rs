@@ -93,9 +93,11 @@ pub struct Bead {
 /// preserved in their original order after the new wall paths.
 ///
 /// # Arguments
+///
 /// * `layers` – mutable slice layers produced by [`crate::core::slice_mesh`]
 ///   (after surface generation).
 /// * `params` – resolved Arachne parameters.
+
 /// Sub-phase timing breakdown for [`generate_arachne_walls`].
 ///
 /// All times are the **sum of CPU time across all rayon worker threads**; they

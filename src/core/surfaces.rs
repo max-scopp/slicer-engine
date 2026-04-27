@@ -263,6 +263,7 @@ pub fn generate_top_bottom_surfaces(
 /// * `interior_regions` - Optional interior regions for each layer (inside walls).
 ///   If provided, surface infill is clipped to these regions, ensuring walls
 ///   have priority over surfaces.
+
 /// Sub-phase timing breakdown returned by [`generate_top_bottom_surfaces_with_interior`].
 pub struct SurfaceSubTimings {
     /// Time spent collecting per-layer perimeter path snapshots.
