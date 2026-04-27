@@ -216,10 +216,10 @@ After building, launch the bundled UI with the Rust CLI:
 
 ```bash
 # Default: http://127.0.0.1:4200, ui dir = ./ui/dist/slicer-ui/browser
-cargo run --release -- serve
+cargo run -- serve
 
 # Custom port / directory
-cargo run --release -- serve --port 8080 --ui-dir /path/to/dist
+cargo run -- serve --port 8080 --ui-dir /path/to/dist
 ```
 
 The `serve` command starts an **actix-web** static-file server with SPA
