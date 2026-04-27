@@ -63,7 +63,7 @@ src/
 │   ├── types.rs           # SliceLayer, ExtrusionRole
 │   ├── slicer.rs          # slice_mesh, segment chaining
 │   ├── surfaces.rs        # generate_top_bottom_surfaces*, rectilinear infill fill
-│   ├── walls.rs           # apply_single_wall_restrictions, compute_layers_with_top_surface
+│   ├── walls.rs           # apply_single_wall_restrictions (per-island), compute_per_island_strip_masks
 │   ├── infill.rs          # calculate_interior_region, add_infill_to_layers
 │   └── pipeline.rs        # process_mesh (full pipeline orchestrator)
 ├── lib.rs                 # Public library root
@@ -189,7 +189,7 @@ GitHub Actions ([.github/workflows/build.yml](.github/workflows/build.yml)) auto
 - **File I/O in WASM**: CLI file operations require JavaScript bindings; not all features available in WASM target.
 - **LTO Compilation**: Release builds are slower due to LTO. Use debug builds during iterative development.
 - **Cross-compilation**: Requires appropriate target toolchains installed. CI verifies these work.
-- **`apply_single_wall_restrictions` is layer-wide, not island-specific**: It strips inner walls from ALL islands on a layer the moment any single island on that layer qualifies (e.g. a small embossed letter's top surface triggers stripping for the entire large cube body too).  Any code that re-derives wall counts or interior regions *after* this step will see `walls_per_island = 1` on those layers and over-expand.  Always snapshot infill regions **before** calling `apply_single_wall_restrictions`; see `pre_strip_infill_regions` in [src/core/pipeline.rs](src/core/pipeline.rs).
+- **`apply_single_wall_restrictions` is per-island**: Inner walls are stripped only from the specific island whose top-surface run ends on that layer; other islands on the same layer are untouched.  The `pre_strip_infill_regions` snapshot is still taken before this step to guard against future regressions — keep that order.
 
 ## Slicing Pipeline — Deep Knowledge
 
@@ -214,14 +214,13 @@ Order matters critically.  Surfaces are computed **after** Arachne walls so that
 **after** surfaces so it can subtract `solid_regions`.
 
 **`pre_strip_infill_regions` must be computed before `apply_single_wall_restrictions`.**
-`apply_single_wall_restrictions` strips inner walls from a layer whenever **any island**
-in that layer has a top surface — including the large body island when only a small
-sub-feature (e.g. an embossed letter) triggers the top-surface condition.  If infill
-regions were re-computed after stripping, `calculate_interior_region` would see
-`walls_per_island = 1` everywhere on those layers and expand the infill boundary into the
-zone that was supposed to be occupied by the stripped inner walls, producing infill that
-bleeds visibly through the wall area.  The snapshot taken before stripping preserves the
-correct `walls_per_island` count for every island.
+`apply_single_wall_restrictions` now operates **per island**: an outer-wall path P at
+layer i has its associated inner walls stripped only when P's footprint has an exposed
+top surface AND P does not appear in layer i+1 (the island ends here).  The large body
+island on the same layer is unaffected.  The `pre_strip_infill_regions` snapshot is
+still taken before this step as a defensive measure — the snapshot preserves the correct
+`walls_per_island` count for every island in case future changes ever re-introduce a
+layer-wide strip.
 
 ### Arachne Wall Paths — What They Are and Are Not
 
@@ -335,5 +334,5 @@ infill within the ring.
 
 ---
 
-**Last Updated**: 2026-04-27  
+**Last Updated**: 2026-04-27 (per-island wall-strip fix)  
 **Maintainer Guidance**: Keep this file in sync with project structure changes, new conventions, or significant architectural decisions.

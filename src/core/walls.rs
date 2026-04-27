@@ -5,106 +5,96 @@ use crate::settings::params::SlicingParams;
 use super::surfaces::perimeter_paths_of;
 use super::types::{ExtrusionRole, SliceLayer};
 
-/// Apply single-wall restrictions to specific layers based on parameters.
+/// Apply single-wall restrictions to specific islands and layers based on parameters.
 ///
-/// This function modifies layers to use only the outer wall in specific cases:
-/// 1. First layer (layer 0) if `only_one_wall_first_layer` is true.
-/// 2. Last layer of every "top surface run" if `only_one_wall_top` is true,
-///    where a run is a contiguous range of layers that have an exposed top
-///    surface (i.e. are not fully covered by perimeters within `top_layers`
-///    above them).
+/// This function modifies layers to use only a single outer wall in two cases:
 ///
-/// Inner walls are removed from these layers, leaving only outer walls.
+/// 1. **First layer** (`only_one_wall_first_layer`): all islands on layer 0
+///    have their inner walls stripped unconditionally.
+/// 2. **Last layer of each per-island top-surface run** (`only_one_wall_top`):
+///    an island's inner walls are stripped only when that specific island is
+///    at the end of its top-surface exposure run (the island's footprint
+///    disappears or the solid ends above it).  Islands on the same layer that
+///    continue upward keep all their walls.
 ///
-/// # `has_top_surface`
-///
-/// Caller must pre-compute, per layer, whether a top surface will be drawn
-/// there. This **must** be derived from perimeter geometry (see
-/// [`compute_layers_with_top_surface`]), not from `path_roles`, because the
-/// `TopSurface` role is only assigned later, after surfaces are generated.
-/// Earlier versions used `path_roles.contains(&TopSurface)` and were a
-/// permanent no-op for `only_one_wall_top`, leaving the topmost layer with
-/// every wall and producing a visible inter-wall gap between the top surface
-/// and the outer wall.
+/// The per-island approach fixes the previous layer-wide bug where a small
+/// sub-feature ending mid-model (e.g. a raised ledge on the side of a cube)
+/// would strip inner walls from every island on that layer — including the
+/// main body — causing the infill boundary to over-expand into the wall zone.
 pub(crate) fn apply_single_wall_restrictions(
     layers: &mut [SliceLayer],
     params: &SlicingParams,
-    has_top_surface: &[bool],
 ) {
     if layers.is_empty() {
         return;
     }
 
-    // Process first layer restriction
+    // First layer: strip all inner walls regardless of island (layer-wide is
+    // correct here because the first layer is a single flat extrusion zone).
     if params.only_one_wall_first_layer {
         remove_inner_walls_from_layer(&mut layers[0]);
     }
 
-    // Process last-layer-of-each-top-surface-run restriction.
+    // Top surface: compute a per-island strip mask and selectively remove.
     if params.only_one_wall_top {
-        debug_assert_eq!(
-            has_top_surface.len(),
-            layers.len(),
-            "has_top_surface mask must align with layers"
-        );
-
-        let mut in_top_surface_run = false;
-        let mut last_top_surface_idx = None;
-
-        for (i, &has_top) in has_top_surface.iter().enumerate() {
-            if has_top {
-                in_top_surface_run = true;
-                last_top_surface_idx = Some(i);
-            } else if in_top_surface_run {
-                if let Some(idx) = last_top_surface_idx {
-                    remove_inner_walls_from_layer(&mut layers[idx]);
-                }
-                in_top_surface_run = false;
-                last_top_surface_idx = None;
+        let perimeters: Vec<Paths> = layers.iter().map(perimeter_paths_of).collect();
+        let strip_masks =
+            compute_per_island_strip_masks(layers, &perimeters, params.top_layers);
+        for (i, strip_indices) in strip_masks.iter().enumerate() {
+            if !strip_indices.is_empty() {
+                remove_inner_walls_for_islands(&mut layers[i], strip_indices);
             }
-        }
-
-        // Handle the case where a top-surface run extends to the very last layer.
-        if let Some(idx) = last_top_surface_idx {
-            remove_inner_walls_from_layer(&mut layers[idx]);
         }
     }
 }
 
-/// Pre-compute, for every layer, whether it will receive a top surface.
+/// Compute, for each layer, the `paths` indices of outer-wall paths whose
+/// inner walls should be stripped.
 ///
-/// Mirrors the geometric "covered above" test in
-/// [`generate_top_bottom_surfaces_with_interior`] so that callers running
-/// **before** surface generation (e.g. [`apply_single_wall_restrictions`])
-/// can identify top-surface layers without inspecting `path_roles`.
+/// An outer-wall path `P` at layer `i` is included in the mask iff:
 ///
-/// A layer has a top surface iff its perimeter region is not fully covered
-/// by the EvenOdd intersection of perimeters of the next `top_layers` layers
-/// above it (or it sits within `top_layers` of the model top).
-pub(crate) fn compute_layers_with_top_surface(
+/// 1. **Top-surface exposure**: the progressive intersection of `P`'s area
+///    with the outer-wall perimeters of layers `i+1 … i+top_layers` leaves
+///    some area of `P` uncovered — i.e. `P`'s top is geometrically exposed.
+/// 2. **Run ends here**: either `i` is the last layer of the model, or
+///    `intersect(P, perimeters[i+1])` is empty — meaning `P`'s island does
+///    not exist in the layer immediately above, so this is the final exposed
+///    layer of the run.
+///
+/// The two-step check eliminates the need for cross-layer island matching: the
+/// run-end condition uses a single `intersect` query rather than tracking
+/// island identity across layers.
+fn compute_per_island_strip_masks(
     layers: &[SliceLayer],
+    perimeters: &[Paths],
     top_layers: usize,
-) -> Vec<bool> {
-    if top_layers == 0 || layers.is_empty() {
-        return vec![false; layers.len()];
+) -> Vec<Vec<usize>> {
+    if top_layers == 0 {
+        return vec![vec![]; layers.len()];
     }
-
-    let perimeters: Vec<Paths> = layers.iter().map(perimeter_paths_of).collect();
     let total = perimeters.len();
 
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        use rayon::prelude::*;
-        (0..total)
-            .into_par_iter()
-            .map(|i| {
-                let mut covered = perimeters[i].clone();
+    let compute_one = |layer_idx: usize, layer: &SliceLayer| -> Vec<usize> {
+        layer
+            .paths
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| layer.role_for_path(*i) == ExtrusionRole::OuterWall)
+            .filter_map(|(path_idx, outer_path)| {
+                let p_paths = Paths::new(vec![outer_path.clone()]);
+
+                // ── Step 1: does P have exposed top surface at layer_idx? ──
+                // Progressively intersect P's area with the layers above to
+                // find how much of P is "covered".  The first layer above that
+                // does not overlap P (or a layer boundary) collapses coverage
+                // to empty, meaning P's top is exposed there.
+                let mut covered = p_paths.clone();
                 for j in 1..=top_layers {
-                    if i + j >= total {
+                    if layer_idx + j >= total {
                         covered = Paths::new(vec![]);
                         break;
                     }
-                    let neighbor = &perimeters[i + j];
+                    let neighbor = &perimeters[layer_idx + j];
                     if neighbor.is_empty() {
                         covered = Paths::new(vec![]);
                         break;
@@ -115,43 +105,89 @@ pub(crate) fn compute_layers_with_top_surface(
                         break;
                     }
                 }
-                let region = difference(perimeters[i].clone(), covered, FillRule::EvenOdd)
-                    .unwrap_or_default();
-                !region.is_empty()
+                let exposed =
+                    difference(p_paths.clone(), covered, FillRule::EvenOdd).unwrap_or_default();
+                if exposed.is_empty() {
+                    return None; // P is fully covered above — no top surface here
+                }
+
+                // ── Step 2: does the top-surface run end at layer_idx? ──
+                // The run ends when P has no geometrical overlap with the next
+                // layer (island disappears) or when there is no next layer.
+                if layer_idx + 1 >= total {
+                    return Some(path_idx); // last layer of model → run ends
+                }
+                let continues = intersect(
+                    p_paths,
+                    perimeters[layer_idx + 1].clone(),
+                    FillRule::EvenOdd,
+                )
+                .unwrap_or_default();
+
+                if continues.is_empty() {
+                    Some(path_idx) // P ends here → strip inner walls for this island
+                } else {
+                    None // P continues upward → run not over yet
+                }
             })
+            .collect()
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        layers
+            .par_iter()
+            .enumerate()
+            .map(|(i, layer)| compute_one(i, layer))
             .collect()
     }
     #[cfg(target_arch = "wasm32")]
-    (0..total)
-        .map(|i| {
-            // Same loop shape as the top branch of
-            // generate_top_bottom_surfaces_with_interior so the two stay in
-            // lock-step.
-            let mut covered = perimeters[i].clone();
-            for j in 1..=top_layers {
-                if i + j >= total {
-                    covered = Paths::new(vec![]);
-                    break;
-                }
-                let neighbor = &perimeters[i + j];
-                if neighbor.is_empty() {
-                    covered = Paths::new(vec![]);
-                    break;
-                }
-                covered =
-                    intersect(covered, neighbor.clone(), FillRule::EvenOdd).unwrap_or_default();
-                if covered.is_empty() {
-                    break;
-                }
-            }
-            let region =
-                difference(perimeters[i].clone(), covered, FillRule::EvenOdd).unwrap_or_default();
-            !region.is_empty()
-        })
+    layers
+        .iter()
+        .enumerate()
+        .map(|(i, layer)| compute_one(i, layer))
         .collect()
 }
 
-/// Remove all inner walls from a layer, keeping only outer walls.
+/// Remove inner walls only for the listed qualifying islands.
+///
+/// `strip_outer_indices` contains indices (into `layer.paths`) of outer-wall
+/// paths whose associated inner walls should be stripped.  An `InnerWall`
+/// path is removed only if [`Path::surrounds_path`] reports that it lies
+/// inside at least one of the qualifying outer-wall paths.  All other paths
+/// (outer walls, infill, surface paths) are preserved unchanged.
+fn remove_inner_walls_for_islands(layer: &mut SliceLayer, strip_outer_indices: &[usize]) {
+    let qualifying: Vec<_> = strip_outer_indices
+        .iter()
+        .filter_map(|&i| layer.paths.get(i))
+        .cloned()
+        .collect();
+    if qualifying.is_empty() {
+        return;
+    }
+
+    let mut new_paths = Paths::new(vec![]);
+    let mut new_roles = Vec::new();
+    let mut new_widths = Vec::new();
+
+    for (i, path) in layer.paths.iter().enumerate() {
+        let role = layer.role_for_path(i);
+        let should_strip = role == ExtrusionRole::InnerWall
+            && qualifying.iter().any(|outer| outer.surrounds_path(path));
+        if !should_strip {
+            new_paths.push(path.clone());
+            new_roles.push(role);
+            new_widths.push(layer.width_for_path(i));
+        }
+    }
+
+    layer.paths = new_paths;
+    layer.path_roles = new_roles;
+    layer.path_widths = new_widths;
+}
+
+/// Remove all inner walls from a layer, keeping outer walls and other paths.
 fn remove_inner_walls_from_layer(layer: &mut SliceLayer) {
     let mut new_paths = Paths::new(vec![]);
     let mut new_roles = Vec::new();
@@ -159,7 +195,6 @@ fn remove_inner_walls_from_layer(layer: &mut SliceLayer) {
 
     for (i, path) in layer.paths.iter().enumerate() {
         let role = layer.role_for_path(i);
-        // Keep everything except InnerWall
         if role != ExtrusionRole::InnerWall {
             new_paths.push(path.clone());
             new_roles.push(role);

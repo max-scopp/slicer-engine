@@ -8,7 +8,7 @@ use super::infill::{add_infill_to_layers, calculate_interior_region};
 use super::slicer::slice_mesh;
 use super::surfaces::generate_top_bottom_surfaces_with_interior;
 use super::types::SliceLayer;
-use super::walls::{apply_single_wall_restrictions, compute_layers_with_top_surface};
+use super::walls::apply_single_wall_restrictions;
 
 /// Central entry point for the complete slicing pipeline.
 ///
@@ -105,27 +105,17 @@ pub fn process_mesh(
         None
     };
 
-    // Apply single-wall restrictions to first/last layers if configured.
+    // Apply single-wall restrictions to first/last-of-run layers if configured.
     //
-    // The "last layer of each top surface run" detection MUST run before
-    // calculate_interior_region so that the interior of single-wall layers
-    // collapses to "everything inside the outer wall" (deflate by 1×nozzle)
-    // instead of a tiny disk inside the would-be innermost wall.  We derive
-    // top-surface layers geometrically from perimeters here because surface
-    // generation hasn't run yet, so path_roles don't carry TopSurface.
+    // Per-island detection runs inside apply_single_wall_restrictions so that
+    // only the islands that actually end their top-surface run get stripped.
+    // Previously the whole layer was stripped whenever any one island qualified,
+    // which caused the infill boundary to over-expand into the wall zone for
+    // the unaffected (continuing) islands on the same layer.
     if params.only_one_wall_first_layer || params.only_one_wall_top {
-        logger.log_debug("applying single-wall restrictions");
+        logger.log_debug("applying single-wall restrictions (per-island)");
         let t_wall_restrictions = PhaseTimer::start(phases::WALL_RESTRICTIONS, logger);
-        let t_top_detect = PhaseTimer::start(phases::WALL_TOP_DETECT, logger);
-        let has_top_surface = if params.only_one_wall_top {
-            compute_layers_with_top_surface(&layers, params.top_layers)
-        } else {
-            vec![false; layers.len()]
-        };
-        t_top_detect.finish();
-        let t_wall_apply = PhaseTimer::start(phases::WALL_APPLY, logger);
-        apply_single_wall_restrictions(&mut layers, params, &has_top_surface);
-        t_wall_apply.finish();
+        apply_single_wall_restrictions(&mut layers, params);
         t_wall_restrictions.finish();
     }
 
