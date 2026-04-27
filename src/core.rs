@@ -72,6 +72,12 @@ pub struct SliceLayer {
     /// `path_roles[i]` is the role of `paths[i]`.  If shorter than `paths`,
     /// the remaining paths default to [`ExtrusionRole::Perimeter`].
     pub path_roles: Vec<ExtrusionRole>,
+    /// The union of top and bottom solid-surface regions on this layer.
+    ///
+    /// Populated by [`generate_top_bottom_surfaces`] and used by
+    /// [`add_infill_to_layers`] to prevent sparse infill from being placed on
+    /// areas already filled with solid top/bottom surface infill.
+    pub solid_regions: Paths,
 }
 
 impl SliceLayer {
@@ -81,6 +87,7 @@ impl SliceLayer {
             z,
             paths: Paths::default(),
             path_roles: Vec::new(),
+            solid_regions: Paths::default(),
         }
     }
 
@@ -225,6 +232,36 @@ pub fn add_infill_to_layers(
             continue;
         }
 
+        // Calculate the infill region: start with the perimeter-only paths,
+        // then subtract any area already covered by solid top/bottom surfaces.
+        let perimeter_paths = Paths::new(
+            layer
+                .paths
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| layer.role_for_path(*i) == ExtrusionRole::Perimeter)
+                .map(|(_, p)| p.clone())
+                .collect(),
+        );
+
+        let infill_area = if !layer.solid_regions.is_empty() {
+            // Subtract solid surface regions so sparse infill is never placed
+            // on top of existing solid top/bottom surface infill.
+            let remaining = difference(
+                perimeter_paths,
+                layer.solid_regions.clone(),
+                FillRule::EvenOdd,
+            )
+            .unwrap_or_default();
+            if remaining.is_empty() {
+                // Entire layer is covered by solid surfaces — no sparse infill needed.
+                continue;
+            }
+            remaining
+        } else {
+            perimeter_paths
+        };
+
         // Calculate angle offset for alternating patterns
         // Rectilinear infill alternates 0° and 90° each layer
         let angle_offset = if layer_idx % 2 == 0 {
@@ -233,8 +270,8 @@ pub fn add_infill_to_layers(
             std::f64::consts::FRAC_PI_2 // 90 degrees
         };
 
-        // Generate infill paths within perimeter boundaries
-        let infill_paths = generate_infill(&layer.paths, infill_pattern, infill_density, angle_offset);
+        // Generate infill paths within the computed area
+        let infill_paths = generate_infill(&infill_area, infill_pattern, infill_density, angle_offset);
 
         // Add infill paths to the layer with proper role annotation
         for infill_path in infill_paths.iter() {
@@ -555,10 +592,10 @@ pub fn generate_top_bottom_surfaces(
         };
 
         // ── Top surfaces ─────────────────────────────────────────────────────
-        if top_layers > 0 {
-            // Symmetric to the bottom-surface logic above, but looking upward.
-            // IMPORTANT: Exclude the bottom_region to prevent overlapping top
-            // and bottom surfaces on the same layer.
+        // Use a symmetric approach to the bottom-surface logic above, looking
+        // upward.  The result is captured so we can later union it with the
+        // bottom region to compute the layer's total solid-surface footprint.
+        let top_region = if top_layers > 0 {
             let mut covered = perimeters[i].clone();
             for j in 1..=top_layers {
                 if i + j >= total {
@@ -581,9 +618,10 @@ pub fn generate_top_bottom_surfaces(
             let mut top_region =
                 difference(perimeters[i].clone(), covered, FillRule::EvenOdd).unwrap_or_default();
 
-            // Subtract bottom_region to avoid overlap
+            // Subtract bottom_region to avoid overlap (clone so bottom_region
+            // is still available for the solid_regions union below).
             if !bottom_region.is_empty() && !top_region.is_empty() {
-                top_region = difference(top_region, bottom_region, FillRule::EvenOdd)
+                top_region = difference(top_region, bottom_region.clone(), FillRule::EvenOdd)
                     .unwrap_or_default();
             }
 
@@ -596,6 +634,23 @@ pub fn generate_top_bottom_surfaces(
                     infill_angle,
                 );
             }
+
+            top_region
+        } else {
+            Paths::new(vec![])
+        };
+
+        // Record the union of all solid-surface regions on this layer so that
+        // add_infill_to_layers can exclude them from sparse infill.
+        let combined_solid = match (bottom_region.is_empty(), top_region.is_empty()) {
+            (false, false) => union(bottom_region, top_region, FillRule::EvenOdd)
+                .unwrap_or_default(),
+            (false, true) => bottom_region,
+            (true, false) => top_region,
+            (true, true) => Paths::new(vec![]),
+        };
+        if !combined_solid.is_empty() {
+            layers[i].solid_regions = combined_solid;
         }
     }
 }
@@ -991,6 +1046,90 @@ mod tests {
             let infill_count = layer.path_roles.iter().filter(|r| **r == ExtrusionRole::Infill).count();
             assert!(infill_count > 0, "Layer at z={} has no infill paths", layer.z);
         }
+    }
+
+    #[test]
+    fn test_infill_not_placed_on_fully_solid_surface_layers() {
+        use crate::infill::InfillPattern;
+
+        // A 2-layer cube: with 2 top + 2 bottom layers, every layer is a
+        // surface layer — sparse infill should not be added on top of solid surfaces.
+        let mesh = make_cube_mesh();
+        // 5 layers at 2mm.  Use top=2/bottom=2 so the first two and last two
+        // layers are fully solid surfaces; the middle layer is interior.
+        let mut layers = slice_mesh(&mesh, 2.0);
+        generate_top_bottom_surfaces(&mut layers, 2, 2, 2.0, 45.0);
+
+        // Confirm solid_regions are populated for the top/bottom layers.
+        let n = layers.len();
+        assert!(!layers[0].solid_regions.is_empty(), "Layer 0 should have solid_regions");
+        assert!(!layers[n - 1].solid_regions.is_empty(), "Last layer should have solid_regions");
+
+        // Count surface-only infill paths before adding sparse infill.
+        let surface_counts: Vec<usize> = layers
+            .iter()
+            .map(|l| {
+                l.path_roles
+                    .iter()
+                    .filter(|r| **r == ExtrusionRole::TopSurface || **r == ExtrusionRole::BottomSurface)
+                    .count()
+            })
+            .collect();
+
+        // Now add sparse infill.
+        add_infill_to_layers(&mut layers, 0.3, InfillPattern::Rectilinear);
+
+        // For a layer that is entirely solid (solid_regions == perimeter area),
+        // no new Infill paths should have been added.
+        // Layers 0 and n-1 are entirely solid surfaces on a simple cube.
+        for i in [0, n - 1] {
+            let infill_added = layers[i]
+                .path_roles
+                .iter()
+                .filter(|r| **r == ExtrusionRole::Infill)
+                .count();
+            assert_eq!(
+                infill_added, 0,
+                "Layer {} (fully solid surface) should not have sparse infill (got {})",
+                i, infill_added
+            );
+            // Surface paths must remain unchanged.
+            let surface_now = layers[i]
+                .path_roles
+                .iter()
+                .filter(|r| **r == ExtrusionRole::TopSurface || **r == ExtrusionRole::BottomSurface)
+                .count();
+            assert_eq!(
+                surface_now, surface_counts[i],
+                "Surface path count on layer {} must not change",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_solid_regions_populated_by_surface_generation() {
+        let mesh = make_cube_mesh();
+        let mut layers = slice_mesh(&mesh, 2.0);
+
+        // Initially no solid regions.
+        for layer in &layers {
+            assert!(layer.solid_regions.is_empty());
+        }
+
+        generate_top_bottom_surfaces(&mut layers, 3, 3, 2.0, 45.0);
+
+        // After surface generation the topmost and bottommost layers must have
+        // non-empty solid_regions.
+        let n = layers.len();
+        assert!(
+            !layers[0].solid_regions.is_empty(),
+            "Bottom layer should have solid_regions after surface generation"
+        );
+        assert!(
+            !layers[n - 1].solid_regions.is_empty(),
+            "Top layer should have solid_regions after surface generation"
+        );
     }
 
     #[test]

@@ -57,16 +57,150 @@ pub fn calculate_bounds(paths: &Paths) -> Option<(f64, f64, f64, f64)> {
 
 /// Clip generated line segments to the infill region boundaries.
 ///
-/// Uses Clipper2 intersection to trim lines that extend outside the region.
-pub fn clip_lines_to_region(lines: &Paths, _region: &Paths) -> Paths {
-    if lines.is_empty() {
+/// Each 2-point line in `lines` is clipped against the closed polygon paths in
+/// `region` using a segment–polygon intersection algorithm with even-odd fill
+/// rule (consistent with Clipper2 boolean operations used elsewhere).
+///
+/// # Algorithm
+/// For every line segment:
+/// 1. Collect all parametric `t` values (0..=1) where the segment crosses a
+///    polygon edge in `region`.
+/// 2. Sort and deduplicate those values, bracketed by 0.0 and 1.0.
+/// 3. For each consecutive pair `[t_a, t_b]`, evaluate the midpoint and check
+///    whether it lies inside `region` using an even-odd ray-casting test across
+///    all polygon paths.
+/// 4. Keep segments whose midpoint is inside the region.
+pub fn clip_lines_to_region(lines: &Paths, region: &Paths) -> Paths {
+    if lines.is_empty() || region.is_empty() {
         return Paths::default();
     }
 
-    // TODO: Properly implement line clipping against region using Clipper2
-    // For now, return lines as-is since they're generated within bounds
-    // Future improvement: clip individual line segments that extend beyond region
-    lines.clone()
+    let mut result = Paths::default();
+
+    for line in lines.iter() {
+        let pts: Vec<(f64, f64)> = line.iter().map(|p| (p.x(), p.y())).collect();
+        if pts.len() < 2 {
+            continue;
+        }
+
+        // Use only the first and last point as the segment endpoints.
+        let (x0, y0) = pts[0];
+        let (x1, y1) = pts[pts.len() - 1];
+
+        // Collect all t values where this segment intersects a polygon edge.
+        let mut t_values: Vec<f64> = vec![0.0, 1.0];
+
+        for poly in region.iter() {
+            let poly_pts: Vec<(f64, f64)> = poly.iter().map(|p| (p.x(), p.y())).collect();
+            let n = poly_pts.len();
+            if n < 2 {
+                continue;
+            }
+
+            for k in 0..n {
+                if let Some(t) = segment_edge_t(x0, y0, x1, y1, (poly_pts[k], poly_pts[(k + 1) % n])) {
+                    // Only keep t values strictly inside [0, 1] (not at
+                    // endpoints) to avoid duplicate splits at shared vertices.
+                    if t > 1e-9 && t < 1.0 - 1e-9 {
+                        t_values.push(t);
+                    }
+                }
+            }
+        }
+
+        t_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        // Deduplicate t values that are nearly equal.
+        t_values.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+
+        // Emit the sub-segments that lie inside the region.
+        for window in t_values.windows(2) {
+            let ta = window[0];
+            let tb = window[1];
+            let t_mid = (ta + tb) * 0.5;
+
+            let mx = x0 + t_mid * (x1 - x0);
+            let my = y0 + t_mid * (y1 - y0);
+
+            if point_in_region_even_odd(mx, my, region) {
+                let start = (x0 + ta * (x1 - x0), y0 + ta * (y1 - y0));
+                let end = (x0 + tb * (x1 - x0), y0 + tb * (y1 - y0));
+                // Only emit segments with non-trivial length.
+                let dx = end.0 - start.0;
+                let dy = end.1 - start.1;
+                if dx * dx + dy * dy > 1e-12 {
+                    let path: Path = vec![start, end].into();
+                    result.push(path);
+                }
+            }
+        }
+    }
+
+    result
+}
+
+/// Return the parametric `t` value (in [0, 1]) at which the line segment
+/// `(lx0, ly0) → (lx1, ly1)` intersects the edge `(ex0, ey0) → (ex1, ey1)`.
+///
+/// Returns `None` if the segments are parallel or the intersection falls
+/// outside the edge's parameter range `[0, 1]`.
+fn segment_edge_t(lx0: f64, ly0: f64, lx1: f64, ly1: f64, edge: ((f64, f64), (f64, f64))) -> Option<f64> {
+    let (ex0, ey0) = edge.0;
+    let (ex1, ey1) = edge.1;
+
+    let dx = lx1 - lx0;
+    let dy = ly1 - ly0;
+    let edx = ex1 - ex0;
+    let edy = ey1 - ey0;
+
+    let denom = dx * edy - dy * edx;
+    if denom.abs() < 1e-12 {
+        return None; // Parallel (or coincident) — no single intersection
+    }
+
+    // t: parametric position along the line segment (0 = lx0/ly0, 1 = lx1/ly1)
+    let t = ((ex0 - lx0) * edy - (ey0 - ly0) * edx) / denom;
+    // u: parametric position along the edge (0 = ex0/ey0, 1 = ex1/ey1)
+    let u = ((ex0 - lx0) * dy - (ey0 - ly0) * dx) / denom;
+
+    // Intersection is valid only when it lies within the edge's extent.
+    if (0.0..=1.0).contains(&u) {
+        Some(t)
+    } else {
+        None
+    }
+}
+
+/// Even-odd point-in-polygon test across all paths in `region`.
+///
+/// Uses a horizontal ray cast from `(x, y)` to the right, counting edge
+/// crossings over all polygon paths in `region` and returning `true` when the
+/// count is odd (i.e. the point is "inside" under even-odd fill rule).
+fn point_in_region_even_odd(x: f64, y: f64, region: &Paths) -> bool {
+    let mut crossings: u32 = 0;
+
+    for poly in region.iter() {
+        let pts: Vec<(f64, f64)> = poly.iter().map(|p| (p.x(), p.y())).collect();
+        let n = pts.len();
+        if n < 2 {
+            continue;
+        }
+
+        for k in 0..n {
+            let (x0, y0) = pts[k];
+            let (x1, y1) = pts[(k + 1) % n];
+
+            // Standard even-odd crossing test: both endpoints must be strictly
+            // on opposite sides of the horizontal ray (y axis).
+            if (y0 < y) != (y1 < y) {
+                let x_intersect = (x1 - x0) * (y - y0) / (y1 - y0) + x0;
+                if x < x_intersect {
+                    crossings += 1;
+                }
+            }
+        }
+    }
+
+    crossings % 2 == 1
 }
 
 #[cfg(test)]
@@ -104,4 +238,85 @@ mod tests {
         // Should produce a smaller region (offset inward)
         assert!(!infill_region.is_empty(), "Expected offset region to exist");
     }
+
+    #[test]
+    fn test_clip_lines_to_region_empty_lines() {
+        let lines = Paths::default();
+        let mut region = Paths::default();
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        region.push(square);
+
+        let result = clip_lines_to_region(&lines, &region);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_clip_lines_to_region_empty_region() {
+        let mut lines = Paths::default();
+        let line: Path = vec![(0.0, 5.0), (10.0, 5.0)].into();
+        lines.push(line);
+        let region = Paths::default();
+
+        let result = clip_lines_to_region(&lines, &region);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_clip_lines_to_region_fully_inside() {
+        // Line fully inside a 10×10 square — should be returned unchanged.
+        let mut lines = Paths::default();
+        let line: Path = vec![(2.0, 5.0), (8.0, 5.0)].into();
+        lines.push(line);
+
+        let mut region = Paths::default();
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        region.push(square);
+
+        let result = clip_lines_to_region(&lines, &region);
+        assert_eq!(result.len(), 1, "Fully inside line should be kept as one segment");
+    }
+
+    #[test]
+    fn test_clip_lines_to_region_fully_outside() {
+        // Line entirely outside the square — should produce no output.
+        let mut lines = Paths::default();
+        let line: Path = vec![(20.0, 5.0), (30.0, 5.0)].into();
+        lines.push(line);
+
+        let mut region = Paths::default();
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        region.push(square);
+
+        let result = clip_lines_to_region(&lines, &region);
+        assert!(result.is_empty(), "Fully outside line should be discarded");
+    }
+
+    #[test]
+    fn test_clip_lines_to_region_crossing() {
+        // Line that crosses the boundary: only the inside portion is kept.
+        let mut lines = Paths::default();
+        // Goes from x=-5 to x=15, crossing both sides of [0..10] square at y=5.
+        let line: Path = vec![(-5.0, 5.0), (15.0, 5.0)].into();
+        lines.push(line);
+
+        let mut region = Paths::default();
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        region.push(square);
+
+        let result = clip_lines_to_region(&lines, &region);
+        assert_eq!(result.len(), 1, "Should produce exactly one clipped segment");
+
+        let clipped: Vec<(f64, f64)> = result
+            .iter()
+            .next()
+            .unwrap()
+            .iter()
+            .map(|p: &clipper2::Point<clipper2::Centi>| (p.x(), p.y()))
+            .collect();
+        assert_eq!(clipped.len(), 2);
+        // Clipped segment should be approximately from (0,5) to (10,5).
+        assert!((clipped[0].0 - 0.0).abs() < 1e-6, "Start x should be ~0");
+        assert!((clipped[1].0 - 10.0).abs() < 1e-6, "End x should be ~10");
+    }
 }
+
