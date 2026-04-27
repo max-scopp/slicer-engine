@@ -19,6 +19,31 @@ pub struct WsSlicingParams {
     pub bed_temp: f64,
     /// G-code dialect (`"marlin"` or `"klipper"`).
     pub gcode_flavor: String,
+    /// Infill density as a percentage (0–100). Converted to a fraction before
+    /// being forwarded to the slicing pipeline (e.g. 20 → 0.2).
+    #[serde(default = "WsSlicingParams::default_infill_density")]
+    pub infill_density: f64,
+    /// Infill pattern name (`"rectilinear"`, `"grid"`, `"honeycomb"`, `"gyroid"`).
+    #[serde(default = "WsSlicingParams::default_infill_pattern")]
+    pub infill_pattern: String,
+    /// Base angle in degrees for infill lines (default 45°). Alternating layers
+    /// rotate by +90° on top of this base angle.
+    #[serde(default = "WsSlicingParams::default_infill_angle")]
+    pub infill_angle: f64,
+}
+
+impl WsSlicingParams {
+    fn default_infill_density() -> f64 {
+        20.0
+    }
+
+    fn default_infill_pattern() -> String {
+        "rectilinear".to_string()
+    }
+
+    fn default_infill_angle() -> f64 {
+        45.0
+    }
 }
 
 /// Summary of a completed slicing session for history/re-download.
