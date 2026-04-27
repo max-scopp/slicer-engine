@@ -1,6 +1,7 @@
 //! Path validation utilities
 
 use crate::cli::error::CliError;
+use crate::mesh::io::SUPPORTED_EXTENSIONS;
 use std::path::{Path, PathBuf};
 
 /// Path validator for security and consistency
@@ -70,6 +71,15 @@ impl PathValidator {
             )))
         }
     }
+
+    /// Validate that the input path points to a supported 3D model file.
+    ///
+    /// Combines existence/file checks with extension validation against the
+    /// engine's `SUPPORTED_EXTENSIONS` list (stl, obj, 3mf).
+    pub fn validate_mesh_input(path: &Path) -> Result<PathBuf, CliError> {
+        Self::validate_extension(path, SUPPORTED_EXTENSIONS)?;
+        Self::validate_input(path)
+    }
 }
 
 #[cfg(test)]
@@ -98,5 +108,33 @@ mod tests {
     fn test_validate_extension_case_insensitive() {
         let result = PathValidator::validate_extension(Path::new("model.STL"), &["stl", "obj"]);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_mesh_input_unsupported_extension() {
+        let result = PathValidator::validate_mesh_input(Path::new("model.ply"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_mesh_input_obj_extension_accepted() {
+        // Extension is valid; file doesn't need to exist — the extension check
+        // should pass and the existence check will fail (not "unsupported ext").
+        let result = PathValidator::validate_mesh_input(Path::new("/nonexistent/model.obj"));
+        let err = result.unwrap_err().to_string();
+        assert!(
+            !err.contains("Invalid file extension"),
+            "OBJ extension should be accepted: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_mesh_input_3mf_extension_accepted() {
+        let result = PathValidator::validate_mesh_input(Path::new("/nonexistent/model.3mf"));
+        let err = result.unwrap_err().to_string();
+        assert!(
+            !err.contains("Invalid file extension"),
+            "3MF extension should be accepted: {err}"
+        );
     }
 }

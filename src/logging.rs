@@ -15,7 +15,62 @@
 //!     stderr logger **and** sends a JSON log frame back to the WebSocket
 //!     client, giving the browser the same verbosity the CLI enjoys.
 //!
+//! ## Performance Timing Markers
+//!
+//! Each logger also supports **phase timing markers** via [`ProcessLogger::log_phase_start`]
+//! and [`ProcessLogger::log_phase_end`]. These measure wall-clock elapsed time for
+//! named pipeline phases and surface the results through the same logger backends.
+//!
+//! Use [`PhaseTimer`] for RAII-style timing that automatically records start/end events:
+//!
+//! ```rust
+//! use slicer_engine::logging::{NullLogger, PhaseTimer, phases};
+//!
+//! let logger = NullLogger;
+//! let t = PhaseTimer::start(phases::SLICING, &logger);
+//! // … do work …
+//! t.finish();
+//! ```
+//!
+//! Standard phase names are defined in the [`phases`] submodule.
+//!
 //! [`Emitter`]: crate::cli::emit::Emitter
+
+/// Standard phase name constants for the slicing pipeline.
+///
+/// Use these constants wherever a phase name is required to ensure consistency
+/// across CLI, WebSocket, and any future logger backends.
+///
+/// # Phases
+///
+/// | Constant | Phase |
+/// |---|---|
+/// | [`TOTAL`] | Complete end-to-end slicing process |
+/// | [`MESH_LOAD`] | STL file read + mesh parsing |
+/// | [`MESH_ANALYSIS`] | AABB / volume / surface-area computation |
+/// | [`SLICING`] | Triangle–plane intersection → `Vec<SliceLayer>` |
+/// | [`SURFACES`] | Top/bottom solid-surface generation |
+/// | [`INFILL`] | Sparse and solid infill pattern generation |
+/// | [`GCODE_GENERATION`] | G-code program construction |
+/// | [`FILE_WRITE`] | Writing the G-code file to disk |
+pub mod phases {
+    /// Complete end-to-end slicing process (spans all other phases).
+    pub const TOTAL: &str = "total";
+    /// STL file read and mesh parsing phase.
+    pub const MESH_LOAD: &str = "mesh_load";
+    /// AABB, volume, and surface-area computation phase.
+    pub const MESH_ANALYSIS: &str = "mesh_analysis";
+    /// Triangle–plane intersection and layer contour extraction phase.
+    pub const SLICING: &str = "slicing";
+    /// Top/bottom solid-surface generation phase.
+    pub const SURFACES: &str = "surfaces";
+    /// Sparse and solid infill pattern generation phase.
+    pub const INFILL: &str = "infill";
+    /// G-code program construction phase.
+    pub const GCODE_GENERATION: &str = "gcode_generation";
+    /// Writing the G-code output file to disk phase.
+    pub const FILE_WRITE: &str = "file_write";
+}
 
 /// Unified logging interface for the slicing pipeline.
 ///
@@ -28,6 +83,13 @@
 /// - `log_info`  – important results that should always surface (layer count, etc.)
 /// - `log_debug` – verbose step details; may be suppressed in non-verbose contexts
 /// - `log_warn`  – non-fatal issues the operator should be aware of
+///
+/// Phase timing is reported through [`log_phase_start`] / [`log_phase_end`]. Both
+/// have default no-op implementations so existing loggers remain valid without
+/// any changes.
+///
+/// [`log_phase_start`]: ProcessLogger::log_phase_start
+/// [`log_phase_end`]: ProcessLogger::log_phase_end
 pub trait ProcessLogger: Send + Sync {
     /// Emit an informational message that is always visible.
     fn log_info(&self, msg: &str);
@@ -37,6 +99,56 @@ pub trait ProcessLogger: Send + Sync {
 
     /// Emit a warning message that is always visible.
     fn log_warn(&self, msg: &str);
+
+    /// Emit a phase-start timing marker.
+    ///
+    /// Called at the beginning of a named pipeline phase (see [`phases`]).
+    /// The default implementation is a no-op, preserving backward compatibility.
+    fn log_phase_start(&self, _phase: &str) {}
+
+    /// Emit a phase-end timing marker with elapsed wall-clock time in milliseconds.
+    ///
+    /// Called at the end of a named pipeline phase (see [`phases`]).
+    /// The default implementation is a no-op, preserving backward compatibility.
+    fn log_phase_end(&self, _phase: &str, _elapsed_ms: u64) {}
+}
+
+/// RAII guard that records a [`ProcessLogger::log_phase_start`] event on creation
+/// and a [`ProcessLogger::log_phase_end`] event (with measured elapsed time) when
+/// [`PhaseTimer::finish`] is called.
+///
+/// # Example
+///
+/// ```rust
+/// use slicer_engine::logging::{NullLogger, PhaseTimer, phases};
+///
+/// let logger = NullLogger;
+/// let t = PhaseTimer::start(phases::GCODE_GENERATION, &logger);
+/// // … generate G-code …
+/// t.finish();
+/// ```
+pub struct PhaseTimer<'a> {
+    phase: &'a str,
+    logger: &'a dyn ProcessLogger,
+    start: std::time::Instant,
+}
+
+impl<'a> PhaseTimer<'a> {
+    /// Begin timing a phase and emit a start marker.
+    pub fn start(phase: &'a str, logger: &'a dyn ProcessLogger) -> Self {
+        logger.log_phase_start(phase);
+        Self {
+            phase,
+            logger,
+            start: std::time::Instant::now(),
+        }
+    }
+
+    /// Stop timing and emit an end marker with the measured elapsed time.
+    pub fn finish(self) {
+        let elapsed_ms = self.start.elapsed().as_millis() as u64;
+        self.logger.log_phase_end(self.phase, elapsed_ms);
+    }
 }
 
 /// Global stderr logger.
@@ -57,6 +169,14 @@ impl ProcessLogger for StderrLogger {
 
     fn log_warn(&self, msg: &str) {
         eprintln!("\x1b[33m[warn]\x1b[0m {}", msg);
+    }
+
+    fn log_phase_start(&self, phase: &str) {
+        eprintln!("[phase] {} → start", phase);
+    }
+
+    fn log_phase_end(&self, phase: &str, elapsed_ms: u64) {
+        eprintln!("[phase] {} ✓ {} ms", phase, elapsed_ms);
     }
 }
 
@@ -80,6 +200,8 @@ impl ProcessLogger for NullLogger {
     fn log_info(&self, _msg: &str) {}
     fn log_debug(&self, _msg: &str) {}
     fn log_warn(&self, _msg: &str) {}
+    fn log_phase_start(&self, _phase: &str) {}
+    fn log_phase_end(&self, _phase: &str, _elapsed_ms: u64) {}
 }
 
 #[cfg(test)]
@@ -92,6 +214,8 @@ mod tests {
         l.log_info("info");
         l.log_debug("debug");
         l.log_warn("warn");
+        l.log_phase_start("slicing");
+        l.log_phase_end("slicing", 42);
     }
 
     #[test]
@@ -101,5 +225,64 @@ mod tests {
         l.log_info("info");
         l.log_debug("debug");
         l.log_warn("warn");
+        l.log_phase_start("slicing");
+        l.log_phase_end("slicing", 42);
+    }
+
+    #[test]
+    fn phase_timer_runs_without_panic() {
+        let l = NullLogger;
+        let t = PhaseTimer::start(phases::SLICING, &l);
+        t.finish();
+    }
+
+    #[test]
+    fn phase_timer_records_nonzero_or_zero_elapsed() {
+        // We can't assert a specific elapsed time, but we can verify the
+        // timer calls log_phase_end with the elapsed value by using a logger
+        // that captures calls.
+        use std::sync::{Arc, Mutex};
+
+        struct CapturingLogger {
+            end_calls: Arc<Mutex<Vec<(String, u64)>>>,
+        }
+        impl ProcessLogger for CapturingLogger {
+            fn log_info(&self, _msg: &str) {}
+            fn log_debug(&self, _msg: &str) {}
+            fn log_warn(&self, _msg: &str) {}
+            fn log_phase_end(&self, phase: &str, elapsed_ms: u64) {
+                self.end_calls
+                    .lock()
+                    .unwrap()
+                    .push((phase.to_string(), elapsed_ms));
+            }
+        }
+
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let logger = CapturingLogger {
+            end_calls: calls.clone(),
+        };
+        let t = PhaseTimer::start(phases::SLICING, &logger);
+        t.finish();
+
+        let recorded = calls.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].0, phases::SLICING);
+    }
+
+    #[test]
+    fn all_phase_constants_are_non_empty() {
+        for p in [
+            phases::TOTAL,
+            phases::MESH_LOAD,
+            phases::MESH_ANALYSIS,
+            phases::SLICING,
+            phases::SURFACES,
+            phases::INFILL,
+            phases::GCODE_GENERATION,
+            phases::FILE_WRITE,
+        ] {
+            assert!(!p.is_empty(), "phase constant must not be empty");
+        }
     }
 }

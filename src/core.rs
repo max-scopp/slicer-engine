@@ -2,7 +2,7 @@
 
 use clipper2::*;
 
-use crate::logging::ProcessLogger;
+use crate::logging::{phases, PhaseTimer, ProcessLogger};
 use crate::mesh::types::{Mesh, Vertex};
 use crate::settings::params::SlicingParams;
 
@@ -320,14 +320,16 @@ pub fn process_mesh(
     logger: &dyn ProcessLogger,
 ) -> Vec<SliceLayer> {
     logger.log_info(&format!("processing mesh: {} triangles", mesh.faces.len()));
+
+    let t_slicing = PhaseTimer::start(phases::SLICING, logger);
     logger.log_debug("slicing mesh…");
-
     let mut layers = slice_mesh(mesh, params.layer_height);
-
     logger.log_info(&format!("sliced into {} layers", layers.len()));
+    t_slicing.finish();
 
     // Add top/bottom surfaces
     if params.top_layers > 0 || params.bottom_layers > 0 {
+        let t_surfaces = PhaseTimer::start(phases::SURFACES, logger);
         logger.log_debug(&format!(
             "generating surfaces (top: {}, bottom: {}, angle: {}°)",
             params.top_layers, params.bottom_layers, params.surface_infill_angle
@@ -340,6 +342,7 @@ pub fn process_mesh(
             params.surface_infill_angle,
         );
         logger.log_debug("surface generation complete");
+        t_surfaces.finish();
     }
 
     // Add infill
@@ -736,20 +739,22 @@ fn generate_rectilinear_infill(contours: &Paths, line_spacing: f64, angle_degree
     let sin_a = angle_rad.sin();
 
     // Rotate point (x, y) by -angle so infill direction aligns with the X axis
-    let rotate_neg = |x: f64, y: f64| -> (f64, f64) {
-        (x * cos_a + y * sin_a, -x * sin_a + y * cos_a)
-    };
+    let rotate_neg =
+        |x: f64, y: f64| -> (f64, f64) { (x * cos_a + y * sin_a, -x * sin_a + y * cos_a) };
     // Rotate point (x, y) by +angle to recover the original coordinate system
-    let rotate_pos = |x: f64, y: f64| -> (f64, f64) {
-        (x * cos_a - y * sin_a, x * sin_a + y * cos_a)
-    };
+    let rotate_pos =
+        |x: f64, y: f64| -> (f64, f64) { (x * cos_a - y * sin_a, x * sin_a + y * cos_a) };
 
     // Collect rotated polygon vertices for every contour path
     let rotated_polys: Vec<Vec<(f64, f64)>> = contours
         .iter()
         .filter_map(|path| {
             let pts: Vec<(f64, f64)> = path.iter().map(|pt| rotate_neg(pt.x(), pt.y())).collect();
-            if pts.len() >= 2 { Some(pts) } else { None }
+            if pts.len() >= 2 {
+                Some(pts)
+            } else {
+                None
+            }
         })
         .collect();
 
@@ -1328,8 +1333,7 @@ mod tests {
     fn test_infill_clipped_to_contour() {
         // Verify that infill lines are clipped to the contour and don't extend
         // beyond the bounding box of the given paths.
-        let square: Path =
-            vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
         let mut paths = Paths::new(vec![]);
         paths.push(square);
 

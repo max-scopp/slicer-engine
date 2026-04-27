@@ -86,6 +86,19 @@ pub enum ServerMessage {
     Connected { version: String },
     /// A log line for the status panel.
     Log { level: String, message: String },
+    /// A performance timing marker for a pipeline phase.
+    ///
+    /// Emitted at the start and end of each major processing step so the
+    /// browser can display elapsed times in the status panel.
+    PhaseMarker {
+        /// Pipeline phase name (see `slicer_engine::logging::phases`).
+        phase: String,
+        /// `"start"` when the phase begins; `"end"` when it completes.
+        event: String,
+        /// Elapsed time in milliseconds. Only present when `event` is `"end"`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        elapsed_ms: Option<u64>,
+    },
     /// Incremental slicing progress.
     Progress {
         current_layer: usize,
