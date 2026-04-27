@@ -83,6 +83,37 @@ pub struct SlicingParams {
     /// Retraction distance in mm on travel moves.
     #[serde(default = "SlicingParams::default_retract_mm")]
     pub retract_mm: f64,
+    /// Use only outer wall on the last layer of top surfaces.
+    ///
+    /// When true, the final layer of top surface regions will only print the
+    /// outermost perimeter, creating a cleaner top finish with less chance of
+    /// pillowing or visible infill patterns showing through.
+    #[serde(default = "SlicingParams::default_only_one_wall_top")]
+    pub only_one_wall_top: bool,
+    /// Use only outer wall on the first layer (bottom surface or general first layer).
+    ///
+    /// When true, the first layer uses only the outermost perimeter for better
+    /// bed adhesion and to avoid potential issues with multiple perimeters on
+    /// the first layer.
+    #[serde(default = "SlicingParams::default_only_one_wall_first_layer")]
+    pub only_one_wall_first_layer: bool,
+    /// Overhang angle threshold in degrees (0-90) for skipping surface generation.
+    ///
+    /// When the angle between adjacent layers suggests a shallow overhang
+    /// (angle < threshold), skip generating solid top/bottom surfaces since
+    /// perimeters alone may suffice. Default 0° means always generate surfaces;
+    /// higher values (e.g., 45°) skip surfaces on gentle slopes.
+    ///
+    /// This is a foundation for future overhang support without implementing
+    /// full overhang detection yet.
+    #[serde(default = "SlicingParams::default_support_threshold_angle")]
+    pub support_threshold_angle: f64,
+    /// How much solid surfaces overlap into perimeter walls for bonding (0.0-1.0).
+    ///
+    /// A small overlap (e.g., 0.25 = 25%) ensures surfaces bond well to walls
+    /// without gaps, while keeping walls as the dominant structure. Default 0.25.
+    #[serde(default = "SlicingParams::default_infill_overlap_percent")]
+    pub infill_overlap_percent: f64,
 }
 
 impl Default for SlicingParams {
@@ -108,6 +139,10 @@ impl Default for SlicingParams {
             travel_speed_mm_min: Self::default_travel_speed_mm_min(),
             z_hop_mm: Self::default_z_hop_mm(),
             retract_mm: Self::default_retract_mm(),
+            only_one_wall_top: Self::default_only_one_wall_top(),
+            only_one_wall_first_layer: Self::default_only_one_wall_first_layer(),
+            support_threshold_angle: Self::default_support_threshold_angle(),
+            infill_overlap_percent: Self::default_infill_overlap_percent(),
         }
     }
 }
@@ -167,6 +202,22 @@ impl SlicingParams {
 
     fn default_retract_mm() -> f64 {
         1.0
+    }
+
+    fn default_only_one_wall_top() -> bool {
+        false
+    }
+
+    fn default_only_one_wall_first_layer() -> bool {
+        false
+    }
+
+    fn default_support_threshold_angle() -> f64 {
+        0.0 // Always generate surfaces by default
+    }
+
+    fn default_infill_overlap_percent() -> f64 {
+        0.25 // 25% overlap for good bonding
     }
 }
 
