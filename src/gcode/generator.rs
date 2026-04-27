@@ -341,18 +341,32 @@ impl GcodeGenerator {
             let mut last_width: Option<f64> = None;
 
             for (path_idx, path) in layer.paths.iter().enumerate() {
-                let points: Vec<(f64, f64)> = path.iter().map(|p| (p.x(), p.y())).collect();
-                if points.len() < 2 {
+                let raw_points: Vec<(f64, f64)> = path.iter().map(|p| (p.x(), p.y())).collect();
+                if raw_points.len() < 2 {
                     continue;
                 }
 
-                // Resolve the effective extrusion width for this path:
-                // use the per-path override when set (Arachne variable-width),
-                // otherwise fall back to the role's default width.
+                // Fetch the role and resolve the effective extrusion width
                 let role = layer.role_for_path(path_idx);
                 let width_mm = layer
                     .width_for_path(path_idx)
                     .unwrap_or_else(|| role.default_width_mm());
+
+                // Apply Ramer-Douglas-Peucker simplification when a tolerance is set.
+                // `douglas_peucker` always preserves the first and last point, so a
+                // path with >= 2 raw points will always yield >= 2 simplified points.
+                let points: Vec<(f64, f64)> = if params.path_tolerance > 0.0 && raw_points.len() > 2
+                {
+                    crate::gcode::simplify::douglas_peucker(&raw_points, params.path_tolerance)
+                } else {
+                    raw_points
+                };
+
+                // Guard against future algorithm changes that might produce degenerate paths.
+                debug_assert!(
+                    points.len() >= 2,
+                    "path should have >= 2 points after simplification"
+                );
 
                 // Emit ;TYPE: / ;WIDTH: annotation when the role OR extrusion
                 // width changes.  This ensures slicers / post-processors always
@@ -450,22 +464,32 @@ impl GcodeGenerator {
                     prev = (x, y);
                 }
 
-                // Close the contour
-                let dx = start_x - prev.0;
-                let dy = start_y - prev.1;
-                let len = (dx * dx + dy * dy).sqrt();
-                if len >= 1e-6 {
-                    e_total += extrusion_for_move(
-                        len,
-                        params.layer_height,
-                        width_mm,
-                        params.filament_diameter_mm,
-                    );
-                    out.push_str(&format!(
-                        "{} ; close contour\n",
-                        self.dialect
-                            .move_extrude(start_x, start_y, e_total, print_speed_mm_min)
-                    ));
+                // Close the contour — only for inherently closed-loop roles such as
+                // perimeter walls and skirt/brim.  Open infill polylines (Infill,
+                // TopSurface, BottomSurface, Bridge, Support) must NOT be closed;
+                // doing so would add a long diagonal extrusion back to the path start,
+                // producing the "weird line crossing" artifact visible in gyroid infill.
+                let is_closed_loop = matches!(
+                    role,
+                    crate::core::ExtrusionRole::OuterWall | crate::core::ExtrusionRole::InnerWall | crate::core::ExtrusionRole::Skirt
+                );
+                if is_closed_loop {
+                    let dx = start_x - prev.0;
+                    let dy = start_y - prev.1;
+                    let len = (dx * dx + dy * dy).sqrt();
+                    if len >= 1e-6 {
+                        e_total += extrusion_for_move(
+                            len,
+                            params.layer_height,
+                            width_mm,
+                            params.filament_diameter_mm,
+                        );
+                        out.push_str(&format!(
+                            "{} ; close contour\n",
+                            self.dialect
+                                .move_extrude(start_x, start_y, e_total, print_speed_mm_min)
+                        ));
+                    }
                 }
             }
         }
@@ -1160,5 +1184,91 @@ mod tests {
     fn test_render_marker_no_placeholders() {
         let result = render_marker(";LAYER_CHANGE", "0.200", "0.200", "", "");
         assert_eq!(result, ";LAYER_CHANGE");
+    }
+
+    // ── Path simplification (Douglas-Peucker integration) ──────────────────────
+
+    #[test]
+    fn test_path_simplification_reduces_collinear_moves() {
+        use clipper2::Path;
+
+        // A path with collinear intermediate points — simplification at 0.05 mm
+        // should collapse them to just the two endpoints.
+        // Use a diagonal line: (0,0) → (1,1) → (2,2) → (3,3) → (4,4)
+        // All intermediate points lie exactly on the chord.
+        let mut layer = SliceLayer::new(0.2);
+        let path: Path = vec![(0.0, 0.0), (1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0)].into();
+        layer.paths.push(path);
+
+        let params_with_simplification = SlicingParams {
+            path_tolerance: 0.05,
+            ..SlicingParams::default()
+        };
+        let params_no_simplification = SlicingParams {
+            path_tolerance: 0.0,
+            ..SlicingParams::default()
+        };
+
+        let gcode_simplified = GcodeGenerator::new(GcodeFlavor::Marlin)
+            .with_lifecycle_markers(false)
+            .generate(&[layer.clone()], &params_with_simplification);
+        let gcode_full = GcodeGenerator::new(GcodeFlavor::Marlin)
+            .with_lifecycle_markers(false)
+            .generate(&[layer], &params_no_simplification);
+
+        // The simplified output must have fewer G1 extrusion moves.
+        let count_moves = |s: &str| {
+            s.lines()
+                .filter(|l| l.contains("G1") && l.contains(" E"))
+                .count()
+        };
+        assert!(
+            count_moves(&gcode_simplified) < count_moves(&gcode_full),
+            "simplified gcode should have fewer extrusion moves than full gcode"
+        );
+    }
+
+    #[test]
+    fn test_path_simplification_disabled_with_zero_tolerance() {
+        use clipper2::Path;
+
+        let mut layer = SliceLayer::new(0.2);
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer.paths.push(square);
+
+        let params = SlicingParams {
+            path_tolerance: 0.0,
+            ..SlicingParams::default()
+        };
+        // Should not panic and should produce valid G-code with all four corner moves.
+        let gcode = GcodeGenerator::new(GcodeFlavor::Marlin)
+            .with_lifecycle_markers(false)
+            .generate(&[layer], &params);
+        assert!(gcode.contains(" E"), "should contain extrusion moves");
+    }
+
+    #[test]
+    fn test_path_simplification_preserves_corners() {
+        use clipper2::Path;
+
+        // A square has no collinear intermediate points — all corners are
+        // significant and must survive simplification.
+        let mut layer = SliceLayer::new(0.2);
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer.paths.push(square);
+
+        let params = SlicingParams {
+            path_tolerance: 0.05,
+            ..SlicingParams::default()
+        };
+        let gcode = GcodeGenerator::new(GcodeFlavor::Marlin)
+            .with_lifecycle_markers(false)
+            .generate(&[layer], &params);
+
+        // All four corners should appear as extrusion destinations.
+        assert!(gcode.contains("X0.000 Y0.000"), "missing (0,0)");
+        assert!(gcode.contains("X10.000 Y0.000"), "missing (10,0)");
+        assert!(gcode.contains("X10.000 Y10.000"), "missing (10,10)");
+        assert!(gcode.contains("X0.000 Y10.000"), "missing (0,10)");
     }
 }

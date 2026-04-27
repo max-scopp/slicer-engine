@@ -15,6 +15,13 @@ export interface PreviousSession {
   download_url: string;
 }
 
+export interface PhaseTimingData {
+  phase: string;
+  startTime?: number;
+  endTime?: number;
+  elapsedMs?: number;
+}
+
 @Injectable({ providedIn: 'root' })
 export class SlicerService {
   private readonly ws = inject(WebSocketService);
@@ -25,6 +32,7 @@ export class SlicerService {
   readonly status = signal<SlicerStatus>('idle');
   readonly outputLog = signal<string[]>([]);
   readonly previousSessions = signal<PreviousSession[]>([]);
+  readonly phaseTimings = signal<PhaseTimingData[]>([]);
 
   constructor() {
     // Pipe all WebSocket server messages into local state
@@ -53,6 +61,9 @@ export class SlicerService {
         break;
       case 'Log':
         this.outputLog.update(l => [...l, `[${msg.level}] ${msg.message}`]);
+        break;
+      case 'PhaseMarker':
+        this.handlePhaseMarker(msg);
         break;
       case 'Progress':
         this.outputLog.update(l => [
@@ -86,6 +97,40 @@ export class SlicerService {
         this.status.set('error');
         this.outputLog.update(l => [...l, `[error] ${msg.message}`]);
         break;
+    }
+  }
+
+  private handlePhaseMarker(msg: { phase: string; event: string; elapsed_ms?: number | null }): void {
+    const now = Date.now();
+    
+    if (msg.event === 'start') {
+      // Phase started - add or update the timing entry
+      this.phaseTimings.update(timings => {
+        const existing = timings.find(t => t.phase === msg.phase);
+        if (existing) {
+          existing.startTime = now;
+          existing.endTime = undefined;
+          existing.elapsedMs = undefined;
+          return [...timings];
+        } else {
+          return [...timings, { phase: msg.phase, startTime: now }];
+        }
+      });
+      this.outputLog.update(l => [...l, `[phase] ${msg.phase} → start`]);
+    } else if (msg.event === 'end' && msg.elapsed_ms != null) {
+      // Phase ended - update with elapsed time
+      this.phaseTimings.update(timings => {
+        const existing = timings.find(t => t.phase === msg.phase);
+        if (existing) {
+          existing.endTime = now;
+          existing.elapsedMs = msg.elapsed_ms ?? undefined;
+          return [...timings];
+        } else {
+          // Phase end without start (shouldn't happen, but handle it)
+          return [...timings, { phase: msg.phase, endTime: now, elapsedMs: msg.elapsed_ms ?? undefined }];
+        }
+      });
+      this.outputLog.update(l => [...l, `[phase] ${msg.phase} ✓ ${msg.elapsed_ms} ms`]);
     }
   }
 
@@ -153,6 +198,9 @@ export class SlicerService {
           nozzle_temp: s.nozzleTemp,
           bed_temp: s.bedTemp,
           gcode_flavor: s.gcodeFlavor,
+          infill_density: s.infillDensity,
+          infill_pattern: s.infillPattern,
+          infill_angle: s.infillAngle,
         },
       });
     } catch (error) {
@@ -168,6 +216,7 @@ export class SlicerService {
     this.selectedFile.set(null);
     this.status.set('idle');
     this.outputLog.set([]);
+    this.phaseTimings.set([]);
     this.ws.send({ type: 'Reset' });
   }
 

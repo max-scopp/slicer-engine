@@ -53,6 +53,14 @@ pub struct SlicingParams {
     pub wall_distribution_count: usize,
     /// Infill density as a fraction (0.0 = hollow, 1.0 = solid).
     pub infill_density: f64,
+    /// Infill pattern type (rectilinear, grid, honeycomb, gyroid).
+    /// Defaults to "rectilinear" if not specified.
+    #[serde(default = "SlicingParams::default_infill_pattern")]
+    pub infill_pattern: String,
+    /// Base angle in degrees for sparse infill lines (default 45°).
+    /// Alternating layers rotate +90° on top of this base angle.
+    #[serde(default = "SlicingParams::default_infill_base_angle")]
+    pub infill_base_angle: f64,
     /// Print speed in mm/s.
     pub print_speed: f64,
     /// Nozzle temperature in °C.
@@ -114,6 +122,13 @@ pub struct SlicingParams {
     /// without gaps, while keeping walls as the dominant structure. Default 0.25.
     #[serde(default = "SlicingParams::default_infill_overlap_percent")]
     pub infill_overlap_percent: f64,
+    /// Maximum allowed perpendicular deviation (mm) when simplifying output
+    /// paths with the Ramer-Douglas-Peucker algorithm.
+    ///
+    /// Set to `0.0` to disable simplification entirely.
+    /// Typical values: `0.01`–`0.1` mm; default `0.05` mm.
+    #[serde(default = "SlicingParams::default_path_tolerance")]
+    pub path_tolerance: f64,
 }
 
 impl Default for SlicingParams {
@@ -128,6 +143,8 @@ impl Default for SlicingParams {
             wall_transition_length: Self::default_wall_transition_length(),
             wall_distribution_count: Self::default_wall_distribution_count(),
             infill_density: 0.2,
+            infill_pattern: Self::default_infill_pattern(),
+            infill_base_angle: Self::default_infill_base_angle(),
             print_speed: 60.0,
             nozzle_temp: 210.0,
             bed_temp: 60.0,
@@ -143,6 +160,7 @@ impl Default for SlicingParams {
             only_one_wall_first_layer: Self::default_only_one_wall_first_layer(),
             support_threshold_angle: Self::default_support_threshold_angle(),
             infill_overlap_percent: Self::default_infill_overlap_percent(),
+            path_tolerance: Self::default_path_tolerance(),
         }
     }
 }
@@ -170,6 +188,14 @@ impl SlicingParams {
 
     fn default_wall_distribution_count() -> usize {
         1
+    }
+
+    fn default_infill_pattern() -> String {
+        "rectilinear".to_string()
+    }
+
+    fn default_infill_base_angle() -> f64 {
+        45.0
     }
 
     fn default_top_layers() -> usize {
@@ -218,6 +244,10 @@ impl SlicingParams {
 
     fn default_infill_overlap_percent() -> f64 {
         0.25 // 25% overlap for good bonding
+    }
+
+    fn default_path_tolerance() -> f64 {
+        0.05
     }
 }
 
@@ -634,6 +664,7 @@ mod tests {
         assert_eq!(params.travel_speed_mm_min, 9000.0);
         assert_eq!(params.z_hop_mm, 0.2);
         assert_eq!(params.retract_mm, 1.0);
+        assert_eq!(params.path_tolerance, 0.05);
     }
 
     #[test]
@@ -668,5 +699,6 @@ mod tests {
         assert_eq!(params.travel_speed_mm_min, 9000.0, "default travel speed");
         assert_eq!(params.z_hop_mm, 0.2, "default z-hop");
         assert_eq!(params.retract_mm, 1.0, "default retract");
+        assert_eq!(params.path_tolerance, 0.05, "default path tolerance");
     }
 }

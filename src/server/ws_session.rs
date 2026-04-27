@@ -1,6 +1,6 @@
 //! WebSocket session management and message handling.
 
-use crate::logging::{ProcessLogger, StderrLogger};
+use crate::logging::{phases, PhaseTimer, ProcessLogger, StderrLogger};
 use crate::ws_protocol::{ClientMessage, ServerMessage};
 use futures_util::StreamExt as _;
 use std::sync::Arc;
@@ -58,6 +58,38 @@ impl ProcessLogger for WsLogger {
     fn log_warn(&self, msg: &str) {
         self.global.log_warn(msg);
         self.send_log("warn", msg);
+    }
+
+    fn log_phase_start(&self, phase: &str) {
+        self.global.log_phase_start(phase);
+        let server_msg = crate::ws_protocol::ServerMessage::PhaseMarker {
+            phase: phase.to_string(),
+            event: "start".to_string(),
+            elapsed_ms: None,
+        };
+        let json = serde_json::to_string(&server_msg).unwrap_or_else(|_| {
+            format!(
+                r#"{{"type":"PhaseMarker","phase":"{}","event":"start"}}"#,
+                phase
+            )
+        });
+        let _ = self.tx.blocking_send(json);
+    }
+
+    fn log_phase_end(&self, phase: &str, elapsed_ms: u64) {
+        self.global.log_phase_end(phase, elapsed_ms);
+        let server_msg = crate::ws_protocol::ServerMessage::PhaseMarker {
+            phase: phase.to_string(),
+            event: "end".to_string(),
+            elapsed_ms: Some(elapsed_ms),
+        };
+        let json = serde_json::to_string(&server_msg).unwrap_or_else(|_| {
+            format!(
+                r#"{{"type":"PhaseMarker","phase":"{}","event":"end","elapsed_ms":{}}}"#,
+                phase, elapsed_ms
+            )
+        });
+        let _ = self.tx.blocking_send(json);
     }
 }
 
@@ -212,6 +244,10 @@ async fn handle_slice(
         print_speed: ws_params.print_speed,
         nozzle_temp: ws_params.nozzle_temp,
         bed_temp: ws_params.bed_temp,
+        infill_density: ws_params.infill_density / 100.0,
+        infill_pattern: ws_params.infill_pattern.clone(),
+        infill_base_angle: ws_params.infill_angle,
+        surface_infill_angle: ws_params.infill_angle,
         ..SlicingParams::default()
     };
 
@@ -231,6 +267,14 @@ async fn handle_slice(
             })
         }
 
+        // Build the request-specific logger early so it can cover all phases
+        // including mesh loading.  Every pipeline message is sent back to the
+        // client as a Log/PhaseMarker frame and is also written to stderr.
+        let logger = WsLogger::new(tx.clone());
+
+        // Start overall timing for the entire process
+        let t_total = PhaseTimer::start(phases::TOTAL, &logger);
+
         let stl_bytes = match std::fs::read(&stl_file_path) {
             Ok(b) => b,
             Err(e) => {
@@ -240,6 +284,7 @@ async fn handle_slice(
             }
         };
 
+        let t_load = PhaseTimer::start(phases::MESH_LOAD, &logger);
         let mesh = match crate::mesh::io::read_stl_from_bytes(&stl_bytes) {
             Ok(m) => m,
             Err(e) => {
@@ -250,11 +295,7 @@ async fn handle_slice(
                 return;
             }
         };
-
-        // Build the request-specific logger for this WebSocket session.
-        // Every pipeline message is sent back to the client as a Log frame
-        // and is also written to global stderr via StderrLogger.
-        let logger = WsLogger::new(tx.clone());
+        t_load.finish();
 
         let layers = crate::core::process_mesh(&mesh, &params, &logger);
         let layer_count = layers.len();
@@ -265,20 +306,27 @@ async fn handle_slice(
         };
         let _ = tx.blocking_send(to_json(&progress));
 
+        let t_gcode = PhaseTimer::start(phases::GCODE_GENERATION, &logger);
         let gcode = crate::gcode::generate_gcode(&layers, &params);
+        t_gcode.finish();
 
         // Write G-code to disk
+        let t_write = PhaseTimer::start(phases::FILE_WRITE, &logger);
         if let Err(e) = std::fs::write(&gcode_output_path_clone, &gcode) {
             let msg = ServerMessage::error(format!("Failed to write G-code file: {e}"));
             let _ = tx.blocking_send(to_json(&msg));
             return;
         }
+        t_write.finish();
 
         let complete = ServerMessage::SliceComplete {
             layer_count,
             download_url: format!("/api/download/{}", uuid),
         };
         let _ = tx.blocking_send(to_json(&complete));
+
+        // Finish overall timing
+        t_total.finish();
     });
 
     // Forward channel messages to the WebSocket until the task finishes

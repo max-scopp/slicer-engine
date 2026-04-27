@@ -12,6 +12,7 @@ gcode/
 ├── flavor.rs       GcodeFlavor enum (Marlin | Klipper)
 ├── dialect.rs      GcodeDialect trait + WarnFn
 ├── generator.rs    GcodeGenerator façade + generate_gcode()
+├── simplify.rs     Ramer-Douglas-Peucker polyline simplification
 ├── source.rs       resolve_gcode_source() file/string resolver
 └── dialects/
     ├── mod.rs      re-exports
@@ -201,6 +202,64 @@ sequenceDiagram
 All three distances and the travel speed are configurable via `SlicingParams`
 fields `retract_mm` (default 1.0 mm), `z_hop_mm` (default 0.2 mm), and
 `travel_speed_mm_min` (default 9000 mm/min = 150 mm/s).
+
+---
+
+## Path simplification (Ramer-Douglas-Peucker)
+
+Sliced contours and infill paths often contain many near-collinear vertices.
+Streaming every one of them as a `G1` move overwhelms firmware buffers
+(OctoPrint, Klipper) and bloats `.gcode` files. To address this, every path is
+thinned just before emission using the [Ramer-Douglas-Peucker][rdp] (RDP)
+algorithm.
+
+[rdp]: https://en.wikipedia.org/wiki/Ramer%E2%80%93Douglas%E2%80%93Peucker_algorithm
+
+### Where it sits in the pipeline
+
+```mermaid
+flowchart LR
+    mesh["Mesh slicing\n(full precision)"] --> walls["Arachne walls\n+ infill"]
+    walls --> raw["Raw paths\n(many vertices)"]
+    raw -->|path_tolerance &gt; 0| rdp["douglas_peucker()\n(simplify.rs)"]
+    rdp --> emit["G-code emission\n(generator.rs)"]
+    raw -. path_tolerance == 0 .-> emit
+```
+
+**Geometry calculations always use full mesh precision** — simplification
+happens *only* at the output stage, so wall offsets, infill clipping, and
+surface detection are never degraded.
+
+### Algorithm
+
+For each polyline, recursively find the vertex with the greatest perpendicular
+distance from the chord between the segment's endpoints. If that distance
+exceeds `tolerance`, split there and recurse on both halves; otherwise discard
+all interior vertices. The first and last point are always preserved.
+
+### Configuration — `SlicingParams::path_tolerance`
+
+| Value     | Effect                                                       |
+|-----------|--------------------------------------------------------------|
+| `0.0`     | Disabled — all vertices preserved                            |
+| `0.01`    | Conservative — high-quality printers, minimal visible impact |
+| `0.05` ⭐ | Default — good balance of fidelity and move-count reduction  |
+| `0.1+`    | Aggressive — best for slow firmware (legacy OctoPrint)       |
+
+### Future-feature checklist
+
+When adding a new feature that emits paths through `GcodeGenerator`:
+
+- ✅ **Nothing to do.** Simplification is applied inside the generator's
+  per-path loop, so any new path source (new infill pattern, support, brim,
+  ironing pass, …) automatically benefits.
+- ⚠️  **Bypass deliberately when curvature must be preserved point-for-point**
+  (e.g. arc-fitting / `G2`/`G3` emission, exact-position commands). Either set
+  `path_tolerance = 0.0` for that pass or perform the special-case emission
+  before the generic generator loop.
+- ⚠️  **Don't simplify upstream of geometry ops.** Calling `douglas_peucker`
+  on Clipper2 paths *before* offset/clip/intersect operations will cascade
+  precision loss into walls and infill. Keep it strictly at the output layer.
 
 ---
 

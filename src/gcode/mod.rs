@@ -34,6 +34,7 @@ pub mod dialect;
 pub mod dialects;
 pub mod flavor;
 pub mod generator;
+pub mod simplify;
 pub mod source;
 
 pub use dialect::{GcodeDialect, WarnFn};

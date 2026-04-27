@@ -21,7 +21,42 @@
     </div>
   </div>
 
-  <div class="log">
+  @if (phaseTimings().length > 0) {
+    <div class="phase-timings">
+      <h3>Phase Timings</h3>
+      <table class="timing-table">
+        <thead>
+          <tr>
+            <th>Phase</th>
+            <th>Duration</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (timing of phaseTimings(); track timing.phase) {
+            <tr [class.completed]="timing.elapsedMs != null">
+              <td class="phase-name">{{ timing.phase }}</td>
+              <td class="phase-duration">
+                @if (timing.elapsedMs != null) {
+                  {{ timing.elapsedMs }} ms
+                } @else {
+                  <span class="running">running...</span>
+                }
+              </td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  }
+
+  <div class="log-header">
+    <label class="auto-scroll-checkbox">
+      <input type="checkbox" [(ngModel)]="autoScroll" />
+      <span>Always scroll to bottom</span>
+    </label>
+  </div>
+
+  <div class="log" #logContainer>
     @if (outputLog().length === 0) {
       <span class="log-empty">No output yet.</span>
     } @else {
