@@ -95,6 +95,12 @@ pub struct SliceCommand {
     /// When omitted, uses the value from settings (default: 20%).
     #[arg(long)]
     pub infill_density: Option<f64>,
+
+    /// Infill base angle in degrees (0-180).
+    /// Alternating layers rotate +90° on top of this base angle.
+    /// When omitted, uses the value from settings (default: 45°).
+    #[arg(long)]
+    pub infill_angle: Option<f64>,
 }
 
 /// Result payload emitted by the `slice` command.
@@ -178,6 +184,9 @@ impl SliceCommand {
         }
         if let Some(ref pattern) = self.infill_pattern {
             slice_params.infill_pattern = pattern.clone();
+        }
+        if let Some(angle) = self.infill_angle {
+            slice_params.infill_base_angle = angle;
         }
 
         // Validate input file exists
