@@ -92,6 +92,36 @@ pub(crate) fn compute_layers_with_top_surface(
     let perimeters: Vec<Paths> = layers.iter().map(perimeter_paths_of).collect();
     let total = perimeters.len();
 
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        (0..total)
+            .into_par_iter()
+            .map(|i| {
+                let mut covered = perimeters[i].clone();
+                for j in 1..=top_layers {
+                    if i + j >= total {
+                        covered = Paths::new(vec![]);
+                        break;
+                    }
+                    let neighbor = &perimeters[i + j];
+                    if neighbor.is_empty() {
+                        covered = Paths::new(vec![]);
+                        break;
+                    }
+                    covered = intersect(covered, neighbor.clone(), FillRule::EvenOdd)
+                        .unwrap_or_default();
+                    if covered.is_empty() {
+                        break;
+                    }
+                }
+                let region = difference(perimeters[i].clone(), covered, FillRule::EvenOdd)
+                    .unwrap_or_default();
+                !region.is_empty()
+            })
+            .collect()
+    }
+    #[cfg(target_arch = "wasm32")]
     (0..total)
         .map(|i| {
             // Same loop shape as the top branch of

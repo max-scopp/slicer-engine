@@ -10,7 +10,7 @@ mod walls;
 pub use infill::add_infill_to_layers;
 pub use pipeline::process_mesh;
 pub use slicer::slice_mesh;
-pub use surfaces::{generate_top_bottom_surfaces, generate_top_bottom_surfaces_with_interior};
+pub use surfaces::{generate_top_bottom_surfaces, generate_top_bottom_surfaces_with_interior, SurfaceSubTimings};
 pub use types::{ExtrusionRole, SliceLayer};
 
 #[cfg(test)]

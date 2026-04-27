@@ -55,7 +55,13 @@ pub fn process_mesh(
         params.wall_count, params.nozzle_diameter_mm
     ));
     let arachne_params = crate::arachne::ArachneParams::from_slicing_params(params);
-    crate::arachne::generate_arachne_walls(&mut layers, &arachne_params);
+    let t_arachne = PhaseTimer::start(phases::ARACHNE_WALLS, logger);
+    let arachne_timings = crate::arachne::generate_arachne_walls(&mut layers, &arachne_params);
+    t_arachne.finish();
+    logger.log_debug(&format!(
+        "arachne sub-timings (CPU total across threads): collapse_depth {} ms, bead_shrinks {} ms",
+        arachne_timings.collapse_depth_ms, arachne_timings.bead_shrink_ms,
+    ));
     logger.log_debug("Arachne wall generation complete");
 
     // Pre-compute infill interior regions while all Arachne walls are still
@@ -71,14 +77,30 @@ pub fn process_mesh(
     let pre_strip_infill_regions: Option<Vec<Paths>> = if params.infill_density > 0.0
         && (params.only_one_wall_first_layer || params.only_one_wall_top)
     {
-        Some(
+        let t_snapshot = PhaseTimer::start(phases::INFILL_REGION_SNAPSHOT, logger);
+        #[cfg(not(target_arch = "wasm32"))]
+        let result = {
+            use rayon::prelude::*;
+            Some(
+                layers
+                    .par_iter()
+                    .map(|layer| {
+                        calculate_interior_region(layer, 0.0, params.nozzle_diameter_mm, params.wall_count)
+                    })
+                    .collect(),
+            )
+        };
+        #[cfg(target_arch = "wasm32")]
+        let result = Some(
             layers
                 .iter()
                 .map(|layer| {
-                    calculate_interior_region(layer, 0.0, params.nozzle_diameter_mm)
+                    calculate_interior_region(layer, 0.0, params.nozzle_diameter_mm, params.wall_count)
                 })
                 .collect(),
-        )
+        );
+        t_snapshot.finish();
+        result
     } else {
         None
     };
@@ -93,27 +115,53 @@ pub fn process_mesh(
     // generation hasn't run yet, so path_roles don't carry TopSurface.
     if params.only_one_wall_first_layer || params.only_one_wall_top {
         logger.log_debug("applying single-wall restrictions");
+        let t_wall_restrictions = PhaseTimer::start(phases::WALL_RESTRICTIONS, logger);
+        let t_top_detect = PhaseTimer::start(phases::WALL_TOP_DETECT, logger);
         let has_top_surface = if params.only_one_wall_top {
             compute_layers_with_top_surface(&layers, params.top_layers)
         } else {
             vec![false; layers.len()]
         };
+        t_top_detect.finish();
+        let t_wall_apply = PhaseTimer::start(phases::WALL_APPLY, logger);
         apply_single_wall_restrictions(&mut layers, params, &has_top_surface);
+        t_wall_apply.finish();
+        t_wall_restrictions.finish();
     }
 
     // Calculate interior regions (inside walls) for each layer where surfaces will go
     let interior_regions: Vec<Paths> = if params.top_layers > 0 || params.bottom_layers > 0 {
         logger.log_debug("calculating interior regions for surfaces");
-        layers
+        let t_interior = PhaseTimer::start(phases::INTERIOR_REGIONS, logger);
+        #[cfg(not(target_arch = "wasm32"))]
+        let result = {
+            use rayon::prelude::*;
+            layers
+                .par_iter()
+                .map(|layer| {
+                    calculate_interior_region(
+                        layer,
+                        params.infill_overlap_percent,
+                        params.nozzle_diameter_mm,
+                        params.wall_count,
+                    )
+                })
+                .collect()
+        };
+        #[cfg(target_arch = "wasm32")]
+        let result = layers
             .iter()
             .map(|layer| {
                 calculate_interior_region(
                     layer,
                     params.infill_overlap_percent,
                     params.nozzle_diameter_mm,
+                    params.wall_count,
                 )
             })
-            .collect()
+            .collect();
+        t_interior.finish();
+        result
     } else {
         vec![]
     };
@@ -125,7 +173,7 @@ pub fn process_mesh(
             "generating surfaces (top: {}, bottom: {}, angle: {}°)",
             params.top_layers, params.bottom_layers, params.surface_infill_angle
         ));
-        generate_top_bottom_surfaces_with_interior(
+        let surface_timings = generate_top_bottom_surfaces_with_interior(
             &mut layers,
             params.top_layers,
             params.bottom_layers,
@@ -135,6 +183,12 @@ pub fn process_mesh(
         );
         logger.log_debug("surface generation complete");
         t_surfaces.finish();
+        logger.log_debug(&format!(
+            "surface sub-timings: perimeter_snapshot {} ms, detection {} ms, infill_gen {} ms",
+            surface_timings.perimeter_snapshot_ms,
+            surface_timings.detection_ms,
+            surface_timings.infill_gen_ms,
+        ));
     }
 
     // Add infill
@@ -151,6 +205,7 @@ pub fn process_mesh(
             params.infill_base_angle
         ));
 
+        let t_infill = PhaseTimer::start(phases::INFILL, logger);
         add_infill_to_layers(
             &mut layers,
             params.infill_density,
@@ -159,6 +214,7 @@ pub fn process_mesh(
             params.nozzle_diameter_mm,
             pre_strip_infill_regions.as_deref(),
         );
+        t_infill.finish();
         logger.log_debug("infill generation complete");
     }
 

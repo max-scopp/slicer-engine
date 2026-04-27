@@ -27,6 +27,7 @@ pub(crate) fn calculate_interior_region(
     layer: &SliceLayer,
     overlap_percent: f64,
     nozzle_diameter: f64,
+    max_walls_per_island: usize,
 ) -> Paths {
     // Use OuterWall paths as the outer extent of each island.
     // Winding is preserved (CCW for solid islands, CW for holes) so that
@@ -64,7 +65,19 @@ pub(crate) fn calculate_interior_region(
         })
         .count();
     let outer_count = outer_paths.len().max(1);
-    let walls_per_island = total_wall_count.div_ceil(outer_count);
+    // Estimate beads per island from the ratio of total wall paths to outer
+    // island paths.  For complex cross-sections (multi-contour, portholes,
+    // etc.) the Arachne generator can produce many paths per bead-ring, making
+    // the naive ceiling overflow far past the configured wall_count.  Cap the
+    // result at max_walls_per_island (= params.wall_count from the pipeline)
+    // so the interior deflation never exceeds what the actual bead geometry
+    // dictates.
+    let computed = total_wall_count.div_ceil(outer_count);
+    let walls_per_island = if max_walls_per_island > 0 {
+        computed.min(max_walls_per_island)
+    } else {
+        computed
+    };
 
     // The OuterWall bead centerline is already at depth d/2 from the raw mesh
     // contour.  We need to deflate inward by the remaining wall band thickness:
@@ -132,43 +145,33 @@ pub fn add_infill_to_layers(
     use crate::infill::generate_infill;
 
     if infill_density <= 0.0 {
-        return; // No infill requested
+        return;
     }
 
-    for (layer_idx, layer) in layers.iter_mut().enumerate() {
-        // Skip layers with no perimeters
+    // ── Parallel compute pass ─────────────────────────────────────────────────
+    // Each layer's infill is independent.  Compute all infill path sets in
+    // parallel, then apply them to `layers` in a serial pass.
+    // `None` entry means "skip this layer" (empty perimeters / empty area).
+    let compute = |layer_idx: usize| -> Option<Paths> {
+        let layer = &layers[layer_idx];
         if layer.paths.is_empty() {
-            continue;
+            return None;
         }
 
-        // Compute the infill boundary: the region inside the innermost wall.
-        //
-        // When `precomputed_infill_regions` is provided (set by the pipeline
-        // before `apply_single_wall_restrictions` runs), use those regions
-        // directly.  This prevents a bug where stripping inner walls from a
-        // layer (because some small sub-feature has a top surface there) causes
-        // `calculate_interior_region` to see `walls_per_island = 1` and expand
-        // the infill boundary into the space that was occupied by the stripped
-        // inner walls, producing infill that bleeds through the wall zone.
-        //
-        // When `None` is supplied the region is derived from the current layer
-        // state as before (correct when no stripping has occurred).
         let infill_area = if let Some(regions) = precomputed_infill_regions {
             if layer_idx < regions.len() && !regions[layer_idx].is_empty() {
                 regions[layer_idx].clone()
             } else {
-                calculate_interior_region(layer, 0.0, nozzle_diameter_mm)
+                calculate_interior_region(layer, 0.0, nozzle_diameter_mm, 0)
             }
         } else {
-            calculate_interior_region(layer, 0.0, nozzle_diameter_mm)
+            calculate_interior_region(layer, 0.0, nozzle_diameter_mm, 0)
         };
 
         if infill_area.is_empty() {
-            continue;
+            return None;
         }
 
-        // Subtract solid surface regions so sparse infill is never placed
-        // on top of existing solid top/bottom surface infill.
         let infill_area = if !layer.solid_regions.is_empty() {
             let remaining = difference(
                 infill_area,
@@ -177,32 +180,45 @@ pub fn add_infill_to_layers(
             )
             .unwrap_or_default();
             if remaining.is_empty() {
-                // Entire layer is covered by solid surfaces — no sparse infill needed.
-                continue;
+                return None;
             }
             remaining
         } else {
             infill_area
         };
 
-        // Calculate angle offset for alternating patterns
-        // Rectilinear infill alternates base_angle and base_angle+90° each layer
         let base_angle_rad = infill_base_angle.to_radians();
-        let angle_offset = if layer_idx % 2 == 0 {
+        let angle_offset = if layer_idx.is_multiple_of(2) {
             base_angle_rad
         } else {
-            base_angle_rad + std::f64::consts::FRAC_PI_2 // +90 degrees
+            base_angle_rad + std::f64::consts::FRAC_PI_2
         };
 
-        // Generate infill paths within the computed area
-        // Pass layer Z height for patterns like gyroid that need it
-        let infill_paths =
-            generate_infill(&infill_area, infill_pattern, infill_density, angle_offset, layer.z);
+        Some(generate_infill(
+            &infill_area,
+            infill_pattern,
+            infill_density,
+            angle_offset,
+            layer.z,
+        ))
+    };
 
-        // Add infill paths to the layer with proper role annotation
-        for infill_path in infill_paths.iter() {
-            layer.paths.push(infill_path.clone());
-            layer.path_roles.push(ExtrusionRole::Infill);
+    #[cfg(not(target_arch = "wasm32"))]
+    let results: Vec<Option<Paths>> = {
+        use rayon::prelude::*;
+        (0..layers.len()).into_par_iter().map(compute).collect()
+    };
+    #[cfg(target_arch = "wasm32")]
+    let results: Vec<Option<Paths>> = (0..layers.len()).map(compute).collect();
+
+    // ── Serial apply pass ─────────────────────────────────────────────────────
+    for (layer_idx, infill_paths) in results.into_iter().enumerate() {
+        if let Some(paths) = infill_paths {
+            let layer = &mut layers[layer_idx];
+            for infill_path in paths.iter() {
+                layer.paths.push(infill_path.clone());
+                layer.path_roles.push(ExtrusionRole::Infill);
+            }
         }
     }
 }

@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use clipper2::*;
 
 use super::types::{ExtrusionRole, SliceLayer};
@@ -261,6 +263,16 @@ pub fn generate_top_bottom_surfaces(
 /// * `interior_regions` - Optional interior regions for each layer (inside walls).
 ///   If provided, surface infill is clipped to these regions, ensuring walls
 ///   have priority over surfaces.
+/// Sub-phase timing breakdown returned by [`generate_top_bottom_surfaces_with_interior`].
+pub struct SurfaceSubTimings {
+    /// Time spent collecting per-layer perimeter path snapshots.
+    pub perimeter_snapshot_ms: u64,
+    /// Time spent in Clipper2 intersection/difference detection operations.
+    pub detection_ms: u64,
+    /// Time spent generating rectilinear infill lines for surface regions.
+    pub infill_gen_ms: u64,
+}
+
 pub fn generate_top_bottom_surfaces_with_interior(
     layers: &mut [SliceLayer],
     top_layers: usize,
@@ -268,9 +280,13 @@ pub fn generate_top_bottom_surfaces_with_interior(
     layer_height: f64,
     infill_angle: f64,
     interior_regions: Option<&[Paths]>,
-) {
+) -> SurfaceSubTimings {
     if layers.is_empty() || (top_layers == 0 && bottom_layers == 0) {
-        return;
+        return SurfaceSubTimings {
+            perimeter_snapshot_ms: 0,
+            detection_ms: 0,
+            infill_gen_ms: 0,
+        };
     }
 
     let total = layers.len();
@@ -278,30 +294,29 @@ pub fn generate_top_bottom_surfaces_with_interior(
     // Snapshot the perimeter contours of every layer *before* we begin adding
     // infill paths. Surface detection must operate on sliced geometry only;
     // comparing against previously added infill would give wrong results.
+    let t_snap = Instant::now();
     let perimeters: Vec<Paths> = layers.iter().map(perimeter_paths_of).collect();
+    let snapshot_ns = t_snap.elapsed().as_nanos();
 
-    for i in 0..total {
-        // ── Bottom surfaces ──────────────────────────────────────────────────
+    let mut infill_ns = 0u128;
+
+    // ── Parallel detection pass ───────────────────────────────────────────────
+    //
+    // Each layer's surface regions are fully determined by `perimeters` (read-
+    // only) and `interior_regions` (read-only).  Computing them is therefore
+    // embarrassingly parallel.  We collect `(bottom_region, top_region)` pairs
+    // and then apply them to `layers` in a serial pass to avoid shared mutable
+    // state.
+    let detect_region = |i: usize| -> (Paths, Paths) {
         let bottom_region = if bottom_layers > 0 {
-            // Compute the area of layer[i] covered by ALL bottom_layers layers
-            // below it via progressive intersection.  Any part of layer[i] not
-            // in that intersection is a bottom surface.
-            //
-            // EvenOdd fill rule is used throughout so that the operations are
-            // winding-order–independent.  The mesh slicer (chain_segments) does
-            // not guarantee a consistent winding direction for inner contours
-            // (holes such as debossed text); NonZero would misidentify a hole
-            // whose winding happens to match the outer contour as solid material.
             let mut covered = perimeters[i].clone();
             for j in 1..=bottom_layers {
                 if i < j {
-                    // Ran off the model bottom — no coverage from here on.
                     covered = Paths::new(vec![]);
                     break;
                 }
                 let neighbor = &perimeters[i - j];
                 if neighbor.is_empty() {
-                    // Empty layer below counts as no coverage.
                     covered = Paths::new(vec![]);
                     break;
                 }
@@ -315,42 +330,23 @@ pub fn generate_top_bottom_surfaces_with_interior(
             let mut region =
                 difference(perimeters[i].clone(), covered, FillRule::EvenOdd).unwrap_or_default();
 
-            // If interior regions are provided, clip surface to interior (inside walls)
-            // Skip surface if interior region is empty or too small
             if let Some(interior_regions) = interior_regions {
                 if interior_regions[i].is_empty() {
-                    // No interior space - walls fill the entire area
-                    // Skip surface generation entirely
                     region = Paths::new(vec![]);
                 } else if !region.is_empty() {
                     region = intersect(region, interior_regions[i].clone(), FillRule::EvenOdd)
                         .unwrap_or_default();
                 }
             }
-
-            if !region.is_empty() {
-                add_solid_infill_for_region(
-                    &mut layers[i],
-                    &region,
-                    ExtrusionRole::BottomSurface,
-                    layer_height,
-                    infill_angle,
-                );
-            }
             region
         } else {
             Paths::new(vec![])
         };
 
-        // ── Top surfaces ─────────────────────────────────────────────────────
-        // Use a symmetric approach to the bottom-surface logic above, looking
-        // upward.  The result is captured so we can later union it with the
-        // bottom region to compute the layer's total solid-surface footprint.
         let top_region = if top_layers > 0 {
             let mut covered = perimeters[i].clone();
             for j in 1..=top_layers {
                 if i + j >= total {
-                    // Ran off the model top — no coverage from here on.
                     covered = Paths::new(vec![]);
                     break;
                 }
@@ -369,19 +365,13 @@ pub fn generate_top_bottom_surfaces_with_interior(
             let mut top_region =
                 difference(perimeters[i].clone(), covered, FillRule::EvenOdd).unwrap_or_default();
 
-            // Subtract bottom_region to avoid overlap (clone so bottom_region
-            // is still available for the solid_regions union below).
             if !bottom_region.is_empty() && !top_region.is_empty() {
                 top_region = difference(top_region, bottom_region.clone(), FillRule::EvenOdd)
                     .unwrap_or_default();
             }
 
-            // If interior regions are provided, clip surface to interior (inside walls)
-            // Skip surface if interior region is empty or too small
             if let Some(interior_regions) = interior_regions {
                 if interior_regions[i].is_empty() {
-                    // No interior space - walls fill the entire area
-                    // Skip surface generation entirely
                     top_region = Paths::new(vec![]);
                 } else if !top_region.is_empty() {
                     top_region =
@@ -389,21 +379,49 @@ pub fn generate_top_bottom_surfaces_with_interior(
                             .unwrap_or_default();
                 }
             }
-
-            if !top_region.is_empty() {
-                add_solid_infill_for_region(
-                    &mut layers[i],
-                    &top_region,
-                    ExtrusionRole::TopSurface,
-                    layer_height,
-                    infill_angle,
-                );
-            }
-
             top_region
         } else {
             Paths::new(vec![])
         };
+
+        (bottom_region, top_region)
+    };
+
+    let t_detect = Instant::now();
+    #[cfg(not(target_arch = "wasm32"))]
+    let regions: Vec<(Paths, Paths)> = {
+        use rayon::prelude::*;
+        (0..total).into_par_iter().map(detect_region).collect()
+    };
+    #[cfg(target_arch = "wasm32")]
+    let regions: Vec<(Paths, Paths)> = (0..total).map(detect_region).collect();
+    let detection_ns = t_detect.elapsed().as_nanos();
+
+    // ── Serial apply pass ─────────────────────────────────────────────────────
+    for (i, (bottom_region, top_region)) in regions.into_iter().enumerate() {
+        if !bottom_region.is_empty() {
+            let t = Instant::now();
+            add_solid_infill_for_region(
+                &mut layers[i],
+                &bottom_region,
+                ExtrusionRole::BottomSurface,
+                layer_height,
+                infill_angle,
+            );
+            infill_ns += t.elapsed().as_nanos();
+        }
+
+        if !top_region.is_empty() {
+            let t = Instant::now();
+            add_solid_infill_for_region(
+                &mut layers[i],
+                &top_region,
+                ExtrusionRole::TopSurface,
+                layer_height,
+                infill_angle,
+            );
+            infill_ns += t.elapsed().as_nanos();
+        }
 
         // Record the union of all solid-surface regions on this layer so that
         // add_infill_to_layers can exclude them from sparse infill.
@@ -412,11 +430,17 @@ pub fn generate_top_bottom_surfaces_with_interior(
         } else if !bottom_region.is_empty() {
             bottom_region
         } else {
-            top_region // may be empty, handled below
+            top_region
         };
         if !combined_solid.is_empty() {
             layers[i].solid_regions = combined_solid;
         }
+    }
+
+    SurfaceSubTimings {
+        perimeter_snapshot_ms: (snapshot_ns / 1_000_000) as u64,
+        detection_ms: (detection_ns / 1_000_000) as u64,
+        infill_gen_ms: (infill_ns / 1_000_000) as u64,
     }
 }
 
