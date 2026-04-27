@@ -35,10 +35,16 @@ graph LR
 
 ## Documentation
 
-- **[Mesh Operations](src/mesh/README.md)** – Loading STL, mesh types
+### Getting Started
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** ⭐ – Complete system architecture with Mermaid diagrams (start here for contributors!)
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** – How to contribute, development workflow, coding standards
+
+### Detailed Guides
+- **[Mesh Operations](src/mesh/README.md)** – Loading STL, mesh types, transformations
 - **[Slicing Algorithm](src/SLICING.md)** – How slicing works (with diagrams)
-- **[Settings](src/settings/README.md)** – Configuration parameters and priority
+- **[Settings](src/settings/README.md)** – Configuration parameters and priority cascade
 - **[CLI Commands](src/cli/README.md)** – Usage reference
+- **[G-code Generation](src/gcode/README.md)** – Multi-flavor G-code emission
 
 ## Project Structure
 
@@ -263,9 +269,31 @@ TBD
 
 ## Contributing
 
-1. Create a feature branch
-2. Make changes and test locally
-3. Ensure code passes linting: `cargo clippy`
-4. Format code: `cargo fmt`
-5. Push and create a pull request
+**New contributors:** Read [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow and coding standards.
+
+**Quick start:**
+1. Read [ARCHITECTURE.md](ARCHITECTURE.md) to understand the system
+2. Fork the repository
+3. Create a feature branch
+4. Make changes and test locally
+5. Ensure code passes linting: `cargo clippy --all-targets --all-features -- -D warnings`
+6. Format code: `cargo fmt`
+7. Push and create a pull request
+
+### Learning Resources
+
+**Arachne & Algorithms:**
+- [Arachne Paper](https://github.com/Ultimaker/CuraEngine/blob/main/docs/arachne.md) — Variable-width extrusion algorithm
+- [Clipper2 Documentation](https://www.angusj.com/clipper2/Docs/Overview.htm) — Polygon clipping library
+
+**3D Printing & G-code:**
+- [RepRap G-code Wiki](https://reprap.org/wiki/G-code) — G-code command reference
+- [Marlin Documentation](https://marlinfw.org/meta/gcode/) — Marlin-specific commands
+- [Klipper G-code Reference](https://www.klipper3d.org/G-Codes.html) — Klipper commands
+
+**Rust:**
+- [The Rust Book](https://doc.rust-lang.org/book/) — Official guide
+- [Rust by Example](https://doc.rust-lang.org/rust-by-example/) — Learn with examples
+
+See [ARCHITECTURE.md § Learning Resources](ARCHITECTURE.md#learning-resources) for more links.
 
