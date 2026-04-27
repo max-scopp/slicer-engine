@@ -123,14 +123,17 @@ fn generate_vertical_lines(
         let even_c = sin_z * (y_rads + phase_offset + PI).cos();
         let h = (a * a + b * b).sqrt();
         
-        let odd_x_rads = if h != 0.0 {
-            (odd_c / h).asin() + (b / h).asin()
+        // Clamp asin arguments to [-1, 1] to prevent NaN from float precision
+        // errors. Without this, slight overshoots produce NaN coordinates which
+        // appear as weird straight lines in the output.
+        let odd_x_rads = if h > f64::EPSILON {
+            (odd_c / h).clamp(-1.0, 1.0).asin() + (b / h).clamp(-1.0, 1.0).asin()
         } else {
             0.0
         } - PI / 2.0;
         
-        let even_x_rads = if h != 0.0 {
-            (even_c / h).asin() + (b / h).asin()
+        let even_x_rads = if h > f64::EPSILON {
+            (even_c / h).clamp(-1.0, 1.0).asin() + (b / h).clamp(-1.0, 1.0).asin()
         } else {
             0.0
         } - PI / 2.0;
@@ -161,8 +164,16 @@ fn generate_vertical_lines(
         }
         
         if line_points.len() >= 2 {
-            let path: Path = line_points.into();
-            result.push(path);
+            // Filter out any NaN/infinite points that may have slipped through;
+            // these would create the "weird straight lines at strange angles".
+            let valid_points: Vec<(f64, f64)> = line_points
+                .into_iter()
+                .filter(|(px, py)| px.is_finite() && py.is_finite())
+                .collect();
+            if valid_points.len() >= 2 {
+                let path: Path = valid_points.into();
+                result.push(path);
+            }
         }
         
         num_columns += 1;
@@ -198,14 +209,17 @@ fn generate_horizontal_lines(
         let even_c = cos_z * (x_rads + phase_offset).sin();
         let h = (a * a + b * b).sqrt();
         
-        let odd_y_rads = if h != 0.0 {
-            (odd_c / h).asin() + (b / h).asin()
+        // Clamp asin arguments to [-1, 1] to prevent NaN from float precision
+        // errors. Without this, slight overshoots produce NaN coordinates which
+        // appear as weird straight lines in the output.
+        let odd_y_rads = if h > f64::EPSILON {
+            (odd_c / h).clamp(-1.0, 1.0).asin() + (b / h).clamp(-1.0, 1.0).asin()
         } else {
             0.0
         } + PI / 2.0;
         
-        let even_y_rads = if h != 0.0 {
-            (even_c / h).asin() + (b / h).asin()
+        let even_y_rads = if h > f64::EPSILON {
+            (even_c / h).clamp(-1.0, 1.0).asin() + (b / h).clamp(-1.0, 1.0).asin()
         } else {
             0.0
         } + PI / 2.0;
@@ -236,8 +250,16 @@ fn generate_horizontal_lines(
         }
         
         if line_points.len() >= 2 {
-            let path: Path = line_points.into();
-            result.push(path);
+            // Filter out any NaN/infinite points that may have slipped through;
+            // these would create the "weird straight lines at strange angles".
+            let valid_points: Vec<(f64, f64)> = line_points
+                .into_iter()
+                .filter(|(px, py)| px.is_finite() && py.is_finite())
+                .collect();
+            if valid_points.len() >= 2 {
+                let path: Path = valid_points.into();
+                result.push(path);
+            }
         }
         
         num_rows += 1;
