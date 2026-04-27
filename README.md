@@ -244,6 +244,17 @@ routing works out of the box.
 
 GitHub Actions automatically builds all platform targets, runs linting, formatting, and the test suite on every push and pull request.
 
+## Implementation & AI Disclaimer
+
+This project is not a clean-room rewrite from a formal, derived requirements list.
+Development may be inspired by ideas, optimization strategies, and implementation patterns commonly used in other slicers.
+That said, this repository has a different purpose, codebase, language (Rust), and infrastructure, and is implemented independently for its own architecture and goals.
+
+The primary goal of AI use in this project is development velocity, logic research, and solving mathematical challenges effectively.
+
+IMPORTANT: ALL AI-GENERATED OR AI-ASSISTED CODE MUST BE REVIEWED AND APPROVED BY HUMAN MAINTAINERS BEFORE MERGE OR RELEASE.
+"BLIND AUTOPILOT" DEVELOPMENT IS NOT ENCOURAGED OR ACCEPTED.
+
 ## License
 
 **LEGAL NOTICE:** This is an interim state. Until an official license is decided and published, all rights are reserved and no use, reproduction, modification, or distribution of this software is permitted without explicit written authorization.
