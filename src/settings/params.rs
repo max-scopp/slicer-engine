@@ -45,6 +45,13 @@ pub struct SlicingParams {
     /// Retraction distance in mm on travel moves.
     #[serde(default = "SlicingParams::default_retract_mm")]
     pub retract_mm: f64,
+    /// Maximum allowed perpendicular deviation (mm) when simplifying output
+    /// paths with the Ramer-Douglas-Peucker algorithm.
+    ///
+    /// Set to `0.0` to disable simplification entirely.
+    /// Typical values: `0.01`–`0.1` mm; default `0.05` mm.
+    #[serde(default = "SlicingParams::default_path_tolerance")]
+    pub path_tolerance: f64,
 }
 
 impl Default for SlicingParams {
@@ -65,6 +72,7 @@ impl Default for SlicingParams {
             travel_speed_mm_min: Self::default_travel_speed_mm_min(),
             z_hop_mm: Self::default_z_hop_mm(),
             retract_mm: Self::default_retract_mm(),
+            path_tolerance: Self::default_path_tolerance(),
         }
     }
 }
@@ -100,6 +108,10 @@ impl SlicingParams {
 
     fn default_retract_mm() -> f64 {
         1.0
+    }
+
+    fn default_path_tolerance() -> f64 {
+        0.05
     }
 }
 
@@ -467,6 +479,7 @@ mod tests {
         assert_eq!(params.travel_speed_mm_min, 9000.0);
         assert_eq!(params.z_hop_mm, 0.2);
         assert_eq!(params.retract_mm, 1.0);
+        assert_eq!(params.path_tolerance, 0.05);
     }
 
     #[test]
@@ -493,10 +506,14 @@ mod tests {
         // Legacy JSON without the new fields should still deserialize with defaults
         let json = r#"{"layer_height":0.2,"wall_thickness":1.2,"infill_density":0.2,"print_speed":60.0,"nozzle_temp":210.0,"bed_temp":60.0}"#;
         let params: SlicingParams = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(params.filament_diameter_mm, 1.75, "default filament diameter");
+        assert_eq!(
+            params.filament_diameter_mm, 1.75,
+            "default filament diameter"
+        );
         assert_eq!(params.nozzle_diameter_mm, 0.4, "default nozzle diameter");
         assert_eq!(params.travel_speed_mm_min, 9000.0, "default travel speed");
         assert_eq!(params.z_hop_mm, 0.2, "default z-hop");
         assert_eq!(params.retract_mm, 1.0, "default retract");
+        assert_eq!(params.path_tolerance, 0.05, "default path tolerance");
     }
 }

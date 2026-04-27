@@ -321,10 +321,10 @@ impl SliceCommand {
         };
 
         emitter.emit(&result);
-        
+
         // Finish overall timing
         t_total.finish();
-        
+
         Ok(())
     }
 }

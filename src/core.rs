@@ -509,8 +509,8 @@ pub fn generate_top_bottom_surfaces(
 
             // Subtract bottom_region to avoid overlap
             if !bottom_region.is_empty() && !top_region.is_empty() {
-                top_region = difference(top_region, bottom_region, FillRule::EvenOdd)
-                    .unwrap_or_default();
+                top_region =
+                    difference(top_region, bottom_region, FillRule::EvenOdd).unwrap_or_default();
             }
 
             if !top_region.is_empty() {
@@ -602,20 +602,22 @@ fn generate_rectilinear_infill(contours: &Paths, line_spacing: f64, angle_degree
     let sin_a = angle_rad.sin();
 
     // Rotate point (x, y) by -angle so infill direction aligns with the X axis
-    let rotate_neg = |x: f64, y: f64| -> (f64, f64) {
-        (x * cos_a + y * sin_a, -x * sin_a + y * cos_a)
-    };
+    let rotate_neg =
+        |x: f64, y: f64| -> (f64, f64) { (x * cos_a + y * sin_a, -x * sin_a + y * cos_a) };
     // Rotate point (x, y) by +angle to recover the original coordinate system
-    let rotate_pos = |x: f64, y: f64| -> (f64, f64) {
-        (x * cos_a - y * sin_a, x * sin_a + y * cos_a)
-    };
+    let rotate_pos =
+        |x: f64, y: f64| -> (f64, f64) { (x * cos_a - y * sin_a, x * sin_a + y * cos_a) };
 
     // Collect rotated polygon vertices for every contour path
     let rotated_polys: Vec<Vec<(f64, f64)>> = contours
         .iter()
         .filter_map(|path| {
             let pts: Vec<(f64, f64)> = path.iter().map(|pt| rotate_neg(pt.x(), pt.y())).collect();
-            if pts.len() >= 2 { Some(pts) } else { None }
+            if pts.len() >= 2 {
+                Some(pts)
+            } else {
+                None
+            }
         })
         .collect();
 
@@ -1052,8 +1054,7 @@ mod tests {
     fn test_infill_clipped_to_contour() {
         // Verify that infill lines are clipped to the contour and don't extend
         // beyond the bounding box of the given paths.
-        let square: Path =
-            vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
         let mut paths = Paths::new(vec![]);
         paths.push(square);
 

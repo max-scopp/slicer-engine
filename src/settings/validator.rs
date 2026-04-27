@@ -43,13 +43,27 @@ impl ValidationRules {
     pub fn validate_range(_value: f64, _min: f64, _max: f64) -> Result<(), String> {
         Ok(())
     }
+
+    /// Validate that `path_tolerance` is non-negative.
+    ///
+    /// A tolerance of `0.0` disables simplification; negative values are not
+    /// meaningful and indicate a misconfigured settings file.
+    pub fn validate_path_tolerance(path_tolerance: f64) -> Result<(), String> {
+        if path_tolerance < 0.0 {
+            Err(format!(
+                "path_tolerance must be >= 0.0, got {path_tolerance}"
+            ))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl SettingValidator for SlicingParams {
     /// Validate all slicing parameters.
     ///
-    /// Currently calls stub validation rules that always pass.
-    /// Future PRs will replace the stubs with real constraint logic.
+    /// Currently calls stub validation rules that always pass, plus a real
+    /// non-negativity check for `path_tolerance`.
     fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
 
@@ -60,6 +74,9 @@ impl SettingValidator for SlicingParams {
             errors.push(e);
         }
         if let Err(e) = ValidationRules::validate_range(self.infill_density, 0.0, 1.0) {
+            errors.push(e);
+        }
+        if let Err(e) = ValidationRules::validate_path_tolerance(self.path_tolerance) {
             errors.push(e);
         }
 
@@ -95,5 +112,42 @@ mod tests {
     fn test_slicing_params_validation_returns_ok() {
         let params = SlicingParams::default();
         assert!(params.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_path_tolerance_zero_is_ok() {
+        assert!(ValidationRules::validate_path_tolerance(0.0).is_ok());
+    }
+
+    #[test]
+    fn test_validate_path_tolerance_positive_is_ok() {
+        assert!(ValidationRules::validate_path_tolerance(0.05).is_ok());
+        assert!(ValidationRules::validate_path_tolerance(0.1).is_ok());
+    }
+
+    #[test]
+    fn test_validate_path_tolerance_negative_is_err() {
+        let result = ValidationRules::validate_path_tolerance(-0.01);
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("path_tolerance"),
+            "error message should mention path_tolerance"
+        );
+    }
+
+    #[test]
+    fn test_slicing_params_negative_path_tolerance_fails_validation() {
+        let params = SlicingParams {
+            path_tolerance: -1.0,
+            ..SlicingParams::default()
+        };
+        let result = params.validate();
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("path_tolerance")),
+            "validation errors should mention path_tolerance: {errors:?}"
+        );
     }
 }
