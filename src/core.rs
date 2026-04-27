@@ -274,7 +274,8 @@ pub fn add_infill_to_layers(
         };
 
         // Generate infill paths within the computed area
-        let infill_paths = generate_infill(&infill_area, infill_pattern, infill_density, angle_offset);
+        // Pass layer Z height for patterns like gyroid that need it
+        let infill_paths = generate_infill(&infill_area, infill_pattern, infill_density, angle_offset, layer.z);
 
         // Add infill paths to the layer with proper role annotation
         for infill_path in infill_paths.iter() {

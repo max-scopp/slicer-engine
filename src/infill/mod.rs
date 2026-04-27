@@ -1,15 +1,16 @@
 //! Infill pattern generation for 3D printing.
 //!
-//! This module provides functions to generate various infill patterns (linear,
-//! grid, honeycomb, gyroid) within closed perimeter regions. Infill provides
-//! internal structure and strength while minimizing material usage.
+//! This module provides functions to generate various infill patterns within closed
+//! perimeter regions. Infill provides internal structure and strength while minimizing
+//! material usage.
 //!
 //! # Pattern Types
 //!
 //! - **Rectilinear**: Parallel lines alternating direction per layer (fastest)
+//! - **CrossHatch**: Like rectilinear but specifically for cross-hatching (most efficient)
 //! - **Grid**: Perpendicular lines forming a grid pattern (stronger)
 //! - **Honeycomb**: Hexagonal cells (good strength-to-weight ratio)
-//! - **Gyroid**: 3D mathematical pattern (experimental, best strength)
+//! - **Gyroid**: 3D mathematical pattern (best strength, isotropic)
 //!
 //! # Usage
 //!
@@ -20,9 +21,10 @@
 //! let perimeter_paths = Paths::default(); // from slice_mesh
 //! let infill_paths = generate_infill(
 //!     &perimeter_paths,
-//!     InfillPattern::Rectilinear,
+//!     InfillPattern::CrossHatch,
 //!     0.2,  // 20% density
 //!     0.0,  // layer rotation angle
+//!     0.2,  // Z height in mm
 //! );
 //! ```
 
@@ -32,12 +34,14 @@ mod rectilinear;
 mod grid;
 mod honeycomb;
 mod gyroid;
+mod crosshatch;
 mod utils;
 
 use rectilinear::generate_rectilinear;
 use grid::generate_grid;
 use honeycomb::generate_honeycomb;
 use gyroid::generate_gyroid;
+use crosshatch::generate_crosshatch;
 use utils::{calculate_infill_region, clip_lines_to_region};
 
 /// Supported infill patterns.
@@ -52,6 +56,8 @@ pub enum InfillPattern {
     Honeycomb,
     /// 3D mathematical pattern (experimental, best strength).
     Gyroid,
+    /// Cross-hatch pattern (most material-efficient, alternates per layer).
+    CrossHatch,
 }
 
 impl InfillPattern {
@@ -62,6 +68,7 @@ impl InfillPattern {
             "grid" => Some(Self::Grid),
             "honeycomb" | "hexagonal" => Some(Self::Honeycomb),
             "gyroid" => Some(Self::Gyroid),
+            "crosshatch" | "cross-hatch" | "cross_hatch" => Some(Self::CrossHatch),
             _ => None,
         }
     }
@@ -73,6 +80,7 @@ impl InfillPattern {
             Self::Grid => "grid",
             Self::Honeycomb => "honeycomb",
             Self::Gyroid => "gyroid",
+            Self::CrossHatch => "crosshatch",
         }
     }
 }
@@ -84,6 +92,7 @@ impl InfillPattern {
 /// * `pattern` - The infill pattern to generate
 /// * `density` - Infill density as a fraction (0.0 = no infill, 1.0 = solid)
 /// * `angle_offset` - Rotation angle in radians for this layer (for alternating patterns)
+/// * `z_height` - Z coordinate of the current layer (for 3D patterns like gyroid)
 ///
 /// # Returns
 /// A `Paths` collection containing the infill line segments clipped to the perimeter regions.
@@ -93,6 +102,7 @@ pub fn generate_infill(
     pattern: InfillPattern,
     density: f64,
     angle_offset: f64,
+    z_height: f64,
 ) -> Paths {
     // Early exit for no infill or invalid density
     if density <= 0.0 || perimeters.is_empty() {
@@ -115,7 +125,8 @@ pub fn generate_infill(
         InfillPattern::Rectilinear => generate_rectilinear(&infill_region, density, angle_offset),
         InfillPattern::Grid => generate_grid(&infill_region, density, angle_offset),
         InfillPattern::Honeycomb => generate_honeycomb(&infill_region, density, angle_offset),
-        InfillPattern::Gyroid => generate_gyroid(&infill_region, density, angle_offset),
+        InfillPattern::Gyroid => generate_gyroid(&infill_region, density, z_height),
+        InfillPattern::CrossHatch => generate_crosshatch(&infill_region, density, angle_offset),
     };
 
     // Clip the generated lines to the infill region boundaries
@@ -139,6 +150,8 @@ mod tests {
         assert_eq!(InfillPattern::parse("GRID"), Some(InfillPattern::Grid));
         assert_eq!(InfillPattern::parse("honeycomb"), Some(InfillPattern::Honeycomb));
         assert_eq!(InfillPattern::parse("gyroid"), Some(InfillPattern::Gyroid));
+        assert_eq!(InfillPattern::parse("crosshatch"), Some(InfillPattern::CrossHatch));
+        assert_eq!(InfillPattern::parse("cross-hatch"), Some(InfillPattern::CrossHatch));
         assert_eq!(InfillPattern::parse("invalid"), None);
     }
 
@@ -148,12 +161,13 @@ mod tests {
         assert_eq!(InfillPattern::Grid.name(), "grid");
         assert_eq!(InfillPattern::Honeycomb.name(), "honeycomb");
         assert_eq!(InfillPattern::Gyroid.name(), "gyroid");
+        assert_eq!(InfillPattern::CrossHatch.name(), "crosshatch");
     }
 
     #[test]
     fn test_generate_infill_empty_perimeters() {
         let perimeters = Paths::default();
-        let infill = generate_infill(&perimeters, InfillPattern::Rectilinear, 0.2, 0.0);
+        let infill = generate_infill(&perimeters, InfillPattern::Rectilinear, 0.2, 0.0, 0.2);
         assert!(infill.is_empty());
     }
 
@@ -163,7 +177,7 @@ mod tests {
         let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
         perimeters.push(square);
 
-        let infill = generate_infill(&perimeters, InfillPattern::Rectilinear, 0.0, 0.0);
+        let infill = generate_infill(&perimeters, InfillPattern::Rectilinear, 0.0, 0.0, 0.2);
         assert!(infill.is_empty());
     }
 
@@ -174,7 +188,7 @@ mod tests {
         let square: Path = vec![(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)].into();
         perimeters.push(square);
 
-        let infill = generate_infill(&perimeters, InfillPattern::Rectilinear, 0.2, 0.0);
+        let infill = generate_infill(&perimeters, InfillPattern::Rectilinear, 0.2, 0.0, 0.2);
         
         // Should generate some infill lines (non-empty)
         assert!(!infill.is_empty(), "Expected infill lines to be generated");
@@ -186,7 +200,7 @@ mod tests {
         let square: Path = vec![(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)].into();
         perimeters.push(square);
 
-        let infill = generate_infill(&perimeters, InfillPattern::Honeycomb, 0.2, 0.0);
+        let infill = generate_infill(&perimeters, InfillPattern::Honeycomb, 0.2, 0.0, 0.2);
         
         // Should generate honeycomb pattern
         assert!(!infill.is_empty(), "Expected honeycomb infill to be generated");
@@ -198,9 +212,21 @@ mod tests {
         let square: Path = vec![(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)].into();
         perimeters.push(square);
 
-        let infill = generate_infill(&perimeters, InfillPattern::Gyroid, 0.2, 0.0);
+        let infill = generate_infill(&perimeters, InfillPattern::Gyroid, 0.2, 0.0, 0.2);
         
         // Should generate gyroid pattern
         assert!(!infill.is_empty(), "Expected gyroid infill to be generated");
+    }
+
+    #[test]
+    fn test_generate_infill_crosshatch_basic() {
+        let mut perimeters = Paths::default();
+        let square: Path = vec![(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)].into();
+        perimeters.push(square);
+
+        let infill = generate_infill(&perimeters, InfillPattern::CrossHatch, 0.2, 0.0, 0.2);
+        
+        // Should generate crosshatch pattern
+        assert!(!infill.is_empty(), "Expected crosshatch infill to be generated");
     }
 }

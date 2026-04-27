@@ -1,27 +1,31 @@
 //! Gyroid infill pattern implementation.
 //!
-//! Generates a 3D mathematical surface pattern that provides excellent strength
-//! properties and is particularly suitable for flexible materials.
+//! Generates a 3D mathematical surface pattern based on the gyroid minimal surface.
+//! This provides excellent strength properties and isotropic behavior.
+//!
+//! Based on CuraEngine's gyroid implementation:
+//! https://github.com/Ultimaker/CuraEngine/blob/main/src/infill/GyroidInfill.cpp
 
 use clipper2::*;
 use super::utils::calculate_bounds;
+use std::f64::consts::PI;
 
 /// Generate gyroid infill pattern.
 ///
 /// Creates a mathematically-defined 3D surface pattern based on the gyroid
-/// minimal surface. This pattern provides superior mechanical properties,
-/// particularly for load distribution, but is computationally intensive.
+/// minimal surface. The gyroid equation is: sin(x)cos(y) + sin(y)cos(z) + sin(z)cos(x) = 0
 ///
-/// The gyroid surface is defined by: sin(x)cos(y) + sin(y)cos(z) + sin(z)cos(x) = 0
+/// This implementation follows Cura's algorithm which solves the gyroid equation
+/// analytically to generate smooth wavey lines that follow the surface.
 ///
 /// # Arguments
 /// * `region` - The infill region boundaries
 /// * `density` - Infill density as a fraction (0.0-1.0)
-/// * `angle_offset` - Rotation angle in radians (used as Z-phase for layer variation)
+/// * `z_height` - The Z coordinate of the current layer in mm
 ///
 /// # Returns
 /// Paths representing the gyroid surface at the current Z-height
-pub fn generate_gyroid(region: &Paths, density: f64, angle_offset: f64) -> Paths {
+pub fn generate_gyroid(region: &Paths, density: f64, z_height: f64) -> Paths {
     if density <= 0.0 || region.is_empty() {
         return Paths::default();
     }
@@ -32,71 +36,213 @@ pub fn generate_gyroid(region: &Paths, density: f64, angle_offset: f64) -> Paths
     }
     let (min_x, min_y, max_x, max_y) = bounds.unwrap();
 
-    // Calculate scale based on density
-    // Higher density = more frequent oscillations = smaller scale
+    // Calculate line distance from density
+    // Standard line width is 0.4mm, spacing inversely proportional to density
     let line_width = 0.4;
-    let scale = (line_width / density) * 2.0;
+    let line_distance = if density > 0.0 {
+        line_width / density
+    } else {
+        return Paths::default();
+    };
+
+    // Pitch calculation from Cura: produces similar density to line infill
+    let mut pitch = (line_distance * 2.41) as i32;
+    let mut num_steps = 4;
+    let mut step = pitch / num_steps;
     
-    let mut lines = Paths::default();
+    // Adjust step size for reasonable resolution
+    while step > 500 && num_steps < 16 {
+        num_steps *= 2;
+        step = pitch / num_steps;
+    }
+    pitch = step * num_steps; // Recalculate to avoid precision errors
     
-    // Sample the gyroid surface at the current layer
-    // Use angle_offset as Z-phase for layer variation (convert to 0-1 range)
-    let z_phase = (angle_offset / std::f64::consts::TAU).rem_euclid(1.0);
+    let pitch_f = pitch as f64;
+    let step_f = step as f64;
     
-    // Generate horizontal scan lines and find intersections
-    let step = line_width * 0.5; // Higher resolution for smooth curves
-    let mut y = min_y;
+    // Convert Z height to radians based on pitch
+    let z_rads = 2.0 * PI * z_height / pitch_f;
+    let cos_z = z_rads.cos();
+    let sin_z = z_rads.sin();
     
-    while y <= max_y {
-        let mut current_path: Vec<(f64, f64)> = Vec::new();
-        let mut x = min_x;
-        let mut was_inside = false;
-        
-        while x <= max_x {
-            // Evaluate gyroid function: sin(x)cos(y) + sin(y)cos(z) + sin(z)cos(x)
-            let gx = (x / scale) * std::f64::consts::TAU;
-            let gy = (y / scale) * std::f64::consts::TAU;
-            let gz = z_phase * std::f64::consts::TAU;
-            
-            let gyroid_value = gx.sin() * gy.cos() 
-                             + gy.sin() * gz.cos() 
-                             + gz.sin() * gx.cos();
-            
-            // Threshold determines density - smaller threshold = more material
-            let threshold = 0.5 - (density * 0.5);
-            let is_inside = gyroid_value > threshold;
-            
-            if is_inside != was_inside {
-                // Transition point - add to current path
-                current_path.push((x, y));
-                
-                // If we have at least 2 points, we can create a line segment
-                if current_path.len() >= 2 {
-                    let path: Path = current_path.clone().into();
-                    lines.push(path);
-                    current_path.clear();
-                    current_path.push((x, y));
-                }
-                
-                was_inside = is_inside;
-            } else if is_inside {
-                // Continue current path
-                current_path.push((x, y));
-            }
-            
-            x += step;
-        }
-        
-        // Flush any remaining path
-        if current_path.len() >= 2 {
-            let path: Path = current_path.into();
-            lines.push(path);
-        }
-        
-        y += step;
+    let mut result = Paths::default();
+    
+    // Choose between vertical or horizontal lines based on which gives better results
+    if sin_z.abs() <= cos_z.abs() {
+        // Generate "vertical" lines (lines that vary more in X than Y)
+        generate_vertical_lines(
+            (min_x, min_y, max_x, max_y),
+            pitch_f,
+            step_f,
+            num_steps,
+            cos_z,
+            sin_z,
+            &mut result,
+        );
+    } else {
+        // Generate "horizontal" lines (lines that vary more in Y than X)
+        generate_horizontal_lines(
+            (min_x, min_y, max_x, max_y),
+            pitch_f,
+            step_f,
+            num_steps,
+            cos_z,
+            sin_z,
+            &mut result,
+        );
     }
     
-    lines
+    result
+}
+
+/// Generate vertical gyroid lines (varying more in X direction)
+fn generate_vertical_lines(
+    bounds: (f64, f64, f64, f64),
+    pitch: f64,
+    step: f64,
+    num_steps: i32,
+    cos_z: f64,
+    sin_z: f64,
+    result: &mut Paths,
+) {
+    let (min_x, min_y, max_x, max_y) = bounds;
+    
+    let phase_offset = if cos_z < 0.0 { PI } else { 0.0 } + PI;
+    
+    // Calculate X coordinates for odd and even columns
+    let mut odd_line_coords = Vec::new();
+    let mut even_line_coords = Vec::new();
+    
+    for i in 0..num_steps {
+        let y = i as f64 * step;
+        let y_rads = 2.0 * PI * y / pitch;
+        
+        let a = cos_z;
+        let b = (y_rads + phase_offset).sin();
+        let odd_c = sin_z * (y_rads + phase_offset).cos();
+        let even_c = sin_z * (y_rads + phase_offset + PI).cos();
+        let h = (a * a + b * b).sqrt();
+        
+        let odd_x_rads = if h != 0.0 {
+            (odd_c / h).asin() + (b / h).asin()
+        } else {
+            0.0
+        } - PI / 2.0;
+        
+        let even_x_rads = if h != 0.0 {
+            (even_c / h).asin() + (b / h).asin()
+        } else {
+            0.0
+        } - PI / 2.0;
+        
+        odd_line_coords.push(odd_x_rads / PI * pitch);
+        even_line_coords.push(even_x_rads / PI * pitch);
+    }
+    
+    // Generate columns
+    let mut num_columns = 0;
+    let mut x = ((min_x / pitch).floor() - 2.25) * pitch;
+    
+    while x <= max_x + pitch / 2.0 {
+        let mut line_points = Vec::new();
+        let mut y = ((min_y / pitch).floor() - 1.0) * pitch;
+        
+        while y <= max_y + pitch {
+            for i in 0..num_steps as usize {
+                let x_offset = if num_columns & 1 == 1 {
+                    odd_line_coords[i]
+                } else {
+                    even_line_coords[i]
+                } / 2.0 + pitch;
+                
+                line_points.push((x + x_offset, y + (i as f64 * step)));
+            }
+            y += pitch;
+        }
+        
+        if line_points.len() >= 2 {
+            let path: Path = line_points.into();
+            result.push(path);
+        }
+        
+        num_columns += 1;
+        x += pitch / 2.0;
+    }
+}
+
+/// Generate horizontal gyroid lines (varying more in Y direction)
+fn generate_horizontal_lines(
+    bounds: (f64, f64, f64, f64),
+    pitch: f64,
+    step: f64,
+    num_steps: i32,
+    cos_z: f64,
+    sin_z: f64,
+    result: &mut Paths,
+) {
+    let (min_x, min_y, max_x, max_y) = bounds;
+    
+    let phase_offset = if sin_z < 0.0 { PI } else { 0.0 };
+    
+    // Calculate Y coordinates for odd and even rows
+    let mut odd_line_coords = Vec::new();
+    let mut even_line_coords = Vec::new();
+    
+    for i in 0..num_steps {
+        let x = i as f64 * step;
+        let x_rads = 2.0 * PI * x / pitch;
+        
+        let a = sin_z;
+        let b = (x_rads + phase_offset).cos();
+        let odd_c = cos_z * (x_rads + phase_offset + PI).sin();
+        let even_c = cos_z * (x_rads + phase_offset).sin();
+        let h = (a * a + b * b).sqrt();
+        
+        let odd_y_rads = if h != 0.0 {
+            (odd_c / h).asin() + (b / h).asin()
+        } else {
+            0.0
+        } + PI / 2.0;
+        
+        let even_y_rads = if h != 0.0 {
+            (even_c / h).asin() + (b / h).asin()
+        } else {
+            0.0
+        } + PI / 2.0;
+        
+        odd_line_coords.push(odd_y_rads / PI * pitch);
+        even_line_coords.push(even_y_rads / PI * pitch);
+    }
+    
+    // Generate rows
+    let mut num_rows = 0;
+    let mut y = ((min_y / pitch).floor() - 1.0) * pitch;
+    
+    while y <= max_y + pitch / 2.0 {
+        let mut line_points = Vec::new();
+        let mut x = ((min_x / pitch).floor() - 1.0) * pitch;
+        
+        while x <= max_x + pitch {
+            for i in 0..num_steps as usize {
+                let y_offset = if num_rows & 1 == 1 {
+                    odd_line_coords[i]
+                } else {
+                    even_line_coords[i]
+                } / 2.0;
+                
+                line_points.push((x + (i as f64 * step), y + y_offset));
+            }
+            x += pitch;
+        }
+        
+        if line_points.len() >= 2 {
+            let path: Path = line_points.into();
+            result.push(path);
+        }
+        
+        num_rows += 1;
+        y += pitch / 2.0;
+    }
 }
 
 #[cfg(test)]
@@ -106,7 +252,7 @@ mod tests {
     #[test]
     fn test_gyroid_empty_region() {
         let region = Paths::default();
-        let result = generate_gyroid(&region, 0.2, 0.0);
+        let result = generate_gyroid(&region, 0.2, 0.2);
         assert!(result.is_empty());
     }
 
@@ -116,18 +262,23 @@ mod tests {
         let square: Path = vec![(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)].into();
         region.push(square);
         
-        let result = generate_gyroid(&region, 0.0, 0.0);
+        let result = generate_gyroid(&region, 0.0, 0.2);
         assert!(result.is_empty());
     }
 
     #[test]
-    fn test_gyroid_generates_curves() {
+    fn test_gyroid_generates_lines() {
         let mut region = Paths::default();
         let square: Path = vec![(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)].into();
         region.push(square);
         
-        let result = generate_gyroid(&region, 0.2, 0.0);
+        let result = generate_gyroid(&region, 0.2, 0.2);
         assert!(!result.is_empty(), "Should generate gyroid pattern");
+        
+        // Verify lines have multiple points (wavy lines, not straight)
+        for path in result.iter() {
+            assert!(path.len() >= 2, "Each path should have at least 2 points");
+        }
     }
 
     #[test]
@@ -136,12 +287,23 @@ mod tests {
         let square: Path = vec![(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)].into();
         region.push(square);
         
-        let result1 = generate_gyroid(&region, 0.2, 0.0);
-        let result2 = generate_gyroid(&region, 0.2, std::f64::consts::FRAC_PI_2);
+        let result1 = generate_gyroid(&region, 0.2, 0.2);
+        let result2 = generate_gyroid(&region, 0.2, 0.4);
         
-        // Different angles should produce different patterns
-        // This is a simple check - in practice the patterns will differ significantly
+        // Different Z heights should produce different patterns
         assert!(!result1.is_empty());
         assert!(!result2.is_empty());
+        
+        // The patterns should be different (different number of paths or different geometry)
+        // This is a simple check - in practice the patterns will differ significantly
+        let has_difference = result1.len() != result2.len() ||
+            result1.iter().zip(result2.iter()).any(|(p1, p2)| {
+                p1.len() != p2.len() || 
+                p1.iter().zip(p2.iter()).any(|(pt1, pt2)| {
+                    (pt1.x() - pt2.x()).abs() > 0.01 || (pt1.y() - pt2.y()).abs() > 0.01
+                })
+            });
+        
+        assert!(has_difference, "Patterns at different Z heights should differ");
     }
 }

@@ -363,6 +363,7 @@ mod tests {
             no_lifecycle_markers: false,
             infill_pattern: None,
             infill_density: None,
+            infill_angle: None,
         };
         assert_eq!(cmd.layer_height, Some(0.2));
         assert_eq!(cmd.gcode_flavor.as_deref(), Some("marlin"));
@@ -386,6 +387,7 @@ mod tests {
             no_lifecycle_markers: false,
             infill_pattern: None,
             infill_density: None,
+            infill_angle: None,
         };
         assert!(cmd.gcode_flavor.is_none());
     }
@@ -408,6 +410,7 @@ mod tests {
             no_lifecycle_markers: false,
             infill_pattern: None,
             infill_density: None,
+            infill_angle: None,
         };
         assert_eq!(cmd.gcode_flavor.as_deref(), Some("klipper"));
     }
@@ -430,6 +433,7 @@ mod tests {
             no_lifecycle_markers: false,
             infill_pattern: None,
             infill_density: None,
+            infill_angle: None,
         };
         assert_eq!(
             cmd.start_print_gcode.as_deref(),
@@ -456,6 +460,7 @@ mod tests {
             no_lifecycle_markers: false,
             infill_pattern: None,
             infill_density: None,
+            infill_angle: None,
         };
         assert!(cmd_on.lifecycle_markers);
         assert!(!cmd_on.no_lifecycle_markers);
@@ -476,6 +481,7 @@ mod tests {
             no_lifecycle_markers: true,
             infill_pattern: None,
             infill_density: None,
+            infill_angle: None,
         };
         assert!(!cmd_off.lifecycle_markers);
         assert!(cmd_off.no_lifecycle_markers);
