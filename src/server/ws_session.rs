@@ -199,7 +199,7 @@ async fn handle_slice(
         let log = ServerMessage::log_info(format!("Mesh loaded: {face_count} triangles. Slicing…"));
         let _ = tx.blocking_send(to_json(&log));
 
-        let layers = crate::core::slice_with_surfaces(&mesh, &params);
+        let layers = crate::core::process_mesh(&mesh, &params);
         let layer_count = layers.len();
 
         let progress = ServerMessage::Progress {

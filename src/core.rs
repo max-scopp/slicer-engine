@@ -183,29 +183,31 @@ pub fn slice_mesh(mesh: &Mesh, layer_height: f64) -> Vec<SliceLayer> {
     layers
 }
 
-/// Complete slicing pipeline: slice mesh and generate top/bottom surfaces.
+/// Central entry point for the complete slicing pipeline.
 ///
-/// This is a convenience function that combines the basic slicing with surface
-/// generation in one call, using parameters from `SlicingParams`.
+/// This function processes a mesh through the entire slicing pipeline, including
+/// basic slicing, top/bottom surface generation, and any other processing steps.
+/// This is the main API function that should be extended with additional features
+/// like infill generation, support structures, etc.
 ///
 /// # Arguments
-/// * `mesh` - The triangle mesh to slice
-/// * `params` - Slicing parameters including layer height, top/bottom layers, and surface angle
+/// * `mesh` - The triangle mesh to process
+/// * `params` - Slicing parameters controlling all aspects of the slicing process
 ///
 /// # Returns
-/// A `Vec<SliceLayer>` with perimeters and top/bottom surface infill.
+/// A `Vec<SliceLayer>` with all processing applied (perimeters, surfaces, etc.).
 ///
 /// # Example
 /// ```
 /// use slicer_engine::mesh::types::Mesh;
 /// use slicer_engine::settings::params::SlicingParams;
-/// use slicer_engine::core::slice_with_surfaces;
+/// use slicer_engine::core::process_mesh;
 ///
 /// let mesh = Mesh::new(); // Load your mesh
 /// let params = SlicingParams::default();
-/// let layers = slice_with_surfaces(&mesh, &params);
+/// let layers = process_mesh(&mesh, &params);
 /// ```
-pub fn slice_with_surfaces(mesh: &Mesh, params: &SlicingParams) -> Vec<SliceLayer> {
+pub fn process_mesh(mesh: &Mesh, params: &SlicingParams) -> Vec<SliceLayer> {
     // Basic slicing
     let mut layers = slice_mesh(mesh, params.layer_height);
 
@@ -783,7 +785,7 @@ mod tests {
     }
 
     #[test]
-    fn test_slice_with_surfaces() {
+    fn test_process_mesh() {
         let mesh = make_cube_mesh();
         let params = SlicingParams {
             layer_height: 2.0,
@@ -793,7 +795,7 @@ mod tests {
             ..SlicingParams::default()
         };
 
-        let layers = slice_with_surfaces(&mesh, &params);
+        let layers = process_mesh(&mesh, &params);
 
         // Should have layers
         assert!(!layers.is_empty());
