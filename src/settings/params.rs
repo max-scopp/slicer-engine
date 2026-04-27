@@ -19,6 +19,10 @@ pub struct SlicingParams {
     /// Defaults to "rectilinear" if not specified.
     #[serde(default = "SlicingParams::default_infill_pattern")]
     pub infill_pattern: String,
+    /// Base angle in degrees for sparse infill lines (default 45°).
+    /// Alternating layers rotate +90° on top of this base angle.
+    #[serde(default = "SlicingParams::default_infill_base_angle")]
+    pub infill_base_angle: f64,
     /// Print speed in mm/s.
     pub print_speed: f64,
     /// Nozzle temperature in °C.
@@ -59,6 +63,7 @@ impl Default for SlicingParams {
             wall_thickness: 1.2,
             infill_density: 0.2,
             infill_pattern: Self::default_infill_pattern(),
+            infill_base_angle: Self::default_infill_base_angle(),
             print_speed: 60.0,
             nozzle_temp: 210.0,
             bed_temp: 60.0,
@@ -77,6 +82,10 @@ impl Default for SlicingParams {
 impl SlicingParams {
     fn default_infill_pattern() -> String {
         "rectilinear".to_string()
+    }
+
+    fn default_infill_base_angle() -> f64 {
+        45.0
     }
 
     fn default_top_layers() -> usize {

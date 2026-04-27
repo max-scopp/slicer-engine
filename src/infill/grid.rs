@@ -14,17 +14,20 @@ use super::rectilinear::generate_rectilinear;
 /// # Arguments
 /// * `region` - The infill region boundaries
 /// * `density` - Infill density as a fraction (0.0-1.0)
-/// * `angle_offset` - Rotation angle in radians for this layer
+/// * `angle_offset` - Rotation angle in radians for the first set of lines
 ///
 /// # Returns
 /// Paths containing perpendicular line segments forming a grid
 pub fn generate_grid(region: &Paths, density: f64, angle_offset: f64) -> Paths {
     // Grid is two sets of rectilinear lines at 90° to each other
+    // The first set is at angle_offset, the second is perpendicular
     let mut lines = generate_rectilinear(region, density, angle_offset);
     let perpendicular_lines = generate_rectilinear(region, density, angle_offset + std::f64::consts::FRAC_PI_2);
     
     // Merge the two sets of lines
-    lines.push(perpendicular_lines);
+    for path in perpendicular_lines.iter() {
+        lines.push(path.clone());
+    }
     lines
 }
 

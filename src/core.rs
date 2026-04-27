@@ -204,6 +204,7 @@ pub fn slice_mesh(mesh: &Mesh, layer_height: f64) -> Vec<SliceLayer> {
 /// * `layers` - Slice layers with perimeter paths (will be modified in place)
 /// * `infill_density` - Infill density as a fraction (0.0 = no infill, 1.0 = solid)
 /// * `infill_pattern` - The pattern type to generate (rectilinear, grid, etc.)
+/// * `infill_base_angle` - Base angle in degrees (alternating layers rotate +90° on top of this)
 ///
 /// # Example
 /// ```rust,no_run
@@ -213,12 +214,13 @@ pub fn slice_mesh(mesh: &Mesh, layer_height: f64) -> Vec<SliceLayer> {
 /// # let mesh = Mesh::new();
 ///
 /// let mut layers = slice_mesh(&mesh, 0.2);
-/// add_infill_to_layers(&mut layers, 0.2, InfillPattern::Rectilinear);
+/// add_infill_to_layers(&mut layers, 0.2, InfillPattern::Rectilinear, 45.0);
 /// ```
 pub fn add_infill_to_layers(
     layers: &mut [SliceLayer],
     infill_density: f64,
     infill_pattern: crate::infill::InfillPattern,
+    infill_base_angle: f64,
 ) {
     use crate::infill::generate_infill;
     
@@ -263,11 +265,12 @@ pub fn add_infill_to_layers(
         };
 
         // Calculate angle offset for alternating patterns
-        // Rectilinear infill alternates 0° and 90° each layer
+        // Rectilinear infill alternates base_angle and base_angle+90° each layer
+        let base_angle_rad = infill_base_angle.to_radians();
         let angle_offset = if layer_idx % 2 == 0 {
-            0.0
+            base_angle_rad
         } else {
-            std::f64::consts::FRAC_PI_2 // 90 degrees
+            base_angle_rad + std::f64::consts::FRAC_PI_2 // +90 degrees
         };
 
         // Generate infill paths within the computed area
@@ -346,12 +349,13 @@ pub fn process_mesh(
             .unwrap_or(InfillPattern::Rectilinear);
         
         logger.log_debug(&format!(
-            "generating {} infill at {:.0}% density…",
+            "generating {} infill at {:.0}% density, {}° base angle…",
             infill_pattern.name(),
-            params.infill_density * 100.0
+            params.infill_density * 100.0,
+            params.infill_base_angle
         ));
         
-        add_infill_to_layers(&mut layers, params.infill_density, infill_pattern);
+        add_infill_to_layers(&mut layers, params.infill_density, infill_pattern, params.infill_base_angle);
         logger.log_debug("infill generation complete");
     }
 
@@ -1005,7 +1009,7 @@ mod tests {
         }
         
         // Add infill
-        add_infill_to_layers(&mut layers, 0.2, InfillPattern::Rectilinear);
+        add_infill_to_layers(&mut layers, 0.2, InfillPattern::Rectilinear, 45.0);
         
         // After infill: should have both perimeter and infill paths
         for layer in &layers {
@@ -1025,7 +1029,7 @@ mod tests {
         let initial_path_count: usize = layers.iter().map(|l| l.paths.len()).sum();
         
         // Add zero-density infill (should do nothing)
-        add_infill_to_layers(&mut layers, 0.0, InfillPattern::Rectilinear);
+        add_infill_to_layers(&mut layers, 0.0, InfillPattern::Rectilinear, 45.0);
         
         let final_path_count: usize = layers.iter().map(|l| l.paths.len()).sum();
         assert_eq!(initial_path_count, final_path_count, "Zero density should not add paths");
@@ -1039,7 +1043,7 @@ mod tests {
         let mut layers = slice_mesh(&mesh, 2.0);
         
         // Add grid infill
-        add_infill_to_layers(&mut layers, 0.3, InfillPattern::Grid);
+        add_infill_to_layers(&mut layers, 0.3, InfillPattern::Grid, 45.0);
         
         // Grid pattern should produce more infill paths than rectilinear
         for layer in &layers {
@@ -1077,7 +1081,7 @@ mod tests {
             .collect();
 
         // Now add sparse infill.
-        add_infill_to_layers(&mut layers, 0.3, InfillPattern::Rectilinear);
+        add_infill_to_layers(&mut layers, 0.3, InfillPattern::Rectilinear, 45.0);
 
         // For a layer that is entirely solid (solid_regions == perimeter area),
         // no new Infill paths should have been added.

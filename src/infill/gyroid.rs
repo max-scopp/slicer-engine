@@ -17,7 +17,7 @@ use super::utils::calculate_bounds;
 /// # Arguments
 /// * `region` - The infill region boundaries
 /// * `density` - Infill density as a fraction (0.0-1.0)
-/// * `angle_offset` - Rotation angle in radians for this layer
+/// * `angle_offset` - Rotation angle in radians (used as Z-phase for layer variation)
 ///
 /// # Returns
 /// Paths representing the gyroid surface at the current Z-height
@@ -33,29 +33,26 @@ pub fn generate_gyroid(region: &Paths, density: f64, angle_offset: f64) -> Paths
     let (min_x, min_y, max_x, max_y) = bounds.unwrap();
 
     // Calculate scale based on density
-    // Higher density = more frequent oscillations
+    // Higher density = more frequent oscillations = smaller scale
     let line_width = 0.4;
     let scale = (line_width / density) * 2.0;
-    
-    let cos_a = angle_offset.cos();
-    let sin_a = angle_offset.sin();
     
     let mut lines = Paths::default();
     
     // Sample the gyroid surface at the current layer
-    // We'll create a contour by following iso-lines of the gyroid function
-    let z_phase = angle_offset; // Use angle_offset as Z-phase for layer variation
+    // Use angle_offset as Z-phase for layer variation (convert to 0-1 range)
+    let z_phase = (angle_offset / std::f64::consts::TAU).rem_euclid(1.0);
     
     // Generate horizontal scan lines and find intersections
-    let step = line_width; // Resolution for sampling
+    let step = line_width * 0.5; // Higher resolution for smooth curves
     let mut y = min_y;
     
-    while y < max_y {
+    while y <= max_y {
         let mut current_path: Vec<(f64, f64)> = Vec::new();
         let mut x = min_x;
         let mut was_inside = false;
         
-        while x < max_x {
+        while x <= max_x {
             // Evaluate gyroid function: sin(x)cos(y) + sin(y)cos(z) + sin(z)cos(x)
             let gx = (x / scale) * std::f64::consts::TAU;
             let gy = (y / scale) * std::f64::consts::TAU;
@@ -70,23 +67,30 @@ pub fn generate_gyroid(region: &Paths, density: f64, angle_offset: f64) -> Paths
             let is_inside = gyroid_value > threshold;
             
             if is_inside != was_inside {
-                // Apply rotation if needed
-                let rotated_x = x * cos_a - y * sin_a + (max_x + min_x) / 2.0 * (1.0 - cos_a) + (max_y + min_y) / 2.0 * sin_a;
-                let rotated_y = x * sin_a + y * cos_a - (max_x + min_x) / 2.0 * sin_a + (max_y + min_y) / 2.0 * (1.0 - cos_a);
+                // Transition point - add to current path
+                current_path.push((x, y));
                 
-                current_path.push((rotated_x, rotated_y));
-                
-                // If we have at least 2 points, create a line segment
+                // If we have at least 2 points, we can create a line segment
                 if current_path.len() >= 2 {
                     let path: Path = current_path.clone().into();
                     lines.push(path);
                     current_path.clear();
+                    current_path.push((x, y));
                 }
                 
                 was_inside = is_inside;
+            } else if is_inside {
+                // Continue current path
+                current_path.push((x, y));
             }
             
             x += step;
+        }
+        
+        // Flush any remaining path
+        if current_path.len() >= 2 {
+            let path: Path = current_path.into();
+            lines.push(path);
         }
         
         y += step;
