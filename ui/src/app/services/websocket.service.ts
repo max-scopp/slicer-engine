@@ -2,8 +2,8 @@ import { Injectable, signal } from '@angular/core';
 import { Observable, Subject, EMPTY } from 'rxjs';
 import { catchError, share } from 'rxjs/operators';
 import { WebSocketSubject, webSocket } from 'rxjs/webSocket';
-import { ClientMessage } from '../../generated/schemas/slicer-engine-ws-client-message-v1';
-import { ServerMessage } from '../../generated/schemas/slicer-engine-ws-server-message-v1';
+import { ServerMessage } from '../../generated/slicer-engine-ws-server-message-v1';
+import { ClientMessage } from '../../generated/slicer-engine-ws-client-message-v1';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 

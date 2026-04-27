@@ -3,7 +3,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { HttpClient } from '@angular/common/http';
 import { DEFAULT_SETTINGS, SliceSettings } from '../models/slice-settings.model';
 import { WebSocketService } from './websocket.service';
-import { ServerMessage } from '../../generated/schemas/slicer-engine-ws-server-message-v1';
+import { ServerMessage } from '../../generated/slicer-engine-ws-server-message-v1';
 
 export type SlicerStatus = 'idle' | 'ready' | 'uploading' | 'slicing' | 'done' | 'error';
 
