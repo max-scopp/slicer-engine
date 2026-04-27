@@ -8,33 +8,21 @@ use crate::gcode::dialects::{KlipperDialect, MarlinDialect};
 use crate::gcode::flavor::GcodeFlavor;
 use crate::settings::params::{LifecycleMarkerConfig, SlicingParams};
 
-// ── Physical constants ─────────────────────────────────────────────────────────
-
-/// Default filament diameter in mm (standard 1.75 mm PLA/PETG/etc.).
-const FILAMENT_DIAMETER_MM: f64 = 1.75;
-
-/// Default nozzle diameter in mm.
-const NOZZLE_DIAMETER_MM: f64 = 0.4;
-
-/// Travel (non-print) speed in mm/min.
-const TRAVEL_SPEED_MM_MIN: f64 = 9000.0;
-
-/// Z-hop height above the current layer during travel moves (mm).
-const Z_HOP_MM: f64 = 0.2;
-
-/// Retraction distance on travel moves (mm).
-const RETRACT_MM: f64 = 1.0;
-
 // ── Private helpers ────────────────────────────────────────────────────────────
 
 /// Compute the extrusion length (mm of filament) needed to print a straight
-/// line of length `move_len` at the given `layer_height` with the default
+/// line of length `move_len` at the given `layer_height` with the configured
 /// nozzle and filament diameters.
 ///
 /// Formula: E = line_length × (layer_height × nozzle_diameter) / (π × filament_radius²)
-pub(crate) fn extrusion_for_move(move_len: f64, layer_height: f64) -> f64 {
-    let filament_radius = FILAMENT_DIAMETER_MM / 2.0;
-    let cross_section = layer_height * NOZZLE_DIAMETER_MM;
+pub(crate) fn extrusion_for_move(
+    move_len: f64,
+    layer_height: f64,
+    nozzle_diameter_mm: f64,
+    filament_diameter_mm: f64,
+) -> f64 {
+    let filament_radius = filament_diameter_mm / 2.0;
+    let cross_section = layer_height * nozzle_diameter_mm;
     let filament_area = std::f64::consts::PI * filament_radius.powi(2);
     move_len * cross_section / filament_area
 }
@@ -322,7 +310,7 @@ impl GcodeGenerator {
 
                 out.push_str(&format!(
                     "{}\n",
-                    self.dialect.move_z(layer.z, TRAVEL_SPEED_MM_MIN)
+                    self.dialect.move_z(layer.z, params.travel_speed_mm_min)
                 ));
 
                 let after_lc = self
@@ -339,7 +327,7 @@ impl GcodeGenerator {
                 out.push_str(&format!("; layer z={}\n", z_str));
                 out.push_str(&format!(
                     "{}\n",
-                    self.dialect.move_z(layer.z, TRAVEL_SPEED_MM_MIN)
+                    self.dialect.move_z(layer.z, params.travel_speed_mm_min)
                 ));
             }
 
@@ -393,25 +381,25 @@ impl GcodeGenerator {
                 let (start_x, start_y) = points[0];
 
                 // Retract, z-hop, travel, lower, prime
-                e_total -= RETRACT_MM;
+                e_total -= params.retract_mm;
                 out.push_str(&format!(
                     "{} ; retract\n",
                     self.dialect.set_extruder_pos(e_total, 3000.0)
                 ));
                 out.push_str(&format!(
                     "{} ; z-hop\n",
-                    self.dialect.move_z(layer.z + Z_HOP_MM, TRAVEL_SPEED_MM_MIN)
+                    self.dialect.move_z(layer.z + params.z_hop_mm, params.travel_speed_mm_min)
                 ));
                 out.push_str(&format!(
                     "{} ; travel\n",
                     self.dialect
-                        .travel_xy(start_x, start_y, TRAVEL_SPEED_MM_MIN)
+                        .travel_xy(start_x, start_y, params.travel_speed_mm_min)
                 ));
                 out.push_str(&format!(
                     "{} ; lower\n",
-                    self.dialect.move_z(layer.z, TRAVEL_SPEED_MM_MIN)
+                    self.dialect.move_z(layer.z, params.travel_speed_mm_min)
                 ));
-                e_total += RETRACT_MM;
+                e_total += params.retract_mm;
                 out.push_str(&format!(
                     "{} ; un-retract\n",
                     self.dialect.set_extruder_pos(e_total, 3000.0)
@@ -427,7 +415,12 @@ impl GcodeGenerator {
                         prev = (x, y);
                         continue;
                     }
-                    e_total += extrusion_for_move(len, params.layer_height);
+                    e_total += extrusion_for_move(
+                        len,
+                        params.layer_height,
+                        params.nozzle_diameter_mm,
+                        params.filament_diameter_mm,
+                    );
                     out.push_str(&format!(
                         "{}\n",
                         self.dialect.move_extrude(x, y, e_total, print_speed_mm_min)
@@ -440,7 +433,12 @@ impl GcodeGenerator {
                 let dy = start_y - prev.1;
                 let len = (dx * dx + dy * dy).sqrt();
                 if len >= 1e-6 {
-                    e_total += extrusion_for_move(len, params.layer_height);
+                    e_total += extrusion_for_move(
+                        len,
+                        params.layer_height,
+                        params.nozzle_diameter_mm,
+                        params.filament_diameter_mm,
+                    );
                     out.push_str(&format!(
                         "{} ; close contour\n",
                         self.dialect
@@ -547,7 +545,7 @@ mod tests {
 
     #[test]
     fn test_extrusion_for_move_positive() {
-        let e = extrusion_for_move(10.0, 0.2);
+        let e = extrusion_for_move(10.0, 0.2, 0.4, 1.75);
         assert!(e > 0.0, "extrusion must be positive");
     }
 
