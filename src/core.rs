@@ -425,7 +425,7 @@ pub fn generate_top_bottom_surfaces(
 
     for i in 0..total {
         // ── Bottom surfaces ──────────────────────────────────────────────────
-        if bottom_layers > 0 {
+        let bottom_region = if bottom_layers > 0 {
             // Compute the area of layer[i] covered by ALL bottom_layers layers
             // below it via progressive intersection.  Any part of layer[i] not
             // in that intersection is a bottom surface.
@@ -449,22 +449,27 @@ pub fn generate_top_bottom_surfaces(
                 }
             }
 
-            let bottom_region =
+            let region =
                 difference(perimeters[i].clone(), covered, FillRule::NonZero).unwrap_or_default();
-            if !bottom_region.is_empty() {
+            if !region.is_empty() {
                 add_solid_infill_for_region(
                     &mut layers[i],
-                    &bottom_region,
+                    &region,
                     ExtrusionRole::BottomSurface,
                     layer_height,
                     infill_angle,
                 );
             }
-        }
+            region
+        } else {
+            Paths::new(vec![])
+        };
 
         // ── Top surfaces ─────────────────────────────────────────────────────
         if top_layers > 0 {
             // Symmetric to the bottom-surface logic above, but looking upward.
+            // IMPORTANT: Exclude the bottom_region to prevent overlapping top
+            // and bottom surfaces on the same layer.
             let mut covered = perimeters[i].clone();
             for j in 1..=top_layers {
                 if i + j >= total {
@@ -484,8 +489,15 @@ pub fn generate_top_bottom_surfaces(
                 }
             }
 
-            let top_region =
+            let mut top_region =
                 difference(perimeters[i].clone(), covered, FillRule::NonZero).unwrap_or_default();
+
+            // Subtract bottom_region to avoid overlap
+            if !bottom_region.is_empty() && !top_region.is_empty() {
+                top_region = difference(top_region, bottom_region, FillRule::NonZero)
+                    .unwrap_or_default();
+            }
+
             if !top_region.is_empty() {
                 add_solid_infill_for_region(
                     &mut layers[i],
@@ -1195,5 +1207,76 @@ mod tests {
                 "Layer {idx} is within top_layers=3 of the model top and must have TopSurface"
             );
         }
+    }
+
+    /// Test that top and bottom surfaces don't overlap on the same layer.
+    /// This was a bug where regions could be marked as both top AND bottom,
+    /// causing incorrect G-code output.
+    #[test]
+    fn test_no_overlapping_top_bottom_surfaces() {
+        // Create a simple layer stack where the first layer could potentially
+        // be marked as both top and bottom if the algorithm is broken.
+        let make_rect_layer = |z: f64, w: f64, h: f64| -> SliceLayer {
+            let mut layer = SliceLayer::new(z);
+            let path: Path = vec![(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)].into();
+            layer.paths.push(path);
+            layer.path_roles.push(ExtrusionRole::Perimeter);
+            layer
+        };
+
+        let mut layers = vec![
+            make_rect_layer(1.0, 10.0, 10.0), // 0 – base layer
+            make_rect_layer(2.0, 10.0, 10.0), // 1
+            make_rect_layer(3.0, 10.0, 10.0), // 2
+            make_rect_layer(4.0, 10.0, 10.0), // 3 – top layer
+        ];
+
+        // Generate with both top_layers and bottom_layers enabled
+        generate_top_bottom_surfaces(&mut layers, 2, 2, 1.0, 45.0);
+
+        // Check each layer to ensure no path is in BOTH top and bottom regions
+        for (layer_idx, layer) in layers.iter().enumerate() {
+            let has_top = layer.path_roles.contains(&ExtrusionRole::TopSurface);
+            let has_bottom = layer.path_roles.contains(&ExtrusionRole::BottomSurface);
+
+            // Count the actual number of each type
+            let top_count = layer
+                .path_roles
+                .iter()
+                .filter(|&&r| r == ExtrusionRole::TopSurface)
+                .count();
+            let bottom_count = layer
+                .path_roles
+                .iter()
+                .filter(|&&r| r == ExtrusionRole::BottomSurface)
+                .count();
+
+            if has_top && has_bottom {
+                panic!(
+                    "Layer {} has BOTH top ({}) and bottom ({}) surface paths - they should not overlap!",
+                    layer_idx, top_count, bottom_count
+                );
+            }
+        }
+
+        // Layer 0 should be bottom only (first two layers)
+        assert!(
+            layers[0].path_roles.contains(&ExtrusionRole::BottomSurface),
+            "Layer 0 should have bottom surface"
+        );
+        assert!(
+            !layers[0].path_roles.contains(&ExtrusionRole::TopSurface),
+            "Layer 0 should NOT have top surface"
+        );
+
+        // Layer 3 (top) should be top only
+        assert!(
+            layers[3].path_roles.contains(&ExtrusionRole::TopSurface),
+            "Layer 3 should have top surface"
+        );
+        assert!(
+            !layers[3].path_roles.contains(&ExtrusionRole::BottomSurface),
+            "Layer 3 should NOT have bottom surface"
+        );
     }
 }
