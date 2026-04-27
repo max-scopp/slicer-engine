@@ -17,6 +17,7 @@ export class StatusPanelComponent implements AfterViewInit {
   readonly status = this.slicer.status;
   readonly outputLog = this.slicer.outputLog;
   readonly selectedFile = this.slicer.selectedFile;
+  readonly phaseTimings = this.slicer.phaseTimings;
   autoScroll = true;
 
   constructor() {
