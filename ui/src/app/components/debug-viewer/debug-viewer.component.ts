@@ -90,6 +90,14 @@ export class DebugViewerComponent {
         }
       }
     });
+
+    // Listen for manual debug load requests from history panel
+    effect(() => {
+      const requestUuid = this.slicer.debugLoadRequest();
+      if (requestUuid) {
+        this.loadDebugData(requestUuid);
+      }
+    });
   }
 
   async loadDebugData(requestUuid: string): Promise<void> {

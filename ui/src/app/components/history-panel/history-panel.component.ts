@@ -26,6 +26,17 @@ export class HistoryPanelComponent implements OnInit {
     this.slicerService.downloadFromHistory(session);
   }
 
+  viewDebug(session: PreviousSession): void {
+    this.slicerService.requestDebugLoad(session.request_uuid);
+    // Scroll to debug viewer
+    setTimeout(() => {
+      const debugSection = document.querySelector('.debug-section');
+      if (debugSection) {
+        debugSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }, 100);
+  }
+
   formatDate(dateStr: string): string {
     try {
       const date = new Date(dateStr);

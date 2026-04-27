@@ -19,9 +19,14 @@
           <span *ngIf="session.layer_count" class="layers">{{ session.layer_count }} layers</span>
         </div>
       </div>
-      <button class="download-btn" (click)="downloadSession(session)" title="Download G-code">
-        ⬇ Download
-      </button>
+      <div class="session-actions">
+        <button class="view-debug-btn" (click)="viewDebug(session)" title="View layer visualization">
+          👁 View Debug
+        </button>
+        <button class="download-btn" (click)="downloadSession(session)" title="Download G-code">
+          ⬇ Download
+        </button>
+      </div>
     </div>
   </div>
 </div>

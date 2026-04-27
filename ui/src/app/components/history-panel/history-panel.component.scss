@@ -96,6 +96,31 @@
     }
   }
 
+  .session-actions {
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  .view-debug-btn {
+    padding: 0.4rem 0.8rem;
+    font-size: 0.85rem;
+    background: #3d5a80;
+    color: #c0d8f0;
+    border: 1px solid #2a5aa8;
+    border-radius: 0.25rem;
+    cursor: pointer;
+    transition: background 0.2s;
+    white-space: nowrap;
+
+    &:hover {
+      background: #4a6fa0;
+    }
+
+    &:active {
+      transform: scale(0.98);
+    }
+  }
+
   .download-btn {
     padding: 0.4rem 0.8rem;
     font-size: 0.85rem;

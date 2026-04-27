@@ -182,5 +182,12 @@ export class SlicerService {
     link.download = filename;
     link.click();
   }
+
+  // Signal to trigger debug data load for a specific UUID
+  readonly debugLoadRequest = signal<string | null>(null);
+
+  requestDebugLoad(uuid: string): void {
+    this.debugLoadRequest.set(uuid);
+  }
 }
 

@@ -65,10 +65,10 @@
 
 .debug-section {
   grid-column: 1 / -1;
-  min-height: 500px;
+  height: fit-content;
 
   @media (max-width: 768px) {
-    min-height: 400px;
+    height: fit-content;
   }
 }
 
