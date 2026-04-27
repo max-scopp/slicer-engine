@@ -55,6 +55,16 @@ pub fn calculate_bounds(paths: &Paths) -> Option<(f64, f64, f64, f64)> {
     }
 }
 
+/// Two parametric t-values within this tolerance are considered identical.
+const T_VALUE_EPSILON: f64 = 1e-9;
+
+/// Determinant magnitude below this is treated as parallel (lines don't cross).
+const PARALLEL_EPSILON: f64 = 1e-12;
+
+/// Squared length below which a clipped sub-segment is considered degenerate
+/// and is discarded (avoids emitting zero-length paths).
+const MIN_SEGMENT_LENGTH_SQ: f64 = 1e-12;
+
 /// Clip generated line segments to the infill region boundaries.
 ///
 /// Each 2-point line in `lines` is clipped against the closed polygon paths in
@@ -101,16 +111,19 @@ pub fn clip_lines_to_region(lines: &Paths, region: &Paths) -> Paths {
                 if let Some(t) = segment_edge_t(x0, y0, x1, y1, (poly_pts[k], poly_pts[(k + 1) % n])) {
                     // Only keep t values strictly inside [0, 1] (not at
                     // endpoints) to avoid duplicate splits at shared vertices.
-                    if t > 1e-9 && t < 1.0 - 1e-9 {
+                    if t > T_VALUE_EPSILON && t < 1.0 - T_VALUE_EPSILON {
                         t_values.push(t);
                     }
                 }
             }
         }
 
+        // NaN coordinates in polygon geometry would indicate a serious upstream
+        // error; treat them as equal (push to the back) so they don't corrupt
+        // the sort order.
         t_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         // Deduplicate t values that are nearly equal.
-        t_values.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+        t_values.dedup_by(|a, b| (*a - *b).abs() < T_VALUE_EPSILON);
 
         // Emit the sub-segments that lie inside the region.
         for window in t_values.windows(2) {
@@ -124,10 +137,10 @@ pub fn clip_lines_to_region(lines: &Paths, region: &Paths) -> Paths {
             if point_in_region_even_odd(mx, my, region) {
                 let start = (x0 + ta * (x1 - x0), y0 + ta * (y1 - y0));
                 let end = (x0 + tb * (x1 - x0), y0 + tb * (y1 - y0));
-                // Only emit segments with non-trivial length.
+                // Discard degenerate (zero-length) sub-segments.
                 let dx = end.0 - start.0;
                 let dy = end.1 - start.1;
-                if dx * dx + dy * dy > 1e-12 {
+                if dx * dx + dy * dy > MIN_SEGMENT_LENGTH_SQ {
                     let path: Path = vec![start, end].into();
                     result.push(path);
                 }
@@ -153,7 +166,7 @@ fn segment_edge_t(lx0: f64, ly0: f64, lx1: f64, ly1: f64, edge: ((f64, f64), (f6
     let edy = ey1 - ey0;
 
     let denom = dx * edy - dy * edx;
-    if denom.abs() < 1e-12 {
+    if denom.abs() < PARALLEL_EPSILON {
         return None; // Parallel (or coincident) — no single intersection
     }
 

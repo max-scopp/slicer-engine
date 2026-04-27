@@ -642,12 +642,12 @@ pub fn generate_top_bottom_surfaces(
 
         // Record the union of all solid-surface regions on this layer so that
         // add_infill_to_layers can exclude them from sparse infill.
-        let combined_solid = match (bottom_region.is_empty(), top_region.is_empty()) {
-            (false, false) => union(bottom_region, top_region, FillRule::EvenOdd)
-                .unwrap_or_default(),
-            (false, true) => bottom_region,
-            (true, false) => top_region,
-            (true, true) => Paths::new(vec![]),
+        let combined_solid = if !bottom_region.is_empty() && !top_region.is_empty() {
+            union(bottom_region, top_region, FillRule::EvenOdd).unwrap_or_default()
+        } else if !bottom_region.is_empty() {
+            bottom_region
+        } else {
+            top_region // may be empty, handled below
         };
         if !combined_solid.is_empty() {
             layers[i].solid_regions = combined_solid;
