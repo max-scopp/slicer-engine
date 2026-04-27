@@ -6,18 +6,18 @@ A high-performance 3D model slicer engine written in Rust, powered by [Clipper2]
 
 ```bash
 # Build and run
-cargo build --release
-cargo run --release
+cargo build
+cargo run
 
 # Test and lint
-cargo test --release
+cargo test
 cargo fmt && cargo clippy --all-targets --all-features -- -D warnings
 
 # Cross-platform builds
-cargo build --release --target x86_64-pc-windows-msvc   # Windows
-cargo build --release --target x86_64-apple-darwin      # macOS Intel
-cargo build --release --target aarch64-apple-darwin     # macOS ARM
-wasm-pack build --target web --release                   # WebAssembly
+cargo build --target x86_64-pc-windows-msvc   # Windows
+cargo build --target x86_64-apple-darwin      # macOS Intel
+cargo build --target aarch64-apple-darwin     # macOS ARM
+wasm-pack build --target web                   # WebAssembly
 ```
 
 Or use **Makefile targets** (Linux/macOS):
@@ -31,8 +31,13 @@ make build-release build-windows build-macos build-wasm test lint fmt
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| **SliceLayer** | [src/core.rs](src/core.rs) | Data structure representing a single layer (Z-coordinate + paths) |
-| **Clipper2 Integration** | [src/core.rs](src/core.rs) | Geometric polygon clipping operations |
+| **SliceLayer / ExtrusionRole** | [src/core/types.rs](src/core/types.rs) | Core data structures for a single layer |
+| **Mesh Slicer** | [src/core/slicer.rs](src/core/slicer.rs) | Triangle→layer contour extraction (`slice_mesh`) |
+| **Surface Generation** | [src/core/surfaces.rs](src/core/surfaces.rs) | Top/bottom solid surface detection and infill |
+| **Wall Restrictions** | [src/core/walls.rs](src/core/walls.rs) | Single-wall first/top-layer constraints |
+| **Infill Boundary** | [src/core/infill.rs](src/core/infill.rs) | Interior region calculation and sparse infill |
+| **Pipeline** | [src/core/pipeline.rs](src/core/pipeline.rs) | `process_mesh` — orchestrates the full slicing pipeline |
+| **Clipper2 Integration** | [src/core/](src/core/) | Geometric polygon clipping operations throughout |
 | **Library Interface** | [src/lib.rs](src/lib.rs) | Public API exposing core functionality |
 | **CLI Layer** | [src/cli/](src/cli/) | User-friendly command-line interface bridging library API to commands |
 | **Build Configuration** | [build.rs](build.rs) | Platform detection and environment setup |
@@ -53,13 +58,20 @@ src/
 │   ├── output.rs          # Output formatting (JSON, GCode)
 │   ├── error.rs           # CLI error types
 │   └── adapters.rs        # Library API adapters
-├── core.rs                # Core data structures & operations
+├── core/                  # Core slicing operations (split by concern)
+│   ├── mod.rs             # Re-exports public API + integration tests
+│   ├── types.rs           # SliceLayer, ExtrusionRole
+│   ├── slicer.rs          # slice_mesh, segment chaining
+│   ├── surfaces.rs        # generate_top_bottom_surfaces*, rectilinear infill fill
+│   ├── walls.rs           # apply_single_wall_restrictions, compute_layers_with_top_surface
+│   ├── infill.rs          # calculate_interior_region, add_infill_to_layers
+│   └── pipeline.rs        # process_mesh (full pipeline orchestrator)
 ├── lib.rs                 # Public library root
 └── main.rs                # Application entry point (uses CLI)
 ```
 
 - **lib.rs**: Public library root - re-exports core module and CLI
-- **core.rs**: Core data structures (SliceLayer) and Clipper2 operations
+- **core/**: Core data structures and operations split by concern; `mod.rs` re-exports the public API so all external callers (`crate::core::*`) remain unchanged
 - **cli/**: CLI layer providing user-friendly commands and file I/O
 - **main.rs**: Application entry point that delegates to CLI layer
 
@@ -115,7 +127,7 @@ slicer-engine slice --help
 
 ### Testing
 - Write tests inline with `#[cfg(test)]` modules
-- Use `cargo test --release` to verify release build compatibility
+- Use `cargo test` to verify release build compatibility
 - Test all three platforms: native, WASM, and cross-compilation
 
 ## Project Dependencies
@@ -178,6 +190,130 @@ GitHub Actions ([.github/workflows/build.yml](.github/workflows/build.yml)) auto
 - **LTO Compilation**: Release builds are slower due to LTO. Use debug builds during iterative development.
 - **Cross-compilation**: Requires appropriate target toolchains installed. CI verifies these work.
 
+## Slicing Pipeline — Deep Knowledge
+
+This section records hard-won understanding of how the slicing pipeline works and
+why specific design decisions were made.  Read this before touching anything in
+[src/core/](src/core/) or [src/arachne/mod.rs](src/arachne/mod.rs).
+
+### Pipeline Execution Order
+
+```
+slice_mesh()                 — raw mesh → OuterWall contours per layer
+generate_arachne_walls()     — replaces OuterWall contours with bead paths
+apply_single_wall_restrictions()  — strips inner walls from first/last layers if configured
+calculate_interior_region()  — per-layer: area inside innermost wall (for surfaces + infill)
+generate_top_bottom_surfaces_with_interior()  — top/bottom solid infill within interior
+add_infill_to_layers()       — sparse infill within interior minus solid regions
+```
+
+Order matters critically.  Surfaces are computed **after** Arachne walls so that
+`calculate_interior_region` sees the correct bead geometry.  Infill is computed
+**after** surfaces so it can subtract `solid_regions`.
+
+### Arachne Wall Paths — What They Are and Are Not
+
+Arachne emits **centerline paths**, not filled polygons.  Each path is a closed
+polygon whose vertices are the *center* of the extrusion bead, not its edge.
+
+- `OuterWall` paths sit at inward depth `d/2` from the raw mesh contour.
+- `InnerWall` paths sit at `3d/2`, `5d/2`, … from the outer contour.
+- `path_widths[i]` carries the actual extrusion width for variable-width beads.
+- For a mesh with holes (donut, hollow cylinder) the **hole boundary** also gets
+  an `OuterWall` tag (`is_outer = true` in Arachne, because it is the outermost
+  bead of that contour's shrink sequence).  There is no separate "hole wall" tag.
+
+Consequence: you **cannot** tell an outer solid contour from a hole contour by
+role alone.  Use signed area (`path.signed_area()`): CCW (positive) = solid
+island, CW (negative) = hole.
+
+### Clipper2 Fill Rules — When to Use Which
+
+| Operation | Fill rule | Why |
+|-----------|-----------|-----|
+| Surface detection (intersect/difference of layer perimeters) | `EvenOdd` | Mesh slicer does not guarantee consistent winding; EvenOdd is winding-independent |
+| Infill interior subtraction (`difference` of infill area − solid regions) | `Positive` | Infill area from `calculate_interior_region` uses consistent Clipper2 winding; Positive is more predictable for non-overlapping inputs |
+| Arachne bead union (old approach, now removed) | `NonZero` | Would require all CCW; don't use unless winding is normalised first |
+
+**Do not union Arachne bead paths with `EvenOdd`.**  Tightly nested concentric
+closed paths under EvenOdd produce alternating in/out bands instead of a single
+solid region.
+
+### `perimeter_paths_of` — OuterWall Only
+
+`perimeter_paths_of()` intentionally returns only `OuterWall` paths, even though
+layers also have `InnerWall` paths.
+
+**Why**: Surface detection compares adjacent layer geometries with Clipper2
+`intersect`/`difference` using `EvenOdd`.  If `InnerWall` beads are included,
+each bead boundary toggles EvenOdd inside/outside.  With e.g. 3 inner walls, the
+inter-bead gaps register as alternating "exposed" strips → spurious `BottomSurface`
+or `TopSurface` paths appear between the wall beads, indistinguishable from real
+surfaces.  The `OuterWall` paths alone faithfully represent the solid cross-section
+of each island.
+
+### `calculate_interior_region` — How the Infill/Surface Boundary Is Computed
+
+Uses `OuterWall` paths directly as the gross outline of each island (winding
+preserved — **do not normalise to CCW**).  Deflates inward by:
+
+```
+total_inward = (walls_per_island - 0.5) × nozzle_diameter - overlap_distance
+```
+
+The `−0.5 × d` term accounts for the fact that `OuterWall` centerlines are
+already inset `d/2` from the model surface.  Without this correction the interior
+region is over-shrunk by half a bead width.
+
+`walls_per_island = ceil(total_wall_bead_count / outer_contour_count)` gives the
+number of wall shells per island.  This works because Arachne places the same
+number of beads on every island (parameters are global, not per-island).
+
+**Do not normalise all wall paths to CCW before the inflate.**  Hole boundary
+beads have CW winding.  Flipping them to CCW makes Clipper2 treat holes as solid
+material → infill is generated inside the hole (through the void).
+
+### Infill Boundary vs. Surface Region
+
+`add_infill_to_layers` calls `calculate_interior_region(layer, 0.0, nozzle_diameter_mm)`
+(overlap = 0) to get the infill area, then subtracts `layer.solid_regions` with
+`FillRule::Positive`.
+
+`generate_top_bottom_surfaces_with_interior` clips surface regions to
+`interior_regions[i]` (computed ahead of time with
+`calculate_interior_region(layer, infill_overlap_percent, nozzle_diameter_mm)`)
+before generating solid infill lines.
+
+Both use `calculate_interior_region` — but with different `overlap_percent`
+values.  Keep them consistent if the signature changes.
+
+### `generate_rectilinear_infill` — Scanline Even-Odd Fill
+
+The scanline fills cells using an even-odd intersection count (pairs of sorted
+X crossings per scan line).  This is correct for both simple polygons and for
+Clipper2-output `Paths` whose hole sub-paths have CW winding, because the CW
+hole adds an extra edge crossing that naturally toggles the parity.
+
+No special handling is needed for holes in the input `Paths` — the algorithm is
+correct as-is as long as the input `Paths` has proper Clipper2 winding (CCW
+solids, CW holes).
+
+### Infill for Shapes with Holes
+
+For a layer that contains a hole (e.g. a hollow box cross-section), the
+`calculate_interior_region` output is a Clipper2 `Paths` with:
+- One or more CCW sub-paths (solid ring interior)
+- One or more CW sub-paths (the hole voids)
+
+The `inflate` call with a negative delta correctly shrinks the solid ring inward
+while simultaneously *growing* the CW hole outward (toward the ring), preserving
+the annular region where infill should go.  The scanline in
+`generate_rectilinear_infill` then correctly generates lines only inside the
+annulus because the hole sub-path's edges produce crossing events that close the
+infill within the ring.
+
+
+
 ## Related Documentation
 
 - [README.md](README.md) - User guide and feature overview
@@ -187,5 +323,5 @@ GitHub Actions ([.github/workflows/build.yml](.github/workflows/build.yml)) auto
 
 ---
 
-**Last Updated**: 2026-04-26  
+**Last Updated**: 2026-04-27  
 **Maintainer Guidance**: Keep this file in sync with project structure changes, new conventions, or significant architectural decisions.
