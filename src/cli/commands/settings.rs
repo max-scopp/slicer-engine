@@ -454,8 +454,8 @@ fn set_setting_value(
     set_json_path(&mut val, &resolved, value.clone())?;
 
     // Deserialize back — this catches type mismatches (e.g. string for a float field)
-    *settings = serde_json::from_value(val)
-        .map_err(|e| format!("Invalid value for '{}': {}", key, e))?;
+    *settings =
+        serde_json::from_value(val).map_err(|e| format!("Invalid value for '{}': {}", key, e))?;
     Ok(())
 }
 
@@ -498,10 +498,7 @@ impl EmitPayload for ShowResult<'_> {
             let mut flavors: Vec<_> = self.settings.lifecycle_markers.iter().collect();
             flavors.sort_by_key(|(k, _)| k.as_str());
             for (flavor, cfg) in flavors {
-                lines.push(format!(
-                    "    {}: enabled={}",
-                    flavor, cfg.enabled
-                ));
+                lines.push(format!("    {}: enabled={}", flavor, cfg.enabled));
             }
         }
         lines.join("\n")
@@ -831,7 +828,10 @@ mod tests {
             settings: &settings,
         };
         let human = r.display_human();
-        assert!(human.contains("gcode_flavor"), "show must include gcode_flavor");
+        assert!(
+            human.contains("gcode_flavor"),
+            "show must include gcode_flavor"
+        );
     }
 
     #[test]

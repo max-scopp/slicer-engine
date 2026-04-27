@@ -16,8 +16,8 @@ pub mod validator;
 pub use diff::{compare_settings, SettingsDiff};
 pub use params::{GlobalSettings, LifecycleMarkerConfig, ObjectSettings, SlicingParams};
 pub use persistence::{
-    config_dir, find_project_config, load_and_merge_settings, load_project_config,
-    load_settings, merge_json_configs, save_settings, settings_file,
+    config_dir, find_project_config, load_and_merge_settings, load_project_config, load_settings,
+    merge_json_configs, save_settings, settings_file,
 };
 pub use profile::PrinterProfile;
 pub use validator::{SettingValidator, ValidationRules};

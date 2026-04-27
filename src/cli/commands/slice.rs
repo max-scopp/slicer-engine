@@ -1,9 +1,9 @@
 //! Slice command - performs 3D model slicing
 
-use crate::cli::emit::Emitter;
+use crate::cli::emit::{CliLogger, Emitter};
 use crate::cli::output::{EmitPayload, OutputFormat};
-use crate::core::slice_mesh;
 use crate::gcode::{resolve_gcode_source, GcodeFlavor, GcodeGenerator};
+use crate::logging::ProcessLogger;
 use crate::mesh::analysis::{calculate_aabb, calculate_surface_area, calculate_volume};
 use crate::mesh::io::read_stl;
 use crate::mesh::transforms::{center_mesh, drop_to_floor};
@@ -171,16 +171,27 @@ impl SliceCommand {
         // Build slicing params (layer height may be overridden by CLI flag)
         let mut slice_params = settings.params.clone();
         slice_params.layer_height = layer_height;
+        
+        // Apply CLI overrides for infill settings
+        if let Some(density) = self.infill_density {
+            slice_params.infill_density = density / 100.0; // Convert percentage to fraction
+        }
+        if let Some(ref pattern) = self.infill_pattern {
+            slice_params.infill_pattern = pattern.clone();
+        }
 
         // Validate input file exists
         if !self.input.exists() {
             return Err(format!("Input file not found: {}", self.input.display()).into());
         }
 
-        if self.verbose {
-            emitter.log_debug(&format!("loading mesh: {:?}", self.input));
-            emitter.log_debug(&format!("G-code flavor: {}", flavor));
-        }
+        // Build the request-specific logger for this CLI invocation.
+        // All pipeline messages are routed through this logger; debug output
+        // is only emitted when --verbose is active.
+        let logger = CliLogger::new(emitter.clone(), self.verbose);
+
+        logger.log_debug(&format!("loading mesh: {:?}", self.input));
+        logger.log_debug(&format!("G-code flavor: {}", flavor));
 
         // Load the STL mesh
         let mut mesh = read_stl(&self.input)
@@ -189,25 +200,21 @@ impl SliceCommand {
         // Apply optional transforms
         if self.center {
             mesh = center_mesh(&mesh);
-            if self.verbose {
-                emitter.log_debug("applied center transform");
-            }
+            logger.log_debug("applied center transform");
         }
         if self.drop_to_floor {
             mesh = drop_to_floor(&mesh);
-            if self.verbose {
-                emitter.log_debug("applied drop-to-floor transform");
-            }
+            logger.log_debug("applied drop-to-floor transform");
         }
 
-        if self.verbose {
-            // Compute and log geometry
+        // Compute and log mesh geometry (verbose detail available to this CLI request).
+        {
             let aabb = calculate_aabb(&mesh);
-            emitter.log_debug(&format!(
+            logger.log_debug(&format!(
                 "AABB: ({:.3}, {:.3}, {:.3}) → ({:.3}, {:.3}, {:.3})",
                 aabb.min.x, aabb.min.y, aabb.min.z, aabb.max.x, aabb.max.y, aabb.max.z
             ));
-            emitter.log_debug(&format!(
+            logger.log_debug(&format!(
                 "dimensions: {:.3} × {:.3} × {:.3} mm",
                 aabb.width(),
                 aabb.depth(),
@@ -215,74 +222,24 @@ impl SliceCommand {
             ));
 
             match calculate_volume(&mesh) {
-                Ok(vol) => emitter.log_debug(&format!("volume: {:.3} mm³", vol)),
-                Err(e) => emitter.log_debug(&format!("volume: {}", e)),
+                Ok(vol) => logger.log_debug(&format!("volume: {:.3} mm³", vol)),
+                Err(e) => logger.log_debug(&format!("volume: {}", e)),
             }
 
             let area = calculate_surface_area(&mesh);
-            emitter.log_debug(&format!("surface area: {:.3} mm²", area));
+            logger.log_debug(&format!("surface area: {:.3} mm²", area));
 
-            emitter.log_debug(&format!(
+            logger.log_debug(&format!(
                 "faces: {}, vertices: {}",
                 mesh.faces.len(),
                 mesh.vertices.len()
             ));
-            emitter.log_debug(&format!("layer height: {:.3} mm", layer_height));
+            logger.log_debug(&format!("layer height: {:.3} mm", layer_height));
         }
 
-        // Slice the mesh into layers
-        if self.verbose {
-            emitter.log_debug("slicing mesh…");
-        }
-        let mut layers = slice_mesh(&mesh, layer_height);
-
-        if self.verbose {
-            emitter.log_debug(&format!("sliced into {} layers", layers.len()));
-        }
-
-        // Add infill to layers if density > 0
-        // CLI flags override settings values
-        let infill_density = self.infill_density
-            .map(|d| d / 100.0) // Convert percentage to fraction
-            .unwrap_or(settings.params.infill_density);
-            
-        let infill_pattern_str = self.infill_pattern
-            .as_deref()
-            .unwrap_or(&settings.params.infill_pattern);
-            
-        if infill_density > 0.0 {
-            use crate::infill::InfillPattern;
-            
-            // Parse infill pattern
-            let infill_pattern = InfillPattern::parse(infill_pattern_str)
-                .unwrap_or_else(|| {
-                    if self.verbose {
-                        emitter.log_warn(&format!(
-                            "Unknown infill pattern '{}', using rectilinear",
-                            infill_pattern_str
-                        ));
-                    }
-                    InfillPattern::Rectilinear
-                });
-            
-            if self.verbose {
-                emitter.log_debug(&format!(
-                    "generating {} infill at {:.0}% density…",
-                    infill_pattern.name(),
-                    infill_density * 100.0
-                ));
-            }
-            
-            crate::core::add_infill_to_layers(
-                &mut layers,
-                infill_density,
-                infill_pattern,
-            );
-            
-            if self.verbose {
-                emitter.log_debug("infill generation complete");
-            }
-        }
+        // Run the unified slicing pipeline. All step-level logging is handled
+        // inside process_mesh and routed through `logger`.
+        let layers = crate::core::process_mesh(&mesh, &slice_params, &logger);
 
         // Resolve per-flavor lifecycle marker config from settings.
         // CLI flags override the enabled field.
@@ -306,12 +263,12 @@ impl SliceCommand {
         };
 
         // Generate G-code using the selected firmware flavor; route dialect
-        // warnings through the emitter's warn channel.
+        // warnings through the logger's warn channel.
         // Script precedence: CLI arg → global settings → dialect default.
-        let emitter_for_warn = emitter.clone();
+        let warn_logger = logger.clone();
         let mut generator = GcodeGenerator::new(flavor)
             .with_marker_config(marker_config)
-            .with_warn_fn(move |msg| emitter_for_warn.log_warn(msg));
+            .with_warn_fn(move |msg| warn_logger.log_warn(msg));
 
         // Resolve custom start script (CLI arg takes priority over global settings)
         let start_source = self
@@ -352,9 +309,7 @@ impl SliceCommand {
         if let Some(ref path) = output_path {
             std::fs::write(path, &gcode)
                 .map_err(|e| format!("Failed to write G-code to '{}': {}", path.display(), e))?;
-            if self.verbose {
-                emitter.log_debug(&format!("wrote G-code to {}", path.display()));
-            }
+            logger.log_debug(&format!("wrote G-code to {}", path.display()));
         }
 
         let input_name = self

@@ -1,9 +1,65 @@
 //! WebSocket session management and message handling.
 
+use crate::logging::{ProcessLogger, StderrLogger};
 use crate::ws_protocol::{ClientMessage, ServerMessage};
 use futures_util::StreamExt as _;
 use std::sync::Arc;
 use uuid::Uuid;
+
+/// A [`ProcessLogger`] that relays every message to the global stderr logger
+/// *and* sends a JSON [`ServerMessage::Log`] frame to the connected WebSocket
+/// client.
+///
+/// This gives WebSocket clients the same level of pipeline verbosity that the
+/// CLI exposes via `--verbose`, without any special-casing inside the slicing
+/// pipeline itself.
+struct WsLogger {
+    global: StderrLogger,
+    tx: tokio::sync::mpsc::Sender<String>,
+}
+
+impl WsLogger {
+    fn new(tx: tokio::sync::mpsc::Sender<String>) -> Self {
+        Self {
+            global: StderrLogger,
+            tx,
+        }
+    }
+
+    fn send_log(&self, level: &str, msg: &str) {
+        let server_msg = ServerMessage::Log {
+            level: level.to_string(),
+            message: msg.to_string(),
+        };
+        let json = serde_json::to_string(&server_msg).unwrap_or_else(|_| {
+            format!(
+                r#"{{"type":"log","level":"{}","message":"<serialization error>"}}"#,
+                level
+            )
+        });
+        // `WsLogger` is exclusively constructed and used inside
+        // `tokio::task::spawn_blocking`, so `blocking_send` is safe here and
+        // will not stall an async executor thread.
+        let _ = self.tx.blocking_send(json);
+    }
+}
+
+impl ProcessLogger for WsLogger {
+    fn log_info(&self, msg: &str) {
+        self.global.log_info(msg);
+        self.send_log("info", msg);
+    }
+
+    fn log_debug(&self, msg: &str) {
+        self.global.log_debug(msg);
+        self.send_log("debug", msg);
+    }
+
+    fn log_warn(&self, msg: &str) {
+        self.global.log_warn(msg);
+        self.send_log("warn", msg);
+    }
+}
 
 /// Upgrade an HTTP GET to a WebSocket connection and hand off to the session handler
 pub async fn ws_handler(
@@ -195,11 +251,12 @@ async fn handle_slice(
             }
         };
 
-        let face_count = mesh.faces.len();
-        let log = ServerMessage::log_info(format!("Mesh loaded: {face_count} triangles. Slicing…"));
-        let _ = tx.blocking_send(to_json(&log));
+        // Build the request-specific logger for this WebSocket session.
+        // Every pipeline message is sent back to the client as a Log frame
+        // and is also written to global stderr via StderrLogger.
+        let logger = WsLogger::new(tx.clone());
 
-        let layers = crate::core::slice_mesh(&mesh, params.layer_height);
+        let layers = crate::core::process_mesh(&mesh, &params, &logger);
         let layer_count = layers.len();
 
         let progress = ServerMessage::Progress {
