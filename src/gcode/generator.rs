@@ -339,9 +339,12 @@ impl GcodeGenerator {
                     continue;
                 }
 
+                // Fetch the role unconditionally — needed both for TYPE annotations
+                // and to decide whether to close the contour below.
+                let role = layer.role_for_path(path_idx);
+
                 // Emit ;TYPE: / ;WIDTH: annotation when the extrusion role changes
                 if self.marker_config.enabled {
-                    let role = layer.role_for_path(path_idx);
                     if last_role != Some(role) {
                         let type_name = role.type_name();
                         let width = format!("{:.2}", role.default_width_mm());
@@ -428,22 +431,32 @@ impl GcodeGenerator {
                     prev = (x, y);
                 }
 
-                // Close the contour
-                let dx = start_x - prev.0;
-                let dy = start_y - prev.1;
-                let len = (dx * dx + dy * dy).sqrt();
-                if len >= 1e-6 {
-                    e_total += extrusion_for_move(
-                        len,
-                        params.layer_height,
-                        params.nozzle_diameter_mm,
-                        params.filament_diameter_mm,
-                    );
-                    out.push_str(&format!(
-                        "{} ; close contour\n",
-                        self.dialect
-                            .move_extrude(start_x, start_y, e_total, print_speed_mm_min)
-                    ));
+                // Close the contour — only for inherently closed-loop roles such as
+                // perimeter walls and skirt/brim.  Open infill polylines (Infill,
+                // TopSurface, BottomSurface, Bridge, Support) must NOT be closed;
+                // doing so would add a long diagonal extrusion back to the path start,
+                // producing the "weird line crossing" artifact visible in gyroid infill.
+                let is_closed_loop = matches!(
+                    role,
+                    crate::core::ExtrusionRole::Perimeter | crate::core::ExtrusionRole::Skirt
+                );
+                if is_closed_loop {
+                    let dx = start_x - prev.0;
+                    let dy = start_y - prev.1;
+                    let len = (dx * dx + dy * dy).sqrt();
+                    if len >= 1e-6 {
+                        e_total += extrusion_for_move(
+                            len,
+                            params.layer_height,
+                            params.nozzle_diameter_mm,
+                            params.filament_diameter_mm,
+                        );
+                        out.push_str(&format!(
+                            "{} ; close contour\n",
+                            self.dialect
+                                .move_extrude(start_x, start_y, e_total, print_speed_mm_min)
+                        ));
+                    }
                 }
             }
         }

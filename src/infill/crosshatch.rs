@@ -1,44 +1,37 @@
 //! Cross hatch infill pattern implementation.
 //!
-//! Generates an artistic crosshatch (✗) pattern: two sets of parallel lines
-//! per layer at 45° and 135° relative to the layer's base angle. This creates
-//! a visibly distinct cross-hatched appearance on every layer, unlike
-//! rectilinear (single direction) or grid (axis-aligned 0°/90°).
+//! Generates a crosshatch (✗) pattern: two sets of parallel lines per layer,
+//! one at `angle_offset` and one at `angle_offset + 90°`. With the default
+//! `infill_base_angle` of 45°, this produces diagonal lines at 45° and 135°,
+//! visually distinct from rectilinear (single direction) and grid (axis-aligned).
 //!
-//! The base angle alternates between layers (set by the caller via
-//! `angle_offset`), so adjacent layers rotate the entire ✗ pattern, providing
-//! cross-layer strength while keeping the per-layer crosshatching visible.
+//! Adjacent layers share the same ✗ orientation because rotating a ✗ by 90°
+//! produces the same ✗, so the pattern is stable across layers while still
+//! providing cross-layer strength.
 //!
 //! Density is split evenly between the two directions so the total material
-//! usage matches the requested density: each direction uses spacing of
-//! `2 * line_width / density`, producing combined density equivalent to a
-//! single-direction pattern at the requested density.
-//!
-//! # Earlier implementations
-//!
-//! A previous version ported OrcaSlicer's FillCrossHatch which alternates
-//! between straight "repeat layers" and hex-wave "transform layers" in 3D.
-//! That algorithm produces output bit-identical to rectilinear for ~60% of
-//! Z values (the repeat layers) and only barely-visible waves for the rest,
-//! making it look like a buggy version of rectilinear when viewed layer by
-//! layer. The current implementation favors visual distinctiveness over the
-//! 3D-honeycomb interlock geometry.
+//! usage matches the requested density.
 
 use clipper2::*;
 use super::utils::calculate_bounds;
 use std::f64::consts::PI;
 
 /// Generate a crosshatch (✗) infill pattern: two perpendicular sets of
-/// parallel lines per layer, oriented at 45° and 135° from `angle_offset`.
+/// parallel lines per layer at `angle_offset` and `angle_offset + 90°`.
+///
+/// With the default `infill_base_angle` of 45°, this produces diagonal lines
+/// at 45° and 135°.  The pattern is visually distinct from rectilinear
+/// (1 direction) and grid (0°/90° axis-aligned).
 ///
 /// # Arguments
 /// * `region` - The infill region boundaries
 /// * `density` - Infill density as a fraction (0.0-1.0)
-/// * `angle_offset` - Rotation angle in radians for this layer (the whole ✗
-///   pattern rotates with this; caller alternates per layer for strength).
+/// * `angle_offset` - Rotation angle in radians for this layer (defaults to
+///   45° = PI/4 from `infill_base_angle`; the two line sets are at this angle
+///   and `angle_offset + PI/2`).
 ///
 /// # Returns
-/// Paths containing line segments in both diagonal directions, unclipped.
+/// Paths containing line segments in both directions, unclipped.
 /// Caller is expected to clip against the actual region boundary.
 pub fn generate_crosshatch(region: &Paths, density: f64, angle_offset: f64) -> Paths {
     if density <= 0.0 || region.is_empty() {
@@ -51,11 +44,14 @@ pub fn generate_crosshatch(region: &Paths, density: f64, angle_offset: f64) -> P
     let half_density = (density * 0.5).max(1e-6);
     let spacing = line_width / half_density;
 
-    // The two sets are oriented at +45° and -45° (i.e. 135°) relative to the
-    // layer's base angle. This produces a visible ✗ pattern.
+    // The two directions are 90° apart, starting at `angle_offset`.
+    // With the default base angle of 45°, this produces diagonal ✗ lines
+    // (45° and 135°). The previous ±PI/4 approach rotated the whole pattern
+    // by 45°, turning 45° base → 0°/90° axis-aligned lines indistinguishable
+    // from Grid.
     let mut result = Paths::default();
-    generate_oriented_lines(region, spacing, angle_offset + PI / 4.0, &mut result);
-    generate_oriented_lines(region, spacing, angle_offset - PI / 4.0, &mut result);
+    generate_oriented_lines(region, spacing, angle_offset, &mut result);
+    generate_oriented_lines(region, spacing, angle_offset + PI / 2.0, &mut result);
     result
 }
 
