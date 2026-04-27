@@ -49,6 +49,7 @@ consistent names across every logger backend.
 
 | Constant | Phase | Instrumented in |
 |---|---|---|
+| `phases::TOTAL` | Complete end-to-end slicing process | CLI `slice.rs`, WebSocket handler (wraps all other phases) |
 | `phases::MESH_LOAD` | STL file read + mesh parse | CLI `slice.rs`, WebSocket handler |
 | `phases::MESH_ANALYSIS` | AABB / volume / surface-area computation | CLI `slice.rs` (verbose) |
 | `phases::SLICING` | Triangle–plane intersection → layers | `core::process_mesh` |
@@ -62,6 +63,7 @@ consistent names across every logger backend.
 A complete slice run produces phase markers in this logical order:
 
 ```
+[phase] total            → start
 [phase] mesh_load        → start
 [phase] mesh_load        ✓ 12 ms
 [phase] mesh_analysis    → start      (CLI verbose only)
@@ -74,10 +76,13 @@ A complete slice run produces phase markers in this logical order:
 [phase] gcode_generation ✓ 22 ms
 [phase] file_write       → start
 [phase] file_write       ✓ 5 ms
+[phase] total            ✓ 464 ms
 ```
 
-The timings identify which pipeline step dominates total print-preparation
-time, making it straightforward to spot regressions or optimisation targets.
+The `total` phase spans all others and reports the complete end-to-end time.
+Individual phase timings identify which pipeline step dominates total
+print-preparation time, making it straightforward to spot regressions or
+optimisation targets.
 
 ---
 

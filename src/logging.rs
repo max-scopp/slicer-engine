@@ -45,6 +45,7 @@
 ///
 /// | Constant | Phase |
 /// |---|---|
+/// | [`TOTAL`] | Complete end-to-end slicing process |
 /// | [`MESH_LOAD`] | STL file read + mesh parsing |
 /// | [`MESH_ANALYSIS`] | AABB / volume / surface-area computation |
 /// | [`SLICING`] | Triangle–plane intersection → `Vec<SliceLayer>` |
@@ -53,6 +54,8 @@
 /// | [`GCODE_GENERATION`] | G-code program construction |
 /// | [`FILE_WRITE`] | Writing the G-code file to disk |
 pub mod phases {
+    /// Complete end-to-end slicing process (spans all other phases).
+    pub const TOTAL: &str = "total";
     /// STL file read and mesh parsing phase.
     pub const MESH_LOAD: &str = "mesh_load";
     /// AABB, volume, and surface-area computation phase.
@@ -270,6 +273,7 @@ mod tests {
     #[test]
     fn all_phase_constants_are_non_empty() {
         for p in [
+            phases::TOTAL,
             phases::MESH_LOAD,
             phases::MESH_ANALYSIS,
             phases::SLICING,
