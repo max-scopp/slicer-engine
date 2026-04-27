@@ -1,68 +1,138 @@
 <div class="debug-viewer">
   <div class="header">
-    <h2>Layer Viewer</h2>
-    @if (loading()) {
-      <span class="loading">Loading...</span>
-    }
-    @if (error()) {
-      <span class="error">{{ error() }}</span>
-    }
+    <div class="header-copy">
+      <span class="eyebrow">Debug View</span>
+      <h2>Layer Inspector</h2>
+      <p>Review sliced paths at full width with per-role filtering and live layer stats.</p>
+    </div>
+
+    <div class="header-state">
+      @if (layers().length > 0) {
+        <div class="header-chip">
+          <span class="chip-label">Layers</span>
+          <strong>{{ layers().length }}</strong>
+        </div>
+      }
+
+      @if (loading()) {
+        <span class="loading">Loading...</span>
+      }
+
+      @if (error()) {
+        <span class="error">{{ error() }}</span>
+      }
+    </div>
   </div>
 
   @if (layers().length > 0) {
-    <div class="controls">
-      <div class="layer-control">
-        <label>
-          Layer {{ currentLayerIndex() + 1 }} / {{ layers().length }}
+    <div class="viewer-layout">
+      <aside class="inspector">
+        <section class="inspector-card layer-control">
+          <div class="section-heading">
+            <span class="section-kicker">Slice Position</span>
+            <strong>Layer {{ currentLayerIndex() + 1 }}</strong>
+          </div>
+
           @if (currentLayer(); as layer) {
-            (Z = {{ layer.z.toFixed(2) }}mm)
+            <p class="layer-meta">Z = {{ layer.z.toFixed(2) }}mm</p>
           }
-        </label>
-        <input
-          type="range"
-          min="0"
-          [max]="layers().length - 1"
-          [value]="currentLayerIndex()"
-          (input)="currentLayerIndex.set(+$any($event.target).value)"
-          class="layer-slider"
-        />
-      </div>
 
-      <div class="role-toggles">
-        <label class="toggle-label">Show:</label>
-        @for (toggle of roleToggles(); track toggle.role) {
-          <label class="role-toggle">
-            <input
-              type="checkbox"
-              [checked]="toggle.enabled"
-              (change)="toggleRole(toggle.role)"
-            />
-            <span class="role-color" [style.background-color]="toggle.color"></span>
-            <span>{{ toggle.role }}</span>
-          </label>
-        }
-      </div>
-    </div>
+          <input
+            type="range"
+            min="0"
+            [max]="layers().length - 1"
+            [value]="currentLayerIndex()"
+            (input)="currentLayerIndex.set(+$any($event.target).value)"
+            class="layer-slider"
+          />
 
-    <div class="viewport">
-      <svg
-        [attr.viewBox]="viewBox()"
-        preserveAspectRatio="xMidYMid meet"
-        class="layer-svg"
-      >
+          <div class="progress-row">
+            <span>1</span>
+            <div class="progress-track" aria-hidden="true">
+              <div class="progress-fill" [style.width.%]="layerProgress()"></div>
+            </div>
+            <span>{{ layers().length }}</span>
+          </div>
+
+          @if (currentLayerStats(); as stats) {
+            <div class="stat-grid">
+              <article class="stat-card">
+                <span class="stat-label">Visible Paths</span>
+                <strong>{{ stats.visiblePaths }}</strong>
+              </article>
+              <article class="stat-card">
+                <span class="stat-label">Visible Points</span>
+                <strong>{{ stats.visiblePoints }}</strong>
+              </article>
+              <article class="stat-card muted">
+                <span class="stat-label">Total Paths</span>
+                <strong>{{ stats.totalPaths }}</strong>
+              </article>
+              <article class="stat-card muted">
+                <span class="stat-label">Total Points</span>
+                <strong>{{ stats.totalPoints }}</strong>
+              </article>
+            </div>
+          }
+        </section>
+
+        <section class="inspector-card role-panel">
+          <div class="section-heading">
+            <span class="section-kicker">Path Roles</span>
+            <strong>{{ enabledRoleCount() }} shown</strong>
+          </div>
+
+          <div class="role-toggles">
+            @for (toggle of roleToggles(); track toggle.role) {
+              <label class="role-toggle" [class.is-disabled]="!toggle.enabled">
+                <input
+                  type="checkbox"
+                  [checked]="toggle.enabled"
+                  (change)="toggleRole(toggle.role)"
+                />
+                <span class="role-color" [style.background-color]="toggle.color"></span>
+                <span class="role-name">{{ toggle.role }}</span>
+              </label>
+            }
+          </div>
+        </section>
+      </aside>
+
+      <section class="stage">
         @if (currentLayer(); as layer) {
-          @for (item of getPathsForLayer(layer); track $index) {
-            <path
-              [attr.d]="pathToSvgString(item.path)"
-              [attr.stroke]="getRoleColor(item.role)"
-              [attr.fill]="getRoleColor(item.role)"
-              fill-opacity="0.3"
-              stroke-width="0.2"
-              vector-effect="non-scaling-stroke"
-            />
-          }
+          <div class="stage-toolbar">
+            <div class="toolbar-chip">
+              <span class="chip-label">Current Z</span>
+              <strong>{{ layer.z.toFixed(2) }}mm</strong>
+            </div>
+            <div class="toolbar-chip muted">
+              <span class="chip-label">Active Roles</span>
+              <strong>{{ enabledRoleCount() }}</strong>
+            </div>
+          </div>
         }
-      </svg>
+
+        <div class="viewport">
+          <svg
+            [attr.viewBox]="viewBox()"
+            preserveAspectRatio="xMidYMid meet"
+            class="layer-svg"
+          >
+            @if (currentLayer(); as layer) {
+              @for (item of getPathsForLayer(layer); track $index) {
+                <path
+                  [attr.d]="pathToSvgString(item.path)"
+                  [attr.stroke]="getRoleColor(item.role)"
+                  [attr.fill]="getRoleColor(item.role)"
+                  fill-opacity="0.28"
+                  stroke-width="0.2"
+                  vector-effect="non-scaling-stroke"
+                />
+              }
+            }
+          </svg>
+        </div>
+      </section>
     </div>
   } @else if (!loading() && !error()) {
     <div class="empty-state">

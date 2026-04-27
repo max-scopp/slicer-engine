@@ -48,6 +48,37 @@ export class DebugViewerComponent {
     return layers[idx] || null;
   });
 
+  readonly enabledRoleCount = computed(
+    () => this.roleToggles().filter(toggle => toggle.enabled).length
+  );
+
+  readonly currentLayerStats = computed(() => {
+    const layer = this.currentLayer();
+    if (!layer) {
+      return null;
+    }
+
+    const visibleItems = this.getPathsForLayer(layer);
+    const totalPoints = layer.paths.reduce((count, path) => count + path.length, 0);
+    const visiblePoints = visibleItems.reduce((count, item) => count + item.path.length, 0);
+
+    return {
+      totalPaths: layer.paths.length,
+      visiblePaths: visibleItems.length,
+      totalPoints,
+      visiblePoints,
+    };
+  });
+
+  readonly layerProgress = computed(() => {
+    const total = this.layers().length;
+    if (total === 0) {
+      return 0;
+    }
+
+    return ((this.currentLayerIndex() + 1) / total) * 100;
+  });
+
   readonly viewBox = computed(() => {
     const layers = this.layers();
     if (layers.length === 0) return '0 0 200 200';
