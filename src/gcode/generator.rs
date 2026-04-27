@@ -892,12 +892,12 @@ mod tests {
         let mut layer = SliceLayer::new(0.2);
         let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
         layer.paths.push(square);
-        layer.path_roles.push(crate::core::ExtrusionRole::Perimeter);
+        layer.path_roles.push(crate::core::ExtrusionRole::OuterWall);
 
         let gcode =
             GcodeGenerator::new(GcodeFlavor::Marlin).generate(&[layer], &SlicingParams::default());
         assert!(
-            gcode.contains(";TYPE:Perimeter"),
+            gcode.contains(";TYPE:Outer wall"),
             ";TYPE: annotation must be present"
         );
         assert!(
@@ -915,23 +915,23 @@ mod tests {
         layer.paths.push(sq.clone());
         layer.paths.push(sq.clone());
         layer.paths.push(sq);
-        layer.path_roles.push(crate::core::ExtrusionRole::Perimeter);
-        layer.path_roles.push(crate::core::ExtrusionRole::Perimeter);
+        layer.path_roles.push(crate::core::ExtrusionRole::OuterWall);
+        layer.path_roles.push(crate::core::ExtrusionRole::OuterWall);
         layer.path_roles.push(crate::core::ExtrusionRole::Infill);
 
         let gcode =
             GcodeGenerator::new(GcodeFlavor::Marlin).generate(&[layer], &SlicingParams::default());
 
-        // Perimeter TYPE should appear exactly once (no duplicate at role boundary)
-        let perimeter_count = gcode.matches(";TYPE:Perimeter").count();
+        // OuterWall TYPE should appear exactly once (no duplicate at role boundary)
+        let outer_wall_count = gcode.matches(";TYPE:Outer wall").count();
         assert_eq!(
-            perimeter_count, 1,
-            "Perimeter TYPE emitted {} times",
-            perimeter_count
+            outer_wall_count, 1,
+            "Outer wall TYPE emitted {} times",
+            outer_wall_count
         );
 
         // Infill TYPE should appear exactly once
-        let infill_count = gcode.matches(";TYPE:Internal infill").count();
+        let infill_count = gcode.matches(";TYPE:Sparse infill").count();
         assert_eq!(
             infill_count, 1,
             "Infill TYPE emitted {} times",
@@ -987,7 +987,7 @@ mod tests {
             .with_marker_config(config)
             .generate(&[layer], &SlicingParams::default());
         assert!(
-            gcode.contains(";FEATURE Internal infill"),
+            gcode.contains(";FEATURE Sparse infill"),
             "custom type annotation not rendered: {gcode}"
         );
     }

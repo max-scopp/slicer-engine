@@ -13,10 +13,12 @@ use crate::settings::params::SlicingParams;
 /// carries a default extrusion width for that role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExtrusionRole {
-    /// Outer or inner perimeter / wall contour (default role).
+    /// Outermost perimeter / wall contour (default role).
     #[default]
-    Perimeter,
-    /// Sparse infill pattern.
+    OuterWall,
+    /// Inner perimeter / wall contours.
+    InnerWall,
+    /// Sparse infill pattern (low-density interior fill).
     Infill,
     /// Bridge extrusion spanning a gap with no support below.
     Bridge,
@@ -33,18 +35,19 @@ pub enum ExtrusionRole {
 impl ExtrusionRole {
     /// The `;TYPE:` label emitted in G-code comments for this role.
     ///
-    /// Strings match the PrusaSlicer / OrcaSlicer convention so that slicer
-    /// previews colour and classify paths correctly.  Any unrecognised string
-    /// would be shown as *Undefined* in OrcaSlicer's G-code viewer.
+    /// Strings match the OrcaSlicer convention exactly so that G-code previews
+    /// colour and classify paths correctly.  Any unrecognised string would be
+    /// shown as *Undefined* in OrcaSlicer's G-code viewer.
     pub fn type_name(self) -> &'static str {
         match self {
-            Self::Perimeter => "Perimeter",
-            Self::Infill => "Internal infill",
-            Self::Bridge => "Bridge infill",
-            Self::TopSurface => "Top solid infill",
-            Self::BottomSurface => "Solid infill",
+            Self::OuterWall => "Outer wall",
+            Self::InnerWall => "Inner wall",
+            Self::Infill => "Sparse infill",
+            Self::Bridge => "Bridge",
+            Self::TopSurface => "Top surface",
+            Self::BottomSurface => "Bottom surface",
             Self::Support => "Support material",
-            Self::Skirt => "Skirt/Brim",
+            Self::Skirt => "Skirt",
         }
     }
 
@@ -53,7 +56,8 @@ impl ExtrusionRole {
     /// Used to populate the `;WIDTH:` annotation in the G-code output.
     pub fn default_width_mm(self) -> f64 {
         match self {
-            Self::Perimeter
+            Self::OuterWall
+            | Self::InnerWall
             | Self::Infill
             | Self::Bridge
             | Self::TopSurface
@@ -74,7 +78,7 @@ pub struct SliceLayer {
     /// Extrusion role for each path in [`SliceLayer::paths`].
     ///
     /// `path_roles[i]` is the role of `paths[i]`.  If shorter than `paths`,
-    /// the remaining paths default to [`ExtrusionRole::Perimeter`].
+    /// the remaining paths default to [`ExtrusionRole::OuterWall`].
     pub path_roles: Vec<ExtrusionRole>,
     /// Per-path extrusion width override in mm.
     ///
@@ -97,7 +101,7 @@ impl SliceLayer {
 
     /// Return the extrusion role for path index `i`.
     ///
-    /// Falls back to [`ExtrusionRole::Perimeter`] when `path_roles` has no
+    /// Falls back to [`ExtrusionRole::OuterWall`] when `path_roles` has no
     /// entry for the given index.
     pub fn role_for_path(&self, i: usize) -> ExtrusionRole {
         self.path_roles.get(i).copied().unwrap_or_default()
@@ -192,7 +196,7 @@ pub fn slice_mesh(mesh: &Mesh, layer_height: f64) -> Vec<SliceLayer> {
             if contour.len() >= 3 {
                 let path: Path = contour.into();
                 layer.paths.push(path);
-                layer.path_roles.push(ExtrusionRole::Perimeter);
+                layer.path_roles.push(ExtrusionRole::OuterWall);
             }
         }
 
@@ -551,7 +555,7 @@ pub fn generate_top_bottom_surfaces(
     }
 }
 
-/// Extract only [`ExtrusionRole::Perimeter`] paths from a layer.
+/// Extract only wall (perimeter) paths from a layer.
 ///
 /// Used to snapshot slice contours before infill is added, so that surface
 /// detection compares geometry, not previously-generated infill.
@@ -561,7 +565,10 @@ fn perimeter_paths_of(layer: &SliceLayer) -> Paths {
             .paths
             .iter()
             .enumerate()
-            .filter(|(i, _)| layer.role_for_path(*i) == ExtrusionRole::Perimeter)
+            .filter(|(i, _)| {
+                let role = layer.role_for_path(*i);
+                role == ExtrusionRole::OuterWall || role == ExtrusionRole::InnerWall
+            })
             .map(|(_, p)| p.clone())
             .collect(),
     )
@@ -768,9 +775,9 @@ mod tests {
     #[test]
     fn test_slice_layer_role_for_path_default() {
         let layer = SliceLayer::new(1.0);
-        // No roles set → should fall back to Perimeter
-        assert_eq!(layer.role_for_path(0), ExtrusionRole::Perimeter);
-        assert_eq!(layer.role_for_path(99), ExtrusionRole::Perimeter);
+        // No roles set → should fall back to OuterWall
+        assert_eq!(layer.role_for_path(0), ExtrusionRole::OuterWall);
+        assert_eq!(layer.role_for_path(99), ExtrusionRole::OuterWall);
     }
 
     #[test]
@@ -780,25 +787,27 @@ mod tests {
         layer.path_roles.push(ExtrusionRole::Infill);
         assert_eq!(layer.role_for_path(0), ExtrusionRole::Skirt);
         assert_eq!(layer.role_for_path(1), ExtrusionRole::Infill);
-        // Out of bounds → Perimeter default
-        assert_eq!(layer.role_for_path(2), ExtrusionRole::Perimeter);
+        // Out of bounds → OuterWall default
+        assert_eq!(layer.role_for_path(2), ExtrusionRole::OuterWall);
     }
 
     #[test]
     fn test_extrusion_role_type_names() {
-        assert_eq!(ExtrusionRole::Perimeter.type_name(), "Perimeter");
-        assert_eq!(ExtrusionRole::Infill.type_name(), "Internal infill");
-        assert_eq!(ExtrusionRole::Bridge.type_name(), "Bridge infill");
-        assert_eq!(ExtrusionRole::TopSurface.type_name(), "Top solid infill");
-        assert_eq!(ExtrusionRole::BottomSurface.type_name(), "Solid infill");
+        assert_eq!(ExtrusionRole::OuterWall.type_name(), "Outer wall");
+        assert_eq!(ExtrusionRole::InnerWall.type_name(), "Inner wall");
+        assert_eq!(ExtrusionRole::Infill.type_name(), "Sparse infill");
+        assert_eq!(ExtrusionRole::Bridge.type_name(), "Bridge");
+        assert_eq!(ExtrusionRole::TopSurface.type_name(), "Top surface");
+        assert_eq!(ExtrusionRole::BottomSurface.type_name(), "Bottom surface");
         assert_eq!(ExtrusionRole::Support.type_name(), "Support material");
-        assert_eq!(ExtrusionRole::Skirt.type_name(), "Skirt/Brim");
+        assert_eq!(ExtrusionRole::Skirt.type_name(), "Skirt");
     }
 
     #[test]
     fn test_extrusion_role_widths_positive() {
         for role in [
-            ExtrusionRole::Perimeter,
+            ExtrusionRole::OuterWall,
+            ExtrusionRole::InnerWall,
             ExtrusionRole::Infill,
             ExtrusionRole::Bridge,
             ExtrusionRole::TopSurface,
@@ -827,8 +836,8 @@ mod tests {
             for role in &layer.path_roles {
                 assert_eq!(
                     *role,
-                    ExtrusionRole::Perimeter,
-                    "slice_mesh assigns Perimeter"
+                    ExtrusionRole::OuterWall,
+                    "slice_mesh assigns OuterWall"
                 );
             }
         }
@@ -1117,7 +1126,7 @@ mod tests {
 
     #[test]
     fn test_extrusion_role_bottom_surface() {
-        assert_eq!(ExtrusionRole::BottomSurface.type_name(), "Solid infill");
+        assert_eq!(ExtrusionRole::BottomSurface.type_name(), "Bottom surface");
         assert!(ExtrusionRole::BottomSurface.default_width_mm() > 0.0);
     }
 
@@ -1212,7 +1221,7 @@ mod tests {
             let mut layer = SliceLayer::new(z);
             let path: Path = vec![(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)].into();
             layer.paths.push(path);
-            layer.path_roles.push(ExtrusionRole::Perimeter);
+            layer.path_roles.push(ExtrusionRole::OuterWall);
             layer
         };
 
@@ -1261,7 +1270,7 @@ mod tests {
             let mut layer = SliceLayer::new(z);
             let path: Path = vec![(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)].into();
             layer.paths.push(path);
-            layer.path_roles.push(ExtrusionRole::Perimeter);
+            layer.path_roles.push(ExtrusionRole::OuterWall);
             layer
         };
 
@@ -1344,9 +1353,9 @@ mod tests {
         let hole: Path = vec![(3.0, 3.0), (7.0, 3.0), (7.0, 7.0), (3.0, 7.0)].into();
 
         layer.paths.push(outer);
-        layer.path_roles.push(ExtrusionRole::Perimeter);
+        layer.path_roles.push(ExtrusionRole::OuterWall);
         layer.paths.push(hole);
-        layer.path_roles.push(ExtrusionRole::Perimeter);
+        layer.path_roles.push(ExtrusionRole::OuterWall);
 
         // Create a simple 1-layer setup
         let mut layers = vec![layer];

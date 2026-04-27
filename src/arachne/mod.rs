@@ -73,13 +73,15 @@ pub struct Bead {
     pub path: Path,
     /// Extrusion width in mm for this bead.
     pub width_mm: f64,
+    /// True if this is the outermost wall bead, false for inner walls.
+    pub is_outer: bool,
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Generate Arachne variable-width wall paths for every layer.
 ///
-/// Replaces the raw mesh-contour [`ExtrusionRole::Perimeter`] paths in each
+/// Replaces the raw mesh-contour [`ExtrusionRole::OuterWall`] paths in each
 /// layer with properly generated variable-width perimeter beads.  All
 /// non-perimeter paths (top/bottom surface infill, sparse infill, etc.) are
 /// preserved in their original order after the new wall paths.
@@ -103,7 +105,10 @@ fn generate_arachne_walls_for_layer(layer: &mut SliceLayer, params: &ArachnePara
         .paths
         .iter()
         .enumerate()
-        .filter(|(i, _)| layer.role_for_path(*i) == ExtrusionRole::Perimeter)
+        .filter(|(i, _)| {
+            let role = layer.role_for_path(*i);
+            role == ExtrusionRole::OuterWall || role == ExtrusionRole::InnerWall
+        })
         .map(|(_, p)| p.clone())
         .collect();
 
@@ -116,7 +121,10 @@ fn generate_arachne_walls_for_layer(layer: &mut SliceLayer, params: &ArachnePara
         .paths
         .iter()
         .enumerate()
-        .filter(|(i, _)| layer.role_for_path(*i) != ExtrusionRole::Perimeter)
+        .filter(|(i, _)| {
+            let role = layer.role_for_path(*i);
+            role != ExtrusionRole::OuterWall && role != ExtrusionRole::InnerWall
+        })
         .map(|(i, p)| (p.clone(), layer.role_for_path(i), layer.width_for_path(i)))
         .collect();
 
@@ -131,7 +139,12 @@ fn generate_arachne_walls_for_layer(layer: &mut SliceLayer, params: &ArachnePara
 
     for bead in beads {
         layer.paths.push(bead.path);
-        layer.path_roles.push(ExtrusionRole::Perimeter);
+        let role = if bead.is_outer {
+            ExtrusionRole::OuterWall
+        } else {
+            ExtrusionRole::InnerWall
+        };
+        layer.path_roles.push(role);
         layer.path_widths.push(Some(bead.width_mm));
     }
 
@@ -257,6 +270,7 @@ pub fn compute_arachne_beads(input: &Paths, params: &ArachneParams) -> Vec<Bead>
             beads.push(Bead {
                 path: p.clone(),
                 width_mm: d,
+                is_outer: k == 0,  // First bead is outer wall
             });
         }
     }
@@ -299,6 +313,7 @@ pub fn compute_arachne_beads(input: &Paths, params: &ArachneParams) -> Vec<Bead>
             beads.push(Bead {
                 path: p.clone(),
                 width_mm: width,
+                is_outer: n_fit == 0,  // Outer if this is the only bead
             });
         }
     } else if geometry_limited && remaining_width > 0.0 && !beads.is_empty() {
@@ -341,6 +356,7 @@ pub fn compute_arachne_beads(input: &Paths, params: &ArachneParams) -> Vec<Bead>
                 beads.push(Bead {
                     path: p.clone(),
                     width_mm: new_width,
+                    is_outer: k == 0,  // First bead is outer wall
                 });
             }
         }
@@ -474,7 +490,7 @@ mod tests {
         // Add a 10×10 square as a raw perimeter.
         let sq: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
         layer.paths.push(sq);
-        layer.path_roles.push(ExtrusionRole::Perimeter);
+        layer.path_roles.push(ExtrusionRole::OuterWall);
         layer.path_widths.push(None);
 
         let params = ArachneParams::from_slicing_params(&SlicingParams::default());
@@ -484,12 +500,17 @@ mod tests {
             !layer.paths.is_empty(),
             "layer should have paths after Arachne"
         );
-        // All resulting paths should be Perimeter role.
-        for i in 0..layer.paths.len() {
+        // First path should be OuterWall, rest should be InnerWall.
+        assert_eq!(
+            layer.role_for_path(0),
+            ExtrusionRole::OuterWall,
+            "first path should be OuterWall"
+        );
+        for i in 1..layer.paths.len() {
             assert_eq!(
                 layer.role_for_path(i),
-                ExtrusionRole::Perimeter,
-                "path {i} should have Perimeter role"
+                ExtrusionRole::InnerWall,
+                "path {i} should be InnerWall"
             );
         }
         // path_widths should be set for all paths.
@@ -513,7 +534,7 @@ mod tests {
         // A perimeter path.
         let sq: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
         layer.paths.push(sq.clone());
-        layer.path_roles.push(ExtrusionRole::Perimeter);
+        layer.path_roles.push(ExtrusionRole::OuterWall);
         layer.path_widths.push(None);
 
         // A top-surface path that must survive.
@@ -541,7 +562,7 @@ mod tests {
                 let mut layer = SliceLayer::new(0.2 * (i as f64 + 1.0));
                 let sq: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
                 layer.paths.push(sq);
-                layer.path_roles.push(ExtrusionRole::Perimeter);
+                layer.path_roles.push(ExtrusionRole::OuterWall);
                 layer.path_widths.push(None);
                 layer
             })
