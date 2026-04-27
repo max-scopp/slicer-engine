@@ -262,11 +262,6 @@ pub fn process_mesh(
         logger.log_debug("surface generation complete");
     }
 
-    // Before generating walls, subtract solid surface regions from perimeters
-    // so that walls don't overlap with top/bottom surfaces.
-    logger.log_debug("subtracting solid surfaces from perimeters");
-    subtract_solid_surfaces_from_perimeters(&mut layers);
-
     // Replace the raw mesh-contour perimeters with Arachne variable-width
     // wall paths.  Non-perimeter paths (top/bottom surface infill) are
     // preserved.
@@ -277,6 +272,15 @@ pub fn process_mesh(
     let arachne_params = crate::arachne::ArachneParams::from_slicing_params(params);
     crate::arachne::generate_arachne_walls(&mut layers, &arachne_params);
     logger.log_debug("Arachne wall generation complete");
+
+    // TODO: After generating walls, trim solid surface regions to fit inside walls.
+    // Currently disabled because surfaces are generated as open line paths which
+    // don't intersect well with polygon regions. Need to either:
+    // 1. Generate surfaces AFTER walls (in the interior region), or
+    // 2. Use a different clipping approach for open paths
+    //
+    // logger.log_debug("trimming surfaces to walls");
+    // trim_surfaces_to_walls(&mut layers, params.infill_overlap_percent, params.nozzle_diameter_mm);
 
     layers
 }
@@ -560,54 +564,115 @@ pub fn generate_top_bottom_surfaces(
     }
 }
 
-/// Subtract solid surface regions from perimeter paths in each layer.
+/// Trim solid surface regions to fit inside walls, with configurable overlap.
 ///
-/// After top/bottom surface generation, the original perimeter contours still
-/// cover the entire layer footprint, including areas where solid top/bottom
-/// infill was added.  This function subtracts those solid regions from the
-/// perimeters so that wall generation (Arachne) doesn't place walls over
-/// solid surfaces.
-fn subtract_solid_surfaces_from_perimeters(layers: &mut [SliceLayer]) {
+/// **NOTE**: This function is currently not fully working because surfaces are
+/// generated as open line segments (infill lines), not closed regions. Boolean
+/// operations like intersect() don't work reliably with open paths. A better
+/// approach would be to generate surfaces AFTER walls, directly in the interior
+/// region, rather than trying to trim them post-hoc.
+///
+/// After Arachne wall generation, the solid top/bottom surface infill paths may
+/// overlap with the generated walls. This function attempts to ensure surfaces
+/// are printed in the interior region defined by the innermost walls, while
+/// maintaining a small configurable overlap for bonding.
+///
+/// # Arguments
+/// * `layers` - Mutable reference to all layers
+/// * `overlap_percent` - How much surfaces overlap into walls (0.0-1.0, e.g., 0.25 = 25%)
+/// * `nozzle_diameter` - Nozzle diameter in mm, used to calculate overlap distance
+#[allow(dead_code)] // Currently disabled, but kept for future implementation
+fn trim_surfaces_to_walls(
+    layers: &mut [SliceLayer],
+    overlap_percent: f64,
+    nozzle_diameter: f64,
+) {
+    // Calculate overlap as a distance in mm
+    let overlap_distance = nozzle_diameter * overlap_percent;
+
     for layer in layers.iter_mut() {
-        // Collect solid surface regions (TopSurface and BottomSurface paths).
-        let solid_regions: Vec<Path> = layer
+        // Collect all wall paths (OuterWall and InnerWall).
+        let wall_paths: Vec<Path> = layer
             .paths
             .iter()
             .enumerate()
             .filter(|(i, _)| {
                 let role = layer.role_for_path(*i);
-                role == ExtrusionRole::TopSurface || role == ExtrusionRole::BottomSurface
+                role == ExtrusionRole::OuterWall || role == ExtrusionRole::InnerWall
             })
             .map(|(_, p)| p.clone())
             .collect();
 
-        if solid_regions.is_empty() {
+        if wall_paths.is_empty() {
+            // No walls, leave surfaces as-is
             continue;
         }
 
-        let solid_paths = Paths::new(solid_regions);
+        // Create interior region by shrinking walls inward
+        // The interior is where surfaces should be printed
+        let walls = Paths::new(wall_paths);
+        
+        // Deflate (shrink) walls to create interior region
+        // Use negative inflation to shrink inward
+        // Shrink by (nozzle_diameter/2 - overlap_distance) to leave the overlap
+        let shrink_amount = (nozzle_diameter / 2.0) - overlap_distance;
+        let interior_region = if shrink_amount > 0.01 {
+            // Shrink walls to define interior
+            clipper2::inflate(
+                walls, 
+                -shrink_amount * 100.0, // Negative = deflate, convert to Centi
+                JoinType::Round, 
+                EndType::Polygon, 
+                2.0
+            )
+        } else {
+            // If shrink amount is too small, just use the walls as-is
+            walls
+        };
 
-        // Subtract solid regions from all perimeter paths.
+        if interior_region.is_empty() {
+            // Walls collapsed completely, remove all surfaces
+            let mut new_paths = Paths::new(vec![]);
+            let mut new_roles = Vec::new();
+            let mut new_widths = Vec::new();
+
+            for (i, path) in layer.paths.iter().enumerate() {
+                let role = layer.role_for_path(i);
+                if role != ExtrusionRole::TopSurface && role != ExtrusionRole::BottomSurface {
+                    // Keep non-surface paths
+                    new_paths.push(path.clone());
+                    new_roles.push(role);
+                    new_widths.push(layer.width_for_path(i));
+                }
+            }
+
+            layer.paths = new_paths;
+            layer.path_roles = new_roles;
+            layer.path_widths = new_widths;
+            continue;
+        }
+
+        // Now intersect surface paths with the interior region
         let mut new_paths = Paths::new(vec![]);
         let mut new_roles = Vec::new();
         let mut new_widths = Vec::new();
 
         for (i, path) in layer.paths.iter().enumerate() {
             let role = layer.role_for_path(i);
-            if role == ExtrusionRole::OuterWall || role == ExtrusionRole::InnerWall {
-                // Subtract solid regions from this perimeter path.
+            if role == ExtrusionRole::TopSurface || role == ExtrusionRole::BottomSurface {
+                // Intersect this surface path with the interior region
                 let path_as_paths = Paths::new(vec![path.clone()]);
-                let subtracted = difference(path_as_paths, solid_paths.clone(), FillRule::EvenOdd)
+                let trimmed = intersect(path_as_paths, interior_region.clone(), FillRule::EvenOdd)
                     .unwrap_or_default();
 
                 // Add all resulting paths (may be split into multiple pieces).
-                for p in subtracted.iter() {
+                for p in trimmed.iter() {
                     new_paths.push(p.clone());
                     new_roles.push(role);
                     new_widths.push(layer.width_for_path(i));
                 }
             } else {
-                // Keep non-perimeter paths as-is.
+                // Keep non-surface paths as-is (including walls).
                 new_paths.push(path.clone());
                 new_roles.push(role);
                 new_widths.push(layer.width_for_path(i));
