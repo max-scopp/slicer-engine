@@ -229,7 +229,13 @@ const COLLAPSE_DEPTH_ITERATIONS: usize = 24;
 /// Inward-offset helper: shrink `input` by `depth` and simplify.
 fn shrink(input: &Paths, depth: f64, tol: f64) -> Paths {
     simplify(
-        inflate(input.clone(), -depth, JoinType::Round, EndType::Polygon, 2.0),
+        inflate(
+            input.clone(),
+            -depth,
+            JoinType::Round,
+            EndType::Polygon,
+            2.0,
+        ),
         tol,
         false,
     )
@@ -270,7 +276,7 @@ pub fn compute_arachne_beads(input: &Paths, params: &ArachneParams) -> Vec<Bead>
             beads.push(Bead {
                 path: p.clone(),
                 width_mm: d,
-                is_outer: k == 0,  // First bead is outer wall
+                is_outer: k == 0, // First bead is outer wall
             });
         }
     }
@@ -313,7 +319,7 @@ pub fn compute_arachne_beads(input: &Paths, params: &ArachneParams) -> Vec<Bead>
             beads.push(Bead {
                 path: p.clone(),
                 width_mm: width,
-                is_outer: n_fit == 0,  // Outer if this is the only bead
+                is_outer: n_fit == 0, // Outer if this is the only bead
             });
         }
     } else if geometry_limited && remaining_width > 0.0 && !beads.is_empty() {
@@ -356,7 +362,7 @@ pub fn compute_arachne_beads(input: &Paths, params: &ArachneParams) -> Vec<Bead>
                 beads.push(Bead {
                     path: p.clone(),
                     width_mm: new_width,
-                    is_outer: k == 0,  // First bead is outer wall
+                    is_outer: k == 0, // First bead is outer wall
                 });
             }
         }
@@ -379,13 +385,7 @@ mod tests {
 
     fn square_paths(side: f64) -> Paths {
         let half = side / 2.0;
-        let sq: Path = vec![
-            (-half, -half),
-            (half, -half),
-            (half, half),
-            (-half, half),
-        ]
-        .into();
+        let sq: Path = vec![(-half, -half), (half, -half), (half, half), (-half, half)].into();
         Paths::new(vec![sq])
     }
 
@@ -520,10 +520,7 @@ mod tests {
             "path_widths should have one entry per path"
         );
         for w in &layer.path_widths {
-            assert!(
-                w.is_some(),
-                "Arachne paths must have an explicit width set"
-            );
+            assert!(w.is_some(), "Arachne paths must have an explicit width set");
         }
     }
 

@@ -359,8 +359,8 @@ impl GcodeGenerator {
                 // see an up-to-date WIDTH comment before each Arachne bead.
                 if self.marker_config.enabled {
                     let role_changed = last_role != Some(role);
-                    let width_changed = last_width
-                        .is_none_or(|w| (w - width_mm).abs() > WIDTH_EPSILON);
+                    let width_changed =
+                        last_width.is_none_or(|w| (w - width_mm).abs() > WIDTH_EPSILON);
 
                     if role_changed || width_changed {
                         let type_name = role.type_name();
@@ -409,7 +409,8 @@ impl GcodeGenerator {
                 ));
                 out.push_str(&format!(
                     "{} ; z-hop\n",
-                    self.dialect.move_z(layer.z + params.z_hop_mm, params.travel_speed_mm_min)
+                    self.dialect
+                        .move_z(layer.z + params.z_hop_mm, params.travel_speed_mm_min)
                 ));
                 out.push_str(&format!(
                     "{} ; travel\n",

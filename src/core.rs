@@ -561,7 +561,7 @@ pub fn generate_top_bottom_surfaces_with_interior(
 
             let mut region =
                 difference(perimeters[i].clone(), covered, FillRule::EvenOdd).unwrap_or_default();
-            
+
             // If interior regions are provided, clip surface to interior (inside walls)
             // Skip surface if interior region is empty or too small
             if let Some(interior_regions) = interior_regions {
@@ -574,7 +574,7 @@ pub fn generate_top_bottom_surfaces_with_interior(
                         .unwrap_or_default();
                 }
             }
-            
+
             if !region.is_empty() {
                 add_solid_infill_for_region(
                     &mut layers[i],
@@ -618,8 +618,8 @@ pub fn generate_top_bottom_surfaces_with_interior(
 
             // Subtract bottom_region to avoid overlap
             if !bottom_region.is_empty() && !top_region.is_empty() {
-                top_region = difference(top_region, bottom_region, FillRule::EvenOdd)
-                    .unwrap_or_default();
+                top_region =
+                    difference(top_region, bottom_region, FillRule::EvenOdd).unwrap_or_default();
             }
 
             // If interior regions are provided, clip surface to interior (inside walls)
@@ -630,8 +630,9 @@ pub fn generate_top_bottom_surfaces_with_interior(
                     // Skip surface generation entirely
                     top_region = Paths::new(vec![]);
                 } else if !top_region.is_empty() {
-                    top_region = intersect(top_region, interior_regions[i].clone(), FillRule::EvenOdd)
-                        .unwrap_or_default();
+                    top_region =
+                        intersect(top_region, interior_regions[i].clone(), FillRule::EvenOdd)
+                            .unwrap_or_default();
                 }
             }
 
@@ -666,11 +667,7 @@ pub fn generate_top_bottom_surfaces_with_interior(
 /// * `overlap_percent` - How much surfaces overlap into walls (0.0-1.0, e.g., 0.25 = 25%)
 /// * `nozzle_diameter` - Nozzle diameter in mm, used to calculate overlap distance
 #[allow(dead_code)] // Currently disabled, but kept for future implementation
-fn trim_surfaces_to_walls(
-    layers: &mut [SliceLayer],
-    overlap_percent: f64,
-    nozzle_diameter: f64,
-) {
+fn trim_surfaces_to_walls(layers: &mut [SliceLayer], overlap_percent: f64, nozzle_diameter: f64) {
     // Calculate overlap as a distance in mm
     let overlap_distance = nozzle_diameter * overlap_percent;
 
@@ -695,7 +692,7 @@ fn trim_surfaces_to_walls(
         // Create interior region by shrinking walls inward
         // The interior is where surfaces should be printed
         let walls = Paths::new(wall_paths);
-        
+
         // Deflate (shrink) walls to create interior region
         // Use negative inflation to shrink inward
         // Shrink by (nozzle_diameter/2 - overlap_distance) to leave the overlap
@@ -703,11 +700,11 @@ fn trim_surfaces_to_walls(
         let interior_region = if shrink_amount > 0.01 {
             // Shrink walls to define interior
             clipper2::inflate(
-                walls, 
+                walls,
                 -shrink_amount * 100.0, // Negative = deflate, convert to Centi
-                JoinType::Round, 
-                EndType::Polygon, 
-                2.0
+                JoinType::Round,
+                EndType::Polygon,
+                2.0,
             )
         } else {
             // If shrink amount is too small, just use the walls as-is
@@ -776,10 +773,7 @@ fn trim_surfaces_to_walls(
 /// 2. Last layer of top surface runs if only_one_wall_top is true
 ///
 /// Inner walls are removed from these layers, leaving only outer walls.
-fn apply_single_wall_restrictions(
-    layers: &mut [SliceLayer],
-    params: &SlicingParams,
-) {
+fn apply_single_wall_restrictions(layers: &mut [SliceLayer], params: &SlicingParams) {
     if layers.is_empty() {
         return;
     }
@@ -798,8 +792,7 @@ fn apply_single_wall_restrictions(
         for i in 0..layers.len() {
             let has_top_surface = layers[i]
                 .path_roles
-                .iter()
-                .any(|role| *role == ExtrusionRole::TopSurface);
+                .contains(&ExtrusionRole::TopSurface);
 
             if has_top_surface {
                 // We're in a top surface run
@@ -844,97 +837,149 @@ fn remove_inner_walls_from_layer(layer: &mut SliceLayer) {
     layer.path_widths = new_widths;
 }
 
-/// Calculate interior regions from generated walls with configurable overlap.
+/// Calculate the interior region of a layer where solid surfaces should be
+/// printed (i.e. the area enclosed by the **innermost** wall of every island,
+/// shrunk slightly to leave the configured overlap between surface and wall).
 ///
-/// Takes the generated wall paths and deflates them inward to create the
-/// interior region where surfaces/infill should be printed. The overlap
-/// parameter controls how much surfaces extend into the walls for bonding.
+/// # Why this is non-trivial with Arachne walls
 ///
-/// Returns an empty Paths if the interior region collapses completely,
-/// indicating that walls fill the entire cross-section.
+/// Arachne emits each wall as a **centerline path** (not a filled polygon),
+/// often with variable width per bead.  Inflating each centerline by `width/2`
+/// with `EndType::Polygon` produces a *filled* polygon (Clipper2 treats the
+/// closed centerline as the polygon boundary), and N concentric walls become
+/// N nested filled polygons.
 ///
-/// # Arguments
-/// * `layer` - Layer containing generated wall paths
-/// * `overlap_percent` - How much surfaces overlap into walls (0.0-1.0)
-/// * `nozzle_diameter` - Nozzle diameter in mm
+/// Two correctness pitfalls have to be addressed:
 ///
-/// # Returns
-/// Interior region as Paths where surfaces should be generated, or empty if
-/// walls completely fill the space
+/// 1. **Fill rule.**  Unioning N nested polygons with `FillRule::EvenOdd`
+///    produces an alternating in/out pattern: with 3 walls the band between
+///    the outer and middle walls counts as "inside" (1 boundary crossing),
+///    the band between middle and inner counts as "outside" (2), and the
+///    central hole counts as "inside" (3).  Using that as the surface mask
+///    therefore generates surfaces **between concentric walls** – exactly the
+///    bug we are fixing.  We use `FillRule::NonZero` instead, where nested
+///    polygons of the same winding combine into a single solid extent.
+///
+/// 2. **Winding consistency.**  The mesh slicer (`chain_segments`) does not
+///    enforce a consistent winding direction for inner contours, and Arachne
+///    inherits that.  With `NonZero` plus mixed CW/CCW windings, opposite
+///    windings cancel and the union develops phantom holes between walls
+///    again.  We therefore **normalise every wall path to CCW** (positive
+///    signed area in Clipper2's convention) before unioning.
+///
+/// # Strategy
+///
+/// 1. Normalise every wall centerline to CCW.
+/// 2. Inflate each by its own half-width with `JoinType::Round` /
+///    `EndType::Polygon`, yielding a filled polygon per wall.
+/// 3. Union them all with `FillRule::NonZero` so nested polygons combine into
+///    a single solid outer extent (≈ the original sliced contour grown by
+///    half the outer wall's width).
+/// 4. Deflate that outer extent inward by the **total wall-band thickness**
+///    (`walls_per_island × nozzle_diameter`) minus the configured overlap,
+///    yielding the true interior hole inside the innermost wall.
+///
+/// `walls_per_island` is estimated as `ceil(total_walls / outer_wall_count)`
+/// so it correctly reflects single-wall layers (e.g. when
+/// `only_one_wall_first_layer` removes inner walls) and multi-island parts.
+///
+/// Returns an empty `Paths` when the interior collapses, signalling that
+/// walls alone fill the cross-section and no surfaces are needed (the
+/// "smart-skip" outcome).
 fn calculate_interior_region(
     layer: &SliceLayer,
     overlap_percent: f64,
     nozzle_diameter: f64,
 ) -> Paths {
-    // Collect all wall paths with their widths
-    let wall_data: Vec<(Path, f64)> = layer
+    // Collect (path, width, is_outer) for every wall in the layer, after
+    // normalising winding to CCW (positive signed area).
+    let walls: Vec<(Path, f64, bool)> = layer
         .paths
         .iter()
         .enumerate()
-        .filter(|(i, _)| {
-            let role = layer.role_for_path(*i);
-            role == ExtrusionRole::OuterWall || role == ExtrusionRole::InnerWall
-        })
-        .map(|(i, p)| {
-            let width = layer.width_for_path(i).unwrap_or(nozzle_diameter);
-            (p.clone(), width)
+        .filter_map(|(i, p)| {
+            let role = layer.role_for_path(i);
+            match role {
+                ExtrusionRole::OuterWall | ExtrusionRole::InnerWall => {
+                    let width = layer.width_for_path(i).unwrap_or(nozzle_diameter);
+                    let normalised = if p.signed_area() < 0.0 {
+                        // Reverse to make CCW so subsequent NonZero union is
+                        // consistent across all walls regardless of source
+                        // winding.
+                        Path::new(p.iter().copied().rev().collect())
+                    } else {
+                        p.clone()
+                    };
+                    Some((normalised, width, role == ExtrusionRole::OuterWall))
+                }
+                _ => None,
+            }
         })
         .collect();
 
-    if wall_data.is_empty() {
+    if walls.is_empty() {
         return Paths::new(vec![]);
     }
 
-    // Convert wall centerlines to polygons by inflating by half their width
-    // Then union them all together to get the total wall region
-    let mut wall_region = Paths::new(vec![]);
-    for (path, width) in wall_data {
-        let path_as_paths = Paths::new(vec![path]);
+    // Step 2+3: build the outer extent = NonZero union of every wall inflated
+    // by half its bead width.  NonZero (with consistent CCW winding) makes
+    // nested polygons combine into a single solid region instead of producing
+    // alternating in/out bands.
+    let mut outer_extent = Paths::new(vec![]);
+    for (path, width, _) in &walls {
         let inflated = clipper2::inflate(
-            path_as_paths,
-            (width / 2.0) * 100.0, // Half width to go from centerline to polygon
+            Paths::new(vec![path.clone()]),
+            width / 2.0,
             JoinType::Round,
             EndType::Polygon,
             2.0,
         );
-        
-        if wall_region.is_empty() {
-            wall_region = inflated;
-        } else if !inflated.is_empty() {
-            wall_region = clipper2::union(wall_region.clone(), inflated, FillRule::EvenOdd)
-                .unwrap_or(wall_region);
+        if inflated.is_empty() {
+            continue;
         }
+        outer_extent = if outer_extent.is_empty() {
+            inflated
+        } else {
+            clipper2::union(outer_extent.clone(), inflated, FillRule::NonZero)
+                .unwrap_or(outer_extent)
+        };
     }
-    
-    if wall_region.is_empty() {
+
+    if outer_extent.is_empty() {
         return Paths::new(vec![]);
     }
-    
-    // Now deflate the wall region inward to create the interior
-    // Deflate by (width/2 - overlap) to leave the desired overlap
+
+    // Estimate walls per island so we know how far inward to deflate.  Using
+    // ceil(total / outer_count) handles parts with multiple OuterWalls
+    // (multiple islands) and layers where inner walls were stripped (e.g. the
+    // first layer with only_one_wall_first_layer = true) without overshoot.
+    let outer_count = walls
+        .iter()
+        .filter(|(_, _, is_outer)| *is_outer)
+        .count()
+        .max(1);
+    let walls_per_island = walls.len().div_ceil(outer_count);
+
+    // Total inward distance from the outer extent to the inside of the
+    // innermost wall ≈ walls_per_island × nozzle_diameter.  Subtract the
+    // configured overlap so surfaces still bond to the innermost wall.
     let overlap_distance = nozzle_diameter * overlap_percent;
-    let shrink_amount = (nozzle_diameter / 2.0) - overlap_distance;
-    
-    if shrink_amount < 0.01 {
-        // Overlap is too large - use minimal shrink
-        let minimal_shrink = 0.05;
-        clipper2::inflate(
-            wall_region,
-            -minimal_shrink * 100.0,
-            JoinType::Round,
-            EndType::Polygon,
-            2.0,
-        )
-    } else {
-        // Normal case: deflate by calculated amount
-        clipper2::inflate(
-            wall_region,
-            -shrink_amount * 100.0,
-            JoinType::Round,
-            EndType::Polygon,
-            2.0,
-        )
+    let total_inward = (walls_per_island as f64) * nozzle_diameter - overlap_distance;
+
+    if total_inward < 0.01 {
+        // Pathological: nothing to deflate – return the outer extent as-is.
+        return outer_extent;
     }
+
+    // Empty result here is the correct "smart-skip" signal: walls fill the
+    // entire cross-section and no surface should be generated.
+    clipper2::inflate(
+        outer_extent,
+        -total_inward,
+        JoinType::Round,
+        EndType::Polygon,
+        2.0,
+    )
 }
 
 /// Extract only wall (perimeter) paths from a layer.
@@ -1016,20 +1061,22 @@ fn generate_rectilinear_infill(contours: &Paths, line_spacing: f64, angle_degree
     let sin_a = angle_rad.sin();
 
     // Rotate point (x, y) by -angle so infill direction aligns with the X axis
-    let rotate_neg = |x: f64, y: f64| -> (f64, f64) {
-        (x * cos_a + y * sin_a, -x * sin_a + y * cos_a)
-    };
+    let rotate_neg =
+        |x: f64, y: f64| -> (f64, f64) { (x * cos_a + y * sin_a, -x * sin_a + y * cos_a) };
     // Rotate point (x, y) by +angle to recover the original coordinate system
-    let rotate_pos = |x: f64, y: f64| -> (f64, f64) {
-        (x * cos_a - y * sin_a, x * sin_a + y * cos_a)
-    };
+    let rotate_pos =
+        |x: f64, y: f64| -> (f64, f64) { (x * cos_a - y * sin_a, x * sin_a + y * cos_a) };
 
     // Collect rotated polygon vertices for every contour path
     let rotated_polys: Vec<Vec<(f64, f64)>> = contours
         .iter()
         .filter_map(|path| {
             let pts: Vec<(f64, f64)> = path.iter().map(|pt| rotate_neg(pt.x(), pt.y())).collect();
-            if pts.len() >= 2 { Some(pts) } else { None }
+            if pts.len() >= 2 {
+                Some(pts)
+            } else {
+                None
+            }
         })
         .collect();
 
@@ -1469,8 +1516,7 @@ mod tests {
     fn test_infill_clipped_to_contour() {
         // Verify that infill lines are clipped to the contour and don't extend
         // beyond the bounding box of the given paths.
-        let square: Path =
-            vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
         let mut paths = Paths::new(vec![]);
         paths.push(square);
 
@@ -1540,6 +1586,75 @@ mod tests {
         assert!(layers[last_idx]
             .path_roles
             .contains(&ExtrusionRole::TopSurface));
+    }
+
+    /// Regression test for the "surfaces between walls" bug.
+    ///
+    /// Slices a 10×10×10 mm cube with the default 3 walls and verifies that
+    /// every BottomSurface coordinate on layer 0 is well inside the innermost
+    /// wall, i.e. no surface line is drawn in the band between concentric
+    /// walls.  The previous EvenOdd-based interior calculation produced
+    /// surfaces in that band on multi-wall layers; this test guards against
+    /// that regression.
+    #[test]
+    fn test_smart_surface_skipping_no_between_walls_artifacts() {
+        use crate::logging::NullLogger;
+        let mesh = make_cube_mesh();
+        let params = SlicingParams {
+            layer_height: 2.0,
+            top_layers: 2,
+            bottom_layers: 2,
+            surface_infill_angle: 0.0,
+            // Disable single-wall restrictions so all layers carry the full
+            // multi-wall stack – this is the configuration that triggered the
+            // original bug.
+            only_one_wall_first_layer: false,
+            only_one_wall_top: false,
+            // Explicit defaults to make the geometry expectations precise.
+            wall_count: 3,
+            nozzle_diameter_mm: 0.4,
+            infill_overlap_percent: 0.25,
+            ..SlicingParams::default()
+        };
+
+        let layers = process_mesh(&mesh, &params, &NullLogger);
+        assert!(!layers.is_empty(), "expected sliced layers");
+
+        // Cube is at [0, 10]² in XY.  With 3 × 0.4 mm walls the innermost
+        // wall centerline sits ~1.0 mm from each edge, so its inner bound is
+        // ~1.2 mm.  The 25 % overlap (= 0.1 mm) lets surfaces extend back
+        // out to ~1.1 mm.  Any surface point closer than 0.5 mm to an edge
+        // would lie in the inter-wall band and is the bug we are guarding.
+        const SAFE_MARGIN_MM: f64 = 0.5;
+
+        let mut total_surface_points = 0;
+        for layer in &layers {
+            for (i, path) in layer.paths.iter().enumerate() {
+                let role = layer.role_for_path(i);
+                if role != ExtrusionRole::BottomSurface && role != ExtrusionRole::TopSurface {
+                    continue;
+                }
+                for pt in path.iter() {
+                    total_surface_points += 1;
+                    let (x, y) = (pt.x(), pt.y());
+                    assert!(
+                        x >= SAFE_MARGIN_MM
+                            && x <= 10.0 - SAFE_MARGIN_MM
+                            && y >= SAFE_MARGIN_MM
+                            && y <= 10.0 - SAFE_MARGIN_MM,
+                        "surface point ({x}, {y}) lies in the inter-wall band on \
+                         layer z={} (role={:?}) – smart surface skipping regressed",
+                        layer.z,
+                        role,
+                    );
+                }
+            }
+        }
+
+        assert!(
+            total_surface_points > 0,
+            "expected some surface paths; smart-skip should not skip cube top/bottom"
+        );
     }
 
     #[test]
