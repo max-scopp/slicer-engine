@@ -85,6 +85,22 @@ pub struct SliceCommand {
     /// Overrides the global settings value and --lifecycle-markers.
     #[arg(long, conflicts_with = "lifecycle_markers")]
     pub no_lifecycle_markers: bool,
+
+    /// Infill pattern (rectilinear, grid, honeycomb, gyroid).
+    /// When omitted, falls back to the value in settings (default: rectilinear).
+    #[arg(long)]
+    pub infill_pattern: Option<String>,
+
+    /// Infill density as a percentage (0-100).
+    /// When omitted, uses the value from settings (default: 20%).
+    #[arg(long)]
+    pub infill_density: Option<f64>,
+
+    /// Infill base angle in degrees (0-180).
+    /// Alternating layers rotate +90° on top of this base angle.
+    /// When omitted, uses the value from settings (default: 45°).
+    #[arg(long)]
+    pub infill_angle: Option<f64>,
 }
 
 /// Result payload emitted by the `slice` command.
@@ -161,6 +177,17 @@ impl SliceCommand {
         // Build slicing params (layer height may be overridden by CLI flag)
         let mut slice_params = settings.params.clone();
         slice_params.layer_height = layer_height;
+        
+        // Apply CLI overrides for infill settings
+        if let Some(density) = self.infill_density {
+            slice_params.infill_density = density / 100.0; // Convert percentage to fraction
+        }
+        if let Some(ref pattern) = self.infill_pattern {
+            slice_params.infill_pattern = pattern.clone();
+        }
+        if let Some(angle) = self.infill_angle {
+            slice_params.infill_base_angle = angle;
+        }
 
         // Validate input file exists
         if !self.input.exists() {
@@ -349,6 +376,9 @@ mod tests {
             config: None,
             lifecycle_markers: false,
             no_lifecycle_markers: false,
+            infill_pattern: None,
+            infill_density: None,
+            infill_angle: None,
         };
         assert_eq!(cmd.layer_height, Some(0.2));
         assert_eq!(cmd.gcode_flavor.as_deref(), Some("marlin"));
@@ -370,6 +400,9 @@ mod tests {
             config: None,
             lifecycle_markers: false,
             no_lifecycle_markers: false,
+            infill_pattern: None,
+            infill_density: None,
+            infill_angle: None,
         };
         assert!(cmd.gcode_flavor.is_none());
     }
@@ -390,6 +423,9 @@ mod tests {
             config: None,
             lifecycle_markers: false,
             no_lifecycle_markers: false,
+            infill_pattern: None,
+            infill_density: None,
+            infill_angle: None,
         };
         assert_eq!(cmd.gcode_flavor.as_deref(), Some("klipper"));
     }
@@ -410,6 +446,9 @@ mod tests {
             config: None,
             lifecycle_markers: false,
             no_lifecycle_markers: false,
+            infill_pattern: None,
+            infill_density: None,
+            infill_angle: None,
         };
         assert_eq!(
             cmd.start_print_gcode.as_deref(),
@@ -434,6 +473,9 @@ mod tests {
             config: None,
             lifecycle_markers: true,
             no_lifecycle_markers: false,
+            infill_pattern: None,
+            infill_density: None,
+            infill_angle: None,
         };
         assert!(cmd_on.lifecycle_markers);
         assert!(!cmd_on.no_lifecycle_markers);
@@ -452,6 +494,9 @@ mod tests {
             config: None,
             lifecycle_markers: false,
             no_lifecycle_markers: true,
+            infill_pattern: None,
+            infill_density: None,
+            infill_angle: None,
         };
         assert!(!cmd_off.lifecycle_markers);
         assert!(cmd_off.no_lifecycle_markers);

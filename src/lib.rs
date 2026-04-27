@@ -14,6 +14,7 @@
 pub mod cli;
 pub mod core;
 pub mod gcode;
+pub mod infill;
 pub mod logging;
 pub mod mesh;
 pub mod settings;

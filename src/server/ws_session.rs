@@ -244,6 +244,10 @@ async fn handle_slice(
         print_speed: ws_params.print_speed,
         nozzle_temp: ws_params.nozzle_temp,
         bed_temp: ws_params.bed_temp,
+        infill_density: ws_params.infill_density / 100.0,
+        infill_pattern: ws_params.infill_pattern.clone(),
+        infill_base_angle: ws_params.infill_angle,
+        surface_infill_angle: ws_params.infill_angle,
         ..SlicingParams::default()
     };
 

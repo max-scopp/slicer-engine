@@ -198,6 +198,9 @@ export class SlicerService {
           nozzle_temp: s.nozzleTemp,
           bed_temp: s.bedTemp,
           gcode_flavor: s.gcodeFlavor,
+          infill_density: s.infillDensity,
+          infill_pattern: s.infillPattern,
+          infill_angle: s.infillAngle,
         },
       });
     } catch (error) {
