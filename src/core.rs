@@ -1201,6 +1201,45 @@ mod tests {
         assert!(layer.path_roles.is_empty());
     }
 
+    /// Diagnostic: with default params (only_one_wall_first_layer=true, only_one_wall_top=true),
+    /// inspect cube top vs bottom surface points. Used to debug "between walls on top" issue.
+    #[test]
+    #[ignore]
+    fn diagnose_top_vs_bottom_default_params() {
+        use crate::logging::NullLogger;
+        let mesh = make_cube_mesh();
+        let mut params = SlicingParams::default();
+        params.layer_height = 2.0;
+        params.top_layers = 2;
+        params.bottom_layers = 2;
+        let layers = process_mesh(&mesh, &params, &NullLogger);
+        eprintln!("only_one_wall_first_layer={}, only_one_wall_top={}, wall_count={}",
+            params.only_one_wall_first_layer, params.only_one_wall_top, params.wall_count);
+        for (idx, layer) in layers.iter().enumerate() {
+            let n_outer = layer.path_roles.iter().filter(|r| **r == ExtrusionRole::OuterWall).count();
+            let n_inner = layer.path_roles.iter().filter(|r| **r == ExtrusionRole::InnerWall).count();
+            let n_top = layer.path_roles.iter().filter(|r| **r == ExtrusionRole::TopSurface).count();
+            let n_bot = layer.path_roles.iter().filter(|r| **r == ExtrusionRole::BottomSurface).count();
+            eprintln!("layer {} z={:.2}: outer={} inner={} top={} bot={}",
+                idx, layer.z, n_outer, n_inner, n_top, n_bot);
+            // Bounding box of any top/bottom surface points on this layer
+            for role in [ExtrusionRole::TopSurface, ExtrusionRole::BottomSurface] {
+                let pts: Vec<(f64, f64)> = layer.paths.iter().enumerate()
+                    .filter(|(i, _)| layer.role_for_path(*i) == role)
+                    .flat_map(|(_, p)| p.iter().map(|pt| (pt.x(), pt.y())).collect::<Vec<_>>())
+                    .collect();
+                if pts.is_empty() { continue; }
+                let xmin = pts.iter().map(|(x,_)| *x).fold(f64::INFINITY, f64::min);
+                let xmax = pts.iter().map(|(x,_)| *x).fold(f64::NEG_INFINITY, f64::max);
+                let ymin = pts.iter().map(|(_,y)| *y).fold(f64::INFINITY, f64::min);
+                let ymax = pts.iter().map(|(_,y)| *y).fold(f64::NEG_INFINITY, f64::max);
+                eprintln!("  {:?} AABB: x=[{:.2},{:.2}] y=[{:.2},{:.2}] (cube edges at 0,10)",
+                    role, xmin, xmax, ymin, ymax);
+            }
+        }
+    }
+
+
     #[test]
     fn test_slice_layer_role_for_path_default() {
         let layer = SliceLayer::new(1.0);
