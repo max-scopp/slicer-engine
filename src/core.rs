@@ -374,21 +374,25 @@ fn chain_segments(segments: Vec<[(f64, f64); 2]>) -> Vec<Vec<(f64, f64)>> {
 
 /// Generate solid infill patterns for top and bottom surfaces.
 ///
-/// This function identifies which layers require solid top or bottom surfaces
-/// based on the `top_layers` and `bottom_layers` parameters, and adds solid
-/// infill paths to those layers.
+/// For each layer, the surface region is computed by comparing the layer's
+/// perimeter with the perimeter of the layer `top_layers` / `bottom_layers`
+/// away. Any area **not covered** by that neighbour is a surface:
+///
+/// - If the neighbour layer does not exist (we are near the top/bottom of the
+///   model) the whole slice is a surface.
+/// - If the neighbour exists, `difference(current, neighbour)` yields the
+///   overhanging / newly-exposed region.
+///
+/// This correctly handles mid-model surfaces such as the cabin roof on a
+/// Benchy, internal floors, ledges, etc., rather than only marking the
+/// absolute top and bottom of the bounding box.
 ///
 /// # Arguments
-/// * `layers` - Mutable reference to the slice layers
-/// * `top_layers` - Number of solid layers at the top
-/// * `bottom_layers` - Number of solid layers at the bottom
-/// * `layer_height` - Layer height in mm for calculating infill spacing
-/// * `infill_angle` - Angle in degrees for infill lines (e.g., 45 for diagonal)
-///
-/// # Surface Detection Algorithm
-/// - Bottom surfaces: First N layers from the bottom
-/// - Top surfaces: Last N layers from the top
-/// - For layers in between, detect surfaces by comparing with adjacent layers
+/// * `layers`        – Mutable reference to the slice layers
+/// * `top_layers`    – Number of solid layers above any exposed top surface
+/// * `bottom_layers` – Number of solid layers below any exposed bottom surface
+/// * `layer_height`  – Layer height in mm, used to derive infill spacing
+/// * `infill_angle`  – Angle in degrees for solid infill lines (e.g. 45)
 pub fn generate_top_bottom_surfaces(
     layers: &mut [SliceLayer],
     top_layers: usize,
@@ -402,63 +406,115 @@ pub fn generate_top_bottom_surfaces(
 
     let total = layers.len();
 
-    // Generate bottom surfaces for the first N layers
-    for layer in layers.iter_mut().take(total.min(bottom_layers)) {
-        add_solid_infill_to_layer(
-            layer,
-            ExtrusionRole::BottomSurface,
-            layer_height,
-            infill_angle,
-        );
-    }
+    // Snapshot the perimeter contours of every layer *before* we begin adding
+    // infill paths. Surface detection must operate on sliced geometry only;
+    // comparing against previously added infill would give wrong results.
+    let perimeters: Vec<Paths> = layers.iter().map(perimeter_paths_of).collect();
 
-    // Generate top surfaces for the last N layers
-    let top_start = total.saturating_sub(top_layers);
-    for (i, layer) in layers
-        .iter_mut()
-        .enumerate()
-        .skip(top_start)
-        .take(total - top_start)
-    {
-        // Skip layers in the bottom surface range to avoid duplicate surface marking
-        if i >= bottom_layers {
-            add_solid_infill_to_layer(layer, ExtrusionRole::TopSurface, layer_height, infill_angle);
+    for i in 0..total {
+        // ── Bottom surfaces ──────────────────────────────────────────────────
+        if bottom_layers > 0 {
+            // Neighbour is the layer `bottom_layers` below.
+            // If it does not exist, the entire current slice is a bottom surface.
+            let bottom_region: Paths = if i < bottom_layers {
+                perimeters[i].clone()
+            } else {
+                let neighbor = &perimeters[i - bottom_layers];
+                if neighbor.is_empty() {
+                    perimeters[i].clone()
+                } else {
+                    difference(
+                        perimeters[i].clone(),
+                        neighbor.clone(),
+                        FillRule::NonZero,
+                    )
+                    .unwrap_or_default()
+                }
+            };
+
+            if !bottom_region.is_empty() {
+                add_solid_infill_for_region(
+                    &mut layers[i],
+                    &bottom_region,
+                    ExtrusionRole::BottomSurface,
+                    layer_height,
+                    infill_angle,
+                );
+            }
+        }
+
+        // ── Top surfaces ─────────────────────────────────────────────────────
+        if top_layers > 0 {
+            // Neighbour is the layer `top_layers` above.
+            // If it does not exist, the entire current slice is a top surface.
+            let top_region: Paths = if i + top_layers >= total {
+                perimeters[i].clone()
+            } else {
+                let neighbor = &perimeters[i + top_layers];
+                if neighbor.is_empty() {
+                    perimeters[i].clone()
+                } else {
+                    difference(
+                        perimeters[i].clone(),
+                        neighbor.clone(),
+                        FillRule::NonZero,
+                    )
+                    .unwrap_or_default()
+                }
+            };
+
+            if !top_region.is_empty() {
+                add_solid_infill_for_region(
+                    &mut layers[i],
+                    &top_region,
+                    ExtrusionRole::TopSurface,
+                    layer_height,
+                    infill_angle,
+                );
+            }
         }
     }
+}
+
+/// Extract only [`ExtrusionRole::Perimeter`] paths from a layer.
+///
+/// Used to snapshot slice contours before infill is added, so that surface
+/// detection compares geometry, not previously-generated infill.
+fn perimeter_paths_of(layer: &SliceLayer) -> Paths {
+    Paths::new(
+        layer
+            .paths
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| layer.role_for_path(*i) == ExtrusionRole::Perimeter)
+            .map(|(_, p)| p.clone())
+            .collect(),
+    )
 }
 
 /// Calculate infill line spacing based on layer height
 /// Standard extrusion width is typically 1.2× layer height for solid infill
 const SOLID_INFILL_EXTRUSION_WIDTH_MULTIPLIER: f64 = 1.2;
 
-/// Add solid infill pattern to a layer with the specified extrusion role.
+/// Add solid infill for a computed surface `region` to a layer.
 ///
-/// Generates a rectilinear (line) infill pattern at the specified angle within the
-/// layer's contours. The infill lines are spaced based on a standard
-/// extrusion width derived from the layer height.
-///
-/// # Arguments
-/// * `layer` - The layer to add infill to
-/// * `role` - The extrusion role (TopSurface or BottomSurface)
-/// * `layer_height` - Layer height in mm, used to calculate line spacing
-/// * `infill_angle` - Angle in degrees for infill lines (e.g., 45 for diagonal)
-fn add_solid_infill_to_layer(
+/// Generates a rectilinear infill pattern covering only the provided `region`
+/// paths (the already-computed surface area), then appends the resulting paths
+/// to `layer` with the given extrusion `role`.
+fn add_solid_infill_for_region(
     layer: &mut SliceLayer,
+    region: &Paths,
     role: ExtrusionRole,
     layer_height: f64,
     infill_angle: f64,
 ) {
-    if layer.paths.is_empty() {
+    if region.is_empty() {
         return;
     }
 
-    // Calculate infill line spacing based on layer height
     let line_spacing = layer_height * SOLID_INFILL_EXTRUSION_WIDTH_MULTIPLIER;
+    let infill_paths = generate_rectilinear_infill(region, line_spacing, infill_angle);
 
-    // Generate infill lines at specified angle
-    let infill_paths = generate_rectilinear_infill(&layer.paths, line_spacing, infill_angle);
-
-    // Add infill paths to the layer
     for path in infill_paths {
         layer.paths.push(path);
         layer.path_roles.push(role);
@@ -468,90 +524,117 @@ fn add_solid_infill_to_layer(
 /// Generate rectilinear infill pattern within the given contours.
 ///
 /// Creates a series of parallel lines at the specified angle that fill the
-/// interior of the contours. Lines are spaced by `line_spacing`.
+/// interior of the contours and are **clipped exactly to the contour shape**
+/// using a scanline intersection algorithm. Lines never extend outside the
+/// perimeter boundary.
+///
+/// # Algorithm
+/// 1. Rotate all contour vertices by `-angle` so scan lines become horizontal.
+/// 2. For each horizontal scan line (spaced by `line_spacing`), find where it
+///    crosses each polygon edge and collect the X-intersection coordinates.
+/// 3. Sort intersections and emit segments between paired entry/exit points.
+/// 4. Rotate the resulting segment endpoints back by `+angle`.
 ///
 /// # Arguments
-/// * `contours` - The boundary paths to fill
-/// * `line_spacing` - Distance between infill lines in mm
-/// * `angle_degrees` - Angle of infill lines (0° = horizontal, 45° = diagonal)
+/// * `contours`      – Boundary paths (the surface region) to fill
+/// * `line_spacing`  – Distance between infill lines in mm
+/// * `angle_degrees` – Angle of infill lines (0° = horizontal, 45° = diagonal)
 ///
 /// # Returns
-/// A vector of paths representing the infill lines, clipped to the contours.
+/// Paths representing the infill lines, clipped to `contours`.
 fn generate_rectilinear_infill(contours: &Paths, line_spacing: f64, angle_degrees: f64) -> Paths {
     if contours.is_empty() || line_spacing <= 0.0 {
         return Paths::new(vec![]);
     }
 
-    // Find bounding box of all contours
-    let mut min_x = f64::INFINITY;
-    let mut max_x = f64::NEG_INFINITY;
-    let mut min_y = f64::INFINITY;
-    let mut max_y = f64::NEG_INFINITY;
-
-    for path in contours.iter() {
-        for pt in path.iter() {
-            let (x, y) = (pt.x(), pt.y());
-            min_x = min_x.min(x);
-            max_x = max_x.max(x);
-            min_y = min_y.min(y);
-            max_y = max_y.max(y);
-        }
-    }
-
-    if min_x >= max_x || min_y >= max_y {
-        return Paths::new(vec![]);
-    }
-
-    // Convert angle to radians
     let angle_rad = angle_degrees.to_radians();
     let cos_a = angle_rad.cos();
     let sin_a = angle_rad.sin();
 
-    // Generate parallel lines across the bounding box
-    let mut infill_lines = Vec::new();
+    // Rotate point (x, y) by -angle so infill direction aligns with the X axis
+    let rotate_neg = |x: f64, y: f64| -> (f64, f64) {
+        (x * cos_a + y * sin_a, -x * sin_a + y * cos_a)
+    };
+    // Rotate point (x, y) by +angle to recover the original coordinate system
+    let rotate_pos = |x: f64, y: f64| -> (f64, f64) {
+        (x * cos_a - y * sin_a, x * sin_a + y * cos_a)
+    };
 
-    // Extend bounding box to ensure coverage after rotation
-    let diagonal = ((max_x - min_x).powi(2) + (max_y - min_y).powi(2)).sqrt();
-    let center_x = (min_x + max_x) / 2.0;
-    let center_y = (min_y + max_y) / 2.0;
+    // Collect rotated polygon vertices for every contour path
+    let rotated_polys: Vec<Vec<(f64, f64)>> = contours
+        .iter()
+        .filter_map(|path| {
+            let pts: Vec<(f64, f64)> = path.iter().map(|pt| rotate_neg(pt.x(), pt.y())).collect();
+            if pts.len() >= 2 { Some(pts) } else { None }
+        })
+        .collect();
 
-    // Generate lines perpendicular to the angle direction
-    let num_lines = ((diagonal / line_spacing).ceil() as i32) + 2;
-    let start_offset = -(num_lines as f64) / 2.0 * line_spacing;
-
-    for i in 0..num_lines {
-        let offset = start_offset + (i as f64) * line_spacing;
-
-        // Line perpendicular to angle direction, offset from center
-        // Direction vector: perpendicular to (cos_a, sin_a) is (-sin_a, cos_a)
-        let perp_x = -sin_a;
-        let perp_y = cos_a;
-
-        // Offset along the angle direction
-        let offset_x = cos_a * offset;
-        let offset_y = sin_a * offset;
-
-        // Line endpoints extended beyond bounding box
-        let line_start_x = center_x + offset_x - perp_x * diagonal;
-        let line_start_y = center_y + offset_y - perp_y * diagonal;
-        let line_end_x = center_x + offset_x + perp_x * diagonal;
-        let line_end_y = center_y + offset_y + perp_y * diagonal;
-
-        // Create a line segment
-        let line: Path = vec![(line_start_x, line_start_y), (line_end_x, line_end_y)].into();
-        infill_lines.push(line);
+    if rotated_polys.is_empty() {
+        return Paths::new(vec![]);
     }
 
-    // TODO: Properly clip infill lines to contours using Clipper2's intersection operation
-    // Currently, infill lines extend beyond the perimeters which may cause extrusion
-    // outside the model boundaries. This requires the Clipper2 builder pattern API:
-    // - Use `Clipper::new().add_subject(&infill_lines).add_clip(&contours)`
-    // - Call `.intersect()` with appropriate FillRule
-    // Tracking issue: https://github.com/max-scopp/slicer-engine/issues/XXX
-    //
-    // For now, returning unclipped infill lines as a functional baseline.
-    // The slicer still produces valid output, but with non-optimal infill boundaries.
-    Paths::new(infill_lines)
+    // Bounding Y range in the rotated coordinate system
+    let y_min = rotated_polys
+        .iter()
+        .flat_map(|p| p.iter().map(|&(_, y)| y))
+        .fold(f64::INFINITY, f64::min);
+    let y_max = rotated_polys
+        .iter()
+        .flat_map(|p| p.iter().map(|&(_, y)| y))
+        .fold(f64::NEG_INFINITY, f64::max);
+
+    if y_min >= y_max {
+        return Paths::new(vec![]);
+    }
+
+    let mut result_paths = Paths::new(vec![]);
+
+    // First scan line aligned to the grid, spanning [y_min, y_max]
+    let start_y = (y_min / line_spacing).floor() * line_spacing;
+    let mut scan_y = start_y;
+
+    // Half a line_spacing is added so the final scan line is not missed when
+    // y_max falls exactly on a grid position (avoids an off-by-one at the top).
+    while scan_y <= y_max + line_spacing * 0.5 {
+        // Collect all X-coordinates where the scan line crosses polygon edges
+        let mut xs: Vec<f64> = Vec::new();
+
+        for poly in &rotated_polys {
+            let n = poly.len();
+            for i in 0..n {
+                let (x0, y0) = poly[i];
+                let (x1, y1) = poly[(i + 1) % n];
+
+                // Edge straddle check using strict inequality on both sides gives
+                // the standard even-odd scanline rule: each edge is counted exactly
+                // once even when the scan line passes through a shared vertex.
+                if (y0 < scan_y) != (y1 < scan_y) {
+                    let t = (scan_y - y0) / (y1 - y0);
+                    xs.push(x0 + t * (x1 - x0));
+                }
+            }
+        }
+
+        xs.sort_by(|a, b| a.total_cmp(b));
+
+        // Emit a line segment for each inside pair (even/odd winding)
+        let mut k = 0;
+        while k + 1 < xs.len() {
+            let x_start = xs[k];
+            let x_end = xs[k + 1];
+            if x_end > x_start + 1e-9 {
+                let (sx, sy) = rotate_pos(x_start, scan_y);
+                let (ex, ey) = rotate_pos(x_end, scan_y);
+                let path: Path = vec![(sx, sy), (ex, ey)].into();
+                result_paths.push(path);
+            }
+            k += 2;
+        }
+
+        scan_y += line_spacing;
+    }
+
+    result_paths
 }
 
 #[cfg(test)]
@@ -790,17 +873,173 @@ mod tests {
     }
 
     #[test]
-    fn test_extrusion_role_bottom_surface() {
-        assert_eq!(ExtrusionRole::BottomSurface.type_name(), "Bottom surface");
-        assert!(ExtrusionRole::BottomSurface.default_width_mm() > 0.0);
+    fn test_generate_top_bottom_surfaces_mid_model_detection() {
+        // Build a stacked two-cube mesh: a 10×10×4 base with a 6×6×4 column on top.
+        // When sliced at layer_height=2 we get:
+        //   layer 0  z=1 – base (10×10)
+        //   layer 1  z=3 – base (10×10)
+        //   layer 2  z=5 – column (6×6)
+        //   layer 3  z=7 – column (6×6)
+        //
+        // With top_layers=1, bottom_layers=1:
+        //
+        //   TopSurface on layer 1 (z=3):
+        //     difference(10×10, layer_above=6×6) is the annular region → non-empty
+        //     → layer 1 must have TopSurface infill
+        //
+        //   No TopSurface on layer 2 (z=5):
+        //     difference(6×6, layer_above=6×6) = empty
+        //     → layer 2 is fully covered by layer 3 and must NOT have TopSurface infill
+        //
+        //   BottomSurface on layer 0 (z=1):
+        //     i < bottom_layers → entire first layer is a bottom surface
+        //
+        //   No BottomSurface on layer 2 (z=5):
+        //     difference(6×6, layer_below=10×10) = empty (column is inside the base)
+        //     → the column is fully supported; it must NOT get spurious BottomSurface infill
+
+        let v: Vec<Vertex> = vec![
+            // Base cube 10×10×4 (z 0..4)
+            Vertex::new(0.0, 0.0, 0.0),
+            Vertex::new(10.0, 0.0, 0.0),
+            Vertex::new(10.0, 10.0, 0.0),
+            Vertex::new(0.0, 10.0, 0.0),
+            Vertex::new(0.0, 0.0, 4.0),
+            Vertex::new(10.0, 0.0, 4.0),
+            Vertex::new(10.0, 10.0, 4.0),
+            Vertex::new(0.0, 10.0, 4.0),
+            // Upper column 6×6×4 (z 4..8), centred at (2,2)..(8,8)
+            Vertex::new(2.0, 2.0, 4.0),
+            Vertex::new(8.0, 2.0, 4.0),
+            Vertex::new(8.0, 8.0, 4.0),
+            Vertex::new(2.0, 8.0, 4.0),
+            Vertex::new(2.0, 2.0, 8.0),
+            Vertex::new(8.0, 2.0, 8.0),
+            Vertex::new(8.0, 8.0, 8.0),
+            Vertex::new(2.0, 8.0, 8.0),
+        ];
+        let face_indices: &[[usize; 3]] = &[
+            // Base cube faces
+            [0, 2, 1],
+            [0, 3, 2],
+            [4, 5, 6],
+            [4, 6, 7],
+            [0, 1, 5],
+            [0, 5, 4],
+            [2, 3, 7],
+            [2, 7, 6],
+            [0, 4, 7],
+            [0, 7, 3],
+            [1, 2, 6],
+            [1, 6, 5],
+            // Column cube faces
+            [8, 10, 9],
+            [8, 11, 10],
+            [12, 13, 14],
+            [12, 14, 15],
+            [8, 9, 13],
+            [8, 13, 12],
+            [10, 11, 15],
+            [10, 15, 14],
+            [8, 12, 15],
+            [8, 15, 11],
+            [9, 10, 14],
+            [9, 14, 13],
+        ];
+
+        let faces = face_indices
+            .iter()
+            .map(|idx| Face::new([v[idx[0]], v[idx[1]], v[idx[2]]]))
+            .collect();
+
+        let mesh = Mesh {
+            vertices: v,
+            faces,
+            aabb: None,
+        };
+
+        let mut layers = slice_mesh(&mesh, 2.0);
+        assert_eq!(layers.len(), 4, "Expected 4 layers for the step mesh");
+
+        generate_top_bottom_surfaces(&mut layers, 1, 1, 2.0, 45.0);
+
+        // Layer 0 (z=1) is the absolute bottom → BottomSurface
+        assert!(
+            layers[0].path_roles.contains(&ExtrusionRole::BottomSurface),
+            "Layer 0 (z=1) should be a bottom surface (first layer)"
+        );
+
+        // Layer 1 (z=3) is below the column; the annular 10×10 minus 6×6 region
+        // is exposed above → TopSurface infill must be added.
+        assert!(
+            layers[1].path_roles.contains(&ExtrusionRole::TopSurface),
+            "Layer 1 (z=3) should detect the step-down as a top surface"
+        );
+
+        // Layer 2 (z=5) is fully covered by layer 3 above → no TopSurface here.
+        assert!(
+            !layers[2].path_roles.contains(&ExtrusionRole::TopSurface),
+            "Layer 2 (z=5) is fully covered above and must NOT have TopSurface infill"
+        );
+
+        // Layer 2 (z=5) is fully supported by layer 1 below → no BottomSurface.
+        assert!(
+            !layers[2].path_roles.contains(&ExtrusionRole::BottomSurface),
+            "Layer 2 (z=5) is fully supported and must NOT have spurious BottomSurface infill"
+        );
+
+        // Layer 3 (z=7) is the absolute top → TopSurface
+        assert!(
+            layers[3].path_roles.contains(&ExtrusionRole::TopSurface),
+            "Layer 3 (z=7) should be a top surface (last layer)"
+        );
     }
 
     #[test]
-    fn test_add_solid_infill_to_empty_layer() {
+    fn test_infill_clipped_to_contour() {
+        // Verify that infill lines are clipped to the contour and don't extend
+        // beyond the bounding box of the given paths.
+        let square: Path =
+            vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        let mut paths = Paths::new(vec![]);
+        paths.push(square);
+
+        let infill = generate_rectilinear_infill(&paths, 1.0, 0.0);
+
+        assert!(!infill.is_empty(), "Expected infill lines to be generated");
+
+        // All clipped endpoints should lie within the contour bounding box
+        // (with a small epsilon for floating-point rounding by Clipper2).
+        let eps = 0.01;
+        for path in infill.iter() {
+            for pt in path.iter() {
+                let x = pt.x();
+                let y = pt.y();
+                assert!(
+                    x >= -eps && x <= 10.0 + eps,
+                    "Infill x={x} is outside contour bounds [0, 10]"
+                );
+                assert!(
+                    y >= -eps && y <= 10.0 + eps,
+                    "Infill y={y} is outside contour bounds [0, 10]"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_add_solid_infill_for_region_empty_region() {
         let mut layer = SliceLayer::new(1.0);
-        add_solid_infill_to_layer(&mut layer, ExtrusionRole::TopSurface, 0.2, 45.0);
-        // Should handle empty layer gracefully
+        let empty: Paths = Paths::new(vec![]);
+        add_solid_infill_for_region(&mut layer, &empty, ExtrusionRole::TopSurface, 0.2, 45.0);
+        // Should handle empty region gracefully – no paths added
         assert!(layer.paths.is_empty());
+    }
+
+    #[test]
+    fn test_extrusion_role_bottom_surface() {
+        assert_eq!(ExtrusionRole::BottomSurface.type_name(), "Bottom surface");
+        assert!(ExtrusionRole::BottomSurface.default_width_mm() > 0.0);
     }
 
     #[test]
