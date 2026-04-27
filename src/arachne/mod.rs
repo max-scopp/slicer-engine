@@ -274,11 +274,23 @@ pub fn compute_arachne_beads(input: &Paths, params: &ArachneParams) -> Vec<Bead>
     // If remaining_width is positive but < min_w the gap is too thin for a
     // separate bead.  In this case we widen the innermost standard bead(s) by
     // distributing the gap across up to `wall_distribution_count` beads.
+    //
+    // **Important**: only apply this thin-wall logic when *geometry* stopped us
+    // (the next bead would collapse the polygon), not when `wall_count` stopped
+    // us.  When `wall_count` is the limiting factor the remaining inner space is
+    // the polygon interior — territory for infill, not an extra perimeter bead.
+    // Placing a residual bead there produces a large interior ring that looks
+    // like infill but is tagged as a wall, confusing slicer previews.
     let inner_edge_depth = n_fit as f64 * d;
     let remaining_half = big_d - inner_edge_depth;
     let remaining_width = 2.0 * remaining_half;
 
-    if remaining_width >= min_w {
+    // Would the next bead fit geometrically?  If yes, we are count-limited and
+    // the remaining space belongs to infill — skip the residual bead entirely.
+    let next_bead_depth = (n_fit as f64 + 0.5) * d;
+    let geometry_limited = next_bead_depth >= big_d;
+
+    if geometry_limited && remaining_width >= min_w {
         // Add a variable-width residual bead at the center of the remaining space.
         let center_depth = inner_edge_depth + remaining_half / 2.0;
         let width = remaining_width.min(max_w);
@@ -289,7 +301,7 @@ pub fn compute_arachne_beads(input: &Paths, params: &ArachneParams) -> Vec<Bead>
                 width_mm: width,
             });
         }
-    } else if remaining_width > 0.0 && !beads.is_empty() {
+    } else if geometry_limited && remaining_width > 0.0 && !beads.is_empty() {
         // The gap is too thin for a new bead.  Widen the innermost
         // wall_distribution_count beads by spreading the remaining width
         // evenly among them.
@@ -390,21 +402,25 @@ mod tests {
 
     #[test]
     fn test_thick_wall_produces_standard_beads() {
-        // 20×20 square, wall_count=3, nozzle=0.4 → 3 full-width beads of 0.4 mm
+        // 20×20 square, wall_count=3, nozzle=0.4 → exactly 3 full-width beads of 0.4 mm.
+        // The polygon interior (D=10mm >> wall_count×d=1.2mm) is count-limited, not
+        // geometry-limited, so NO residual bead should be placed inside the polygon.
         let paths = square_paths(20.0);
         let params = default_params();
         let beads = compute_arachne_beads(&paths, &params);
-        assert!(
-            !beads.is_empty(),
-            "thick wall should produce at least one bead"
-        );
-        let std_beads: Vec<_> = beads.iter().filter(|b| (b.width_mm - 0.4).abs() < 1e-6).collect();
         assert_eq!(
-            std_beads.len(),
+            beads.len(),
             3,
-            "expected 3 standard-width beads, got {}",
-            std_beads.len()
+            "thick wall (count-limited) should produce exactly 3 beads, got {}",
+            beads.len()
         );
+        for bead in &beads {
+            assert!(
+                (bead.width_mm - 0.4).abs() < 1e-6,
+                "all beads should be standard width 0.4 mm, got {}",
+                bead.width_mm
+            );
+        }
     }
 
     #[test]

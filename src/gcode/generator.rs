@@ -931,7 +931,7 @@ mod tests {
         );
 
         // Infill TYPE should appear exactly once
-        let infill_count = gcode.matches(";TYPE:Infill").count();
+        let infill_count = gcode.matches(";TYPE:Internal infill").count();
         assert_eq!(
             infill_count, 1,
             "Infill TYPE emitted {} times",
@@ -987,7 +987,7 @@ mod tests {
             .with_marker_config(config)
             .generate(&[layer], &SlicingParams::default());
         assert!(
-            gcode.contains(";FEATURE Infill"),
+            gcode.contains(";FEATURE Internal infill"),
             "custom type annotation not rendered: {gcode}"
         );
     }

@@ -32,15 +32,19 @@ pub enum ExtrusionRole {
 
 impl ExtrusionRole {
     /// The `;TYPE:` label emitted in G-code comments for this role.
+    ///
+    /// Strings match the PrusaSlicer / OrcaSlicer convention so that slicer
+    /// previews colour and classify paths correctly.  Any unrecognised string
+    /// would be shown as *Undefined* in OrcaSlicer's G-code viewer.
     pub fn type_name(self) -> &'static str {
         match self {
             Self::Perimeter => "Perimeter",
-            Self::Infill => "Infill",
-            Self::Bridge => "Bridge",
-            Self::TopSurface => "Top surface",
-            Self::BottomSurface => "Bottom surface",
-            Self::Support => "Support",
-            Self::Skirt => "Skirt",
+            Self::Infill => "Internal infill",
+            Self::Bridge => "Bridge infill",
+            Self::TopSurface => "Top solid infill",
+            Self::BottomSurface => "Solid infill",
+            Self::Support => "Support material",
+            Self::Skirt => "Skirt/Brim",
         }
     }
 
@@ -783,11 +787,12 @@ mod tests {
     #[test]
     fn test_extrusion_role_type_names() {
         assert_eq!(ExtrusionRole::Perimeter.type_name(), "Perimeter");
-        assert_eq!(ExtrusionRole::Infill.type_name(), "Infill");
-        assert_eq!(ExtrusionRole::Bridge.type_name(), "Bridge");
-        assert_eq!(ExtrusionRole::TopSurface.type_name(), "Top surface");
-        assert_eq!(ExtrusionRole::Support.type_name(), "Support");
-        assert_eq!(ExtrusionRole::Skirt.type_name(), "Skirt");
+        assert_eq!(ExtrusionRole::Infill.type_name(), "Internal infill");
+        assert_eq!(ExtrusionRole::Bridge.type_name(), "Bridge infill");
+        assert_eq!(ExtrusionRole::TopSurface.type_name(), "Top solid infill");
+        assert_eq!(ExtrusionRole::BottomSurface.type_name(), "Solid infill");
+        assert_eq!(ExtrusionRole::Support.type_name(), "Support material");
+        assert_eq!(ExtrusionRole::Skirt.type_name(), "Skirt/Brim");
     }
 
     #[test]
@@ -1112,7 +1117,7 @@ mod tests {
 
     #[test]
     fn test_extrusion_role_bottom_surface() {
-        assert_eq!(ExtrusionRole::BottomSurface.type_name(), "Bottom surface");
+        assert_eq!(ExtrusionRole::BottomSurface.type_name(), "Solid infill");
         assert!(ExtrusionRole::BottomSurface.default_width_mm() > 0.0);
     }
 
