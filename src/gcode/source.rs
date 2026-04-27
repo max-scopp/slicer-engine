@@ -16,6 +16,10 @@ const MAX_GCODE_FILE_BYTES: u64 = 1024 * 1024; // 1 MiB
 /// This allows callers to pass either `"./my-start.gcode"` or a multi-line
 /// string such as `"G28\nM109 S210"` without any extra ceremony.
 ///
+/// Primary project use: resolving optional start/end print scripts configured
+/// via CLI flags or global settings before injecting them into the
+/// [`crate::gcode::GcodeGenerator`] during `slice` command execution.
+///
 /// # Errors
 /// Returns an [`std::io::Error`] if the path exists but cannot be read, or if
 /// the file exceeds the 1 MiB size limit.
