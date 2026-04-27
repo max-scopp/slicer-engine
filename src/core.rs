@@ -1406,4 +1406,73 @@ mod tests {
             paths_in_hole
         );
     }
+
+    #[test]
+    fn test_serializable_layer() {
+        // Create a simple layer with some paths
+        let mut layer = SliceLayer::new(1.5);
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer.paths.push(square);
+        layer.path_roles.push(ExtrusionRole::Perimeter);
+
+        // Convert to serializable format
+        let serializable = layer.to_serializable();
+
+        // Verify z-coordinate is preserved
+        assert_eq!(serializable.z, 1.5);
+
+        // Verify paths are converted correctly (from Centi to mm)
+        assert_eq!(serializable.paths.len(), 1);
+        assert_eq!(serializable.paths[0].len(), 4);
+
+        // Verify first point conversion (Clipper2 uses centimeters * 100 as integers)
+        let first_point = serializable.paths[0][0];
+        assert!((first_point[0] - 0.0).abs() < 0.01);
+        assert!((first_point[1] - 0.0).abs() < 0.01);
+
+        // Verify roles are preserved
+        assert_eq!(serializable.path_roles.len(), 1);
+        assert_eq!(serializable.path_roles[0], ExtrusionRole::Perimeter);
+    }
+
+    #[test]
+    fn test_serializable_layer_json_roundtrip() {
+        use serde_json;
+
+        let mut layer = SliceLayer::new(2.0);
+        let triangle: Path = vec![(0.0, 0.0), (5.0, 0.0), (2.5, 5.0)].into();
+        layer.paths.push(triangle);
+        layer.path_roles.push(ExtrusionRole::TopSurface);
+
+        let serializable = layer.to_serializable();
+
+        // Serialize to JSON
+        let json = serde_json::to_string(&serializable).expect("Failed to serialize");
+
+        // Deserialize back
+        let deserialized: SerializableLayer =
+            serde_json::from_str(&json).expect("Failed to deserialize");
+
+        // Verify the round trip preserves data
+        assert_eq!(deserialized.z, 2.0);
+        assert_eq!(deserialized.paths.len(), 1);
+        assert_eq!(deserialized.paths[0].len(), 3);
+        assert_eq!(deserialized.path_roles[0], ExtrusionRole::TopSurface);
+    }
+
+    #[test]
+    fn test_extrusion_role_serialization() {
+        use serde_json;
+
+        // Test that ExtrusionRole serializes to strings
+        let role = ExtrusionRole::Perimeter;
+        let json = serde_json::to_string(&role).expect("Failed to serialize");
+        assert!(json.contains("Perimeter"));
+
+        // Test round trip
+        let deserialized: ExtrusionRole =
+            serde_json::from_str(&json).expect("Failed to deserialize");
+        assert_eq!(deserialized, ExtrusionRole::Perimeter);
+    }
 }
+
