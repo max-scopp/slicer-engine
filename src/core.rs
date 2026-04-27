@@ -2,6 +2,7 @@
 
 use clipper2::*;
 
+use crate::logging::ProcessLogger;
 use crate::mesh::types::{Mesh, Vertex};
 use crate::settings::params::SlicingParams;
 
@@ -187,32 +188,49 @@ pub fn slice_mesh(mesh: &Mesh, layer_height: f64) -> Vec<SliceLayer> {
 ///
 /// This function processes a mesh through the entire slicing pipeline, including
 /// basic slicing, top/bottom surface generation, and any other processing steps.
+/// All pipeline progress is reported through `logger` so that CLI and WebSocket
+/// callers receive the same verbosity and information.
+///
 /// This is the main API function that should be extended with additional features
 /// like infill generation, support structures, etc.
 ///
 /// # Arguments
 /// * `mesh` - The triangle mesh to process
 /// * `params` - Slicing parameters controlling all aspects of the slicing process
+/// * `logger` - Pipeline logger; use [`NullLogger`] when logging is not needed
 ///
 /// # Returns
 /// A `Vec<SliceLayer>` with all processing applied (perimeters, surfaces, etc.).
 ///
 /// # Example
 /// ```
+/// use slicer_engine::logging::NullLogger;
 /// use slicer_engine::mesh::types::Mesh;
 /// use slicer_engine::settings::params::SlicingParams;
 /// use slicer_engine::core::process_mesh;
 ///
 /// let mesh = Mesh::new(); // Load your mesh
 /// let params = SlicingParams::default();
-/// let layers = process_mesh(&mesh, &params);
+/// let layers = process_mesh(&mesh, &params, &NullLogger);
 /// ```
-pub fn process_mesh(mesh: &Mesh, params: &SlicingParams) -> Vec<SliceLayer> {
-    // Basic slicing
+pub fn process_mesh(
+    mesh: &Mesh,
+    params: &SlicingParams,
+    logger: &dyn ProcessLogger,
+) -> Vec<SliceLayer> {
+    logger.log_info(&format!("processing mesh: {} triangles", mesh.faces.len()));
+    logger.log_debug("slicing mesh…");
+
     let mut layers = slice_mesh(mesh, params.layer_height);
+
+    logger.log_info(&format!("sliced into {} layers", layers.len()));
 
     // Add top/bottom surfaces
     if params.top_layers > 0 || params.bottom_layers > 0 {
+        logger.log_debug(&format!(
+            "generating surfaces (top: {}, bottom: {}, angle: {}°)",
+            params.top_layers, params.bottom_layers, params.surface_infill_angle
+        ));
         generate_top_bottom_surfaces(
             &mut layers,
             params.top_layers,
@@ -220,6 +238,7 @@ pub fn process_mesh(mesh: &Mesh, params: &SlicingParams) -> Vec<SliceLayer> {
             params.layer_height,
             params.surface_infill_angle,
         );
+        logger.log_debug("surface generation complete");
     }
 
     layers
@@ -786,6 +805,7 @@ mod tests {
 
     #[test]
     fn test_process_mesh() {
+        use crate::logging::NullLogger;
         let mesh = make_cube_mesh();
         let params = SlicingParams {
             layer_height: 2.0,
@@ -795,7 +815,7 @@ mod tests {
             ..SlicingParams::default()
         };
 
-        let layers = process_mesh(&mesh, &params);
+        let layers = process_mesh(&mesh, &params, &NullLogger);
 
         // Should have layers
         assert!(!layers.is_empty());

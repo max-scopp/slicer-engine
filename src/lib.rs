@@ -14,6 +14,7 @@
 pub mod cli;
 pub mod core;
 pub mod gcode;
+pub mod logging;
 pub mod mesh;
 pub mod settings;
 pub mod ws_protocol;
