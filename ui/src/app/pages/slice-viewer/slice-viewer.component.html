@@ -1,10 +1,11 @@
 <div class="slice-viewer-page">
   <div class="viewport-area">
     <div class="viewport-container">
-      <div class="viewport-placeholder">
-        <p>3D Viewport - Sliced Model</p>
-        <p class="uuid">{{ requestUuid() }}</p>
-      </div>
+      <nexus-viewer
+        [mode]="viewerMode()"
+        [model]="modelFile()"
+        [gcodeSource]="gcodeUrl()"
+      ></nexus-viewer>
     </div>
   </div>
 </div>

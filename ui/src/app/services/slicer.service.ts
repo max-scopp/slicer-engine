@@ -6,6 +6,7 @@ import { WsSlicingParams } from '../../generated/slicer-engine-ws-client-message
 import { ServerMessage } from '../../generated/slicer-engine-ws-server-message-v1';
 import { DEFAULT_SETTINGS } from '../models/slice-settings.model';
 import { SlicerConnection } from './slicer-connection';
+import { SlicerFile } from './slicer-file';
 
 export type SlicerStatus = 'idle' | 'ready' | 'uploading' | 'slicing' | 'done' | 'error';
 
@@ -28,8 +29,13 @@ export interface PhaseTimingData {
 export class SlicerService {
   private readonly ws = inject(SlicerConnection);
   private readonly http = inject(HttpClient);
+  private readonly slicerFile = inject(SlicerFile);
 
-  readonly selectedFile = signal<File | null>(null);
+  /**
+   * Currently-selected file. Sourced from {@link SlicerFile} so the upload
+   * page and the viewer page share a single source of truth.
+   */
+  readonly selectedFile = this.slicerFile.selectedFile;
   readonly settings = signal<WsSlicingParams>(DEFAULT_SETTINGS);
   readonly status = signal<SlicerStatus>('idle');
   readonly outputLog = signal<string[]>([]);
@@ -152,7 +158,7 @@ export class SlicerService {
   }
 
   selectFile(file: File): void {
-    this.selectedFile.set(file);
+    this.slicerFile.selectFile(file);
     this.status.set('ready');
     this.outputLog.update((log) => [
       ...log,
@@ -211,7 +217,7 @@ export class SlicerService {
   }
 
   reset(): void {
-    this.selectedFile.set(null);
+    this.slicerFile.reset();
     this.status.set('idle');
     this.outputLog.set([]);
     this.phaseTimings.set([]);

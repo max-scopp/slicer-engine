@@ -1,7 +1,8 @@
-import { Component } from '@angular/core';
+import { Component, inject } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { ConnectionState } from '../../components/connection-state/connection-state';
 import { Logo } from '../../components/logo/logo';
+import { AppTheme } from '../../services/app-theme';
 
 @Component({
   selector: 'nexus-nexus-sidebar',
@@ -10,4 +11,6 @@ import { Logo } from '../../components/logo/logo';
   templateUrl: './sidebar.component.html',
   styleUrl: './sidebar.component.scss',
 })
-export class Sidebar {}
+export class Sidebar {
+  protected readonly _theme = inject(AppTheme);
+}

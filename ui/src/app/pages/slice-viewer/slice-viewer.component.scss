@@ -2,13 +2,12 @@
   display: flex;
   gap: 16px;
   height: 100%;
-  padding: 16px;
 }
 
 .viewport-area {
   flex: 1;
-  background: white;
-  border: 1px solid #e0e0e0;
+  background: transparent;
+  border: none;
   border-radius: 8px;
   display: flex;
   align-items: center;
