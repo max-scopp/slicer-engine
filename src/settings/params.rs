@@ -11,8 +11,46 @@ use std::collections::HashMap;
 pub struct SlicingParams {
     /// Layer height in mm (e.g. 0.2).
     pub layer_height: f64,
-    /// Wall / perimeter thickness in mm.
-    pub wall_thickness: f64,
+    /// Maximum number of perimeter (wall) beads per layer.
+    ///
+    /// Arachne will place up to this many concentric wall paths around each
+    /// shell polygon.  The innermost bead may have a variable extrusion width
+    /// when the remaining space is thinner than the nozzle diameter.
+    #[serde(default = "SlicingParams::default_wall_count")]
+    pub wall_count: usize,
+    /// Minimum allowed bead width as a fraction of the nozzle diameter.
+    ///
+    /// Beads narrower than `wall_line_width_min × nozzle_diameter_mm` are
+    /// skipped entirely.  Typical range: 0.5–1.0.
+    #[serde(default = "SlicingParams::default_wall_line_width_min")]
+    pub wall_line_width_min: f64,
+    /// Maximum allowed bead width as a fraction of the nozzle diameter.
+    ///
+    /// Variable-width beads are capped at `wall_line_width_max × nozzle_diameter_mm`
+    /// to avoid excessive over-extrusion at corners.  Typical range: 1.0–2.0.
+    #[serde(default = "SlicingParams::default_wall_line_width_max")]
+    pub wall_line_width_max: f64,
+    /// Minimum wall thickness (as a fraction of nozzle diameter) before the
+    /// bead count transitions down by one.
+    ///
+    /// When the remaining space is narrower than
+    /// `wall_transition_threshold × nozzle_diameter_mm`, the algorithm avoids
+    /// adding another bead and instead widens the existing innermost bead.
+    #[serde(default = "SlicingParams::default_wall_transition_threshold")]
+    pub wall_transition_threshold: f64,
+    /// Length over which a bead-count transition is smoothed (mm).
+    ///
+    /// Larger values produce a longer gradual width ramp at bead-count changes;
+    /// smaller values produce abrupt transitions.
+    #[serde(default = "SlicingParams::default_wall_transition_length")]
+    pub wall_transition_length: f64,
+    /// Number of inner walls that absorb width variation.
+    ///
+    /// When the remaining inner space is too narrow for a separate bead,
+    /// up to `wall_distribution_count` of the innermost beads are widened
+    /// proportionally to fill the gap.
+    #[serde(default = "SlicingParams::default_wall_distribution_count")]
+    pub wall_distribution_count: usize,
     /// Infill density as a fraction (0.0 = hollow, 1.0 = solid).
     pub infill_density: f64,
     /// Infill pattern type (rectilinear, grid, honeycomb, gyroid).
@@ -53,6 +91,37 @@ pub struct SlicingParams {
     /// Retraction distance in mm on travel moves.
     #[serde(default = "SlicingParams::default_retract_mm")]
     pub retract_mm: f64,
+    /// Use only outer wall on the last layer of top surfaces.
+    ///
+    /// When true, the final layer of top surface regions will only print the
+    /// outermost perimeter, creating a cleaner top finish with less chance of
+    /// pillowing or visible infill patterns showing through.
+    #[serde(default = "SlicingParams::default_only_one_wall_top")]
+    pub only_one_wall_top: bool,
+    /// Use only outer wall on the first layer (bottom surface or general first layer).
+    ///
+    /// When true, the first layer uses only the outermost perimeter for better
+    /// bed adhesion and to avoid potential issues with multiple perimeters on
+    /// the first layer.
+    #[serde(default = "SlicingParams::default_only_one_wall_first_layer")]
+    pub only_one_wall_first_layer: bool,
+    /// Overhang angle threshold in degrees (0-90) for skipping surface generation.
+    ///
+    /// When the angle between adjacent layers suggests a shallow overhang
+    /// (angle < threshold), skip generating solid top/bottom surfaces since
+    /// perimeters alone may suffice. Default 0° means always generate surfaces;
+    /// higher values (e.g., 45°) skip surfaces on gentle slopes.
+    ///
+    /// This is a foundation for future overhang support without implementing
+    /// full overhang detection yet.
+    #[serde(default = "SlicingParams::default_support_threshold_angle")]
+    pub support_threshold_angle: f64,
+    /// How much solid surfaces overlap into perimeter walls for bonding (0.0-1.0).
+    ///
+    /// A small overlap (e.g., 0.25 = 25%) ensures surfaces bond well to walls
+    /// without gaps, while keeping walls as the dominant structure. Default 0.25.
+    #[serde(default = "SlicingParams::default_infill_overlap_percent")]
+    pub infill_overlap_percent: f64,
     /// Maximum allowed perpendicular deviation (mm) when simplifying output
     /// paths with the Ramer-Douglas-Peucker algorithm.
     ///
@@ -67,7 +136,12 @@ impl Default for SlicingParams {
     fn default() -> Self {
         Self {
             layer_height: 0.2,
-            wall_thickness: 1.2,
+            wall_count: Self::default_wall_count(),
+            wall_line_width_min: Self::default_wall_line_width_min(),
+            wall_line_width_max: Self::default_wall_line_width_max(),
+            wall_transition_threshold: Self::default_wall_transition_threshold(),
+            wall_transition_length: Self::default_wall_transition_length(),
+            wall_distribution_count: Self::default_wall_distribution_count(),
             infill_density: 0.2,
             infill_pattern: Self::default_infill_pattern(),
             infill_base_angle: Self::default_infill_base_angle(),
@@ -82,12 +156,40 @@ impl Default for SlicingParams {
             travel_speed_mm_min: Self::default_travel_speed_mm_min(),
             z_hop_mm: Self::default_z_hop_mm(),
             retract_mm: Self::default_retract_mm(),
+            only_one_wall_top: Self::default_only_one_wall_top(),
+            only_one_wall_first_layer: Self::default_only_one_wall_first_layer(),
+            support_threshold_angle: Self::default_support_threshold_angle(),
+            infill_overlap_percent: Self::default_infill_overlap_percent(),
             path_tolerance: Self::default_path_tolerance(),
         }
     }
 }
 
 impl SlicingParams {
+    fn default_wall_count() -> usize {
+        3
+    }
+
+    fn default_wall_line_width_min() -> f64 {
+        0.85
+    }
+
+    fn default_wall_line_width_max() -> f64 {
+        1.5
+    }
+
+    fn default_wall_transition_threshold() -> f64 {
+        0.6
+    }
+
+    fn default_wall_transition_length() -> f64 {
+        1.0
+    }
+
+    fn default_wall_distribution_count() -> usize {
+        1
+    }
+
     fn default_infill_pattern() -> String {
         "rectilinear".to_string()
     }
@@ -126,6 +228,22 @@ impl SlicingParams {
 
     fn default_retract_mm() -> f64 {
         1.0
+    }
+
+    fn default_only_one_wall_top() -> bool {
+        true // Single wall on top surface layers for cleaner finish
+    }
+
+    fn default_only_one_wall_first_layer() -> bool {
+        true // Single wall on first layer for better bed adhesion
+    }
+
+    fn default_support_threshold_angle() -> f64 {
+        45.0 // Skip supports for angles ≤45° (shallow overhangs)
+    }
+
+    fn default_infill_overlap_percent() -> f64 {
+        0.25 // 25% overlap for good bonding
     }
 
     fn default_path_tolerance() -> f64 {
@@ -294,8 +412,9 @@ mod tests {
 
     #[test]
     fn test_global_settings_gcode_flavor_defaults_when_absent() {
-        // Simulate a legacy settings JSON that doesn't have the gcode_flavor field
-        let json = r#"{"params":{"layer_height":0.2,"wall_thickness":1.2,"infill_density":0.2,"print_speed":60.0,"nozzle_temp":210.0,"bed_temp":60.0}}"#;
+        // Simulate a legacy settings JSON that doesn't have the gcode_flavor field.
+        // `wall_thickness` is an unknown field in the new schema and is silently ignored.
+        let json = r#"{"params":{"layer_height":0.2,"infill_density":0.2,"print_speed":60.0,"nozzle_temp":210.0,"bed_temp":60.0}}"#;
         let back: GlobalSettings = serde_json::from_str(json).expect("deserialize");
         assert_eq!(
             back.gcode_flavor, "marlin",
@@ -333,7 +452,7 @@ mod tests {
     #[test]
     fn test_global_settings_start_end_gcode_absent_from_legacy_json() {
         // Legacy JSON without start_print_gcode / end_print_gcode should default to None
-        let json = r#"{"params":{"layer_height":0.2,"wall_thickness":1.2,"infill_density":0.2,"print_speed":60.0,"nozzle_temp":210.0,"bed_temp":60.0},"gcode_flavor":"klipper"}"#;
+        let json = r#"{"params":{"layer_height":0.2,"infill_density":0.2,"print_speed":60.0,"nozzle_temp":210.0,"bed_temp":60.0},"gcode_flavor":"klipper"}"#;
         let back: GlobalSettings = serde_json::from_str(json).expect("deserialize");
         assert!(back.start_print_gcode.is_none());
         assert!(back.end_print_gcode.is_none());
@@ -459,6 +578,53 @@ mod tests {
     }
 
     #[test]
+    fn test_slicing_params_arachne_defaults() {
+        let params = SlicingParams::default();
+        assert_eq!(params.wall_count, 3, "Default wall count should be 3");
+        assert_eq!(
+            params.wall_line_width_min, 0.85,
+            "Default wall_line_width_min should be 0.85"
+        );
+        assert_eq!(
+            params.wall_line_width_max, 1.5,
+            "Default wall_line_width_max should be 1.5"
+        );
+        assert_eq!(
+            params.wall_transition_threshold, 0.6,
+            "Default wall_transition_threshold should be 0.6"
+        );
+        assert_eq!(
+            params.wall_transition_length, 1.0,
+            "Default wall_transition_length should be 1.0"
+        );
+        assert_eq!(
+            params.wall_distribution_count, 1,
+            "Default wall_distribution_count should be 1"
+        );
+    }
+
+    #[test]
+    fn test_slicing_params_arachne_fields_round_trip() {
+        let params = SlicingParams {
+            wall_count: 5,
+            wall_line_width_min: 0.6,
+            wall_line_width_max: 2.0,
+            wall_transition_threshold: 0.4,
+            wall_transition_length: 0.8,
+            wall_distribution_count: 2,
+            ..SlicingParams::default()
+        };
+        let json = serde_json::to_string(&params).expect("serialize");
+        let back: SlicingParams = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.wall_count, 5);
+        assert_eq!(back.wall_line_width_min, 0.6);
+        assert_eq!(back.wall_line_width_max, 2.0);
+        assert_eq!(back.wall_transition_threshold, 0.4);
+        assert_eq!(back.wall_transition_length, 0.8);
+        assert_eq!(back.wall_distribution_count, 2);
+    }
+
+    #[test]
     fn test_slicing_params_top_bottom_layers_serialization() {
         let params = SlicingParams {
             top_layers: 5,
@@ -475,8 +641,9 @@ mod tests {
 
     #[test]
     fn test_slicing_params_legacy_json_without_surface_layers() {
-        // Test that old JSON without top_layers/bottom_layers/surface_infill_angle still deserializes
-        let json = r#"{"layer_height":0.2,"wall_thickness":1.2,"infill_density":0.2,"print_speed":60.0,"nozzle_temp":210.0,"bed_temp":60.0}"#;
+        // Test that old JSON without top_layers/bottom_layers/surface_infill_angle still deserializes.
+        // Unknown fields such as "wall_thickness" from legacy files are silently ignored.
+        let json = r#"{"layer_height":0.2,"infill_density":0.2,"print_speed":60.0,"nozzle_temp":210.0,"bed_temp":60.0}"#;
         let params: SlicingParams = serde_json::from_str(json).expect("deserialize");
         assert_eq!(params.top_layers, 3, "Should default to 3 for legacy JSON");
         assert_eq!(
@@ -522,7 +689,7 @@ mod tests {
     #[test]
     fn test_slicing_params_hardware_fields_default_when_absent() {
         // Legacy JSON without the new fields should still deserialize with defaults
-        let json = r#"{"layer_height":0.2,"wall_thickness":1.2,"infill_density":0.2,"print_speed":60.0,"nozzle_temp":210.0,"bed_temp":60.0}"#;
+        let json = r#"{"layer_height":0.2,"infill_density":0.2,"print_speed":60.0,"nozzle_temp":210.0,"bed_temp":60.0}"#;
         let params: SlicingParams = serde_json::from_str(json).expect("deserialize");
         assert_eq!(
             params.filament_diameter_mm, 1.75,

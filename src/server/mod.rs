@@ -25,7 +25,7 @@ pub use handlers::AppState;
 #[derive(Parser, Debug)]
 pub struct ServeCommand {
     /// Port to listen on
-    #[arg(short, long, default_value_t = 4200)]
+    #[arg(short, long, default_value_t = 5201)]
     pub port: u16,
 
     /// Directory containing the built Angular app
@@ -79,8 +79,9 @@ async fn run_server(
     ui_dir: String,
     work_dir: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use actix_cors::Cors;
     use actix_files::Files;
-    use actix_web::{web, App, HttpServer};
+    use actix_web::{http, web, App, HttpServer};
 
     // Initialize work directory
     let work_path = if let Some(dir) = work_dir {
@@ -105,13 +106,32 @@ async fn run_server(
 
     HttpServer::new(move || {
         let fallback_dir = ui_dir.clone();
+        
+        // CORS configuration for HTTP API routes only
+        // Note: WebSocket connections do not support CORS and bypass this middleware
+        let cors = Cors::default()
+            .allow_any_origin()
+            .allowed_methods(vec![
+                http::Method::GET,
+                http::Method::POST,
+                http::Method::PUT,
+                http::Method::DELETE,
+                http::Method::OPTIONS,
+            ])
+            .allowed_headers(vec![
+                http::header::CONTENT_TYPE,
+                http::header::AUTHORIZATION,
+            ])
+            .supports_credentials();
+
         App::new()
             .app_data(app_state.clone())
-            // API routes – must be before static file handler
-            .route("/api/upload", web::post().to(handlers::upload_handler))
-            .route(
-                "/api/download/{request_uuid}",
-                web::get().to(handlers::download_handler),
+            // Apply CORS only to API scope, not to WebSocket
+            .service(
+                web::scope("/api")
+                    .wrap(cors)
+                    .route("/upload", web::post().to(handlers::upload_handler))
+                    .route("/download/{request_uuid}", web::get().to(handlers::download_handler)),
             )
             // WebSocket endpoint
             .route("/ws", web::get().to(ws_session::ws_handler))
@@ -143,12 +163,12 @@ mod tests {
     #[test]
     fn test_serve_command_defaults() {
         let cmd = ServeCommand {
-            port: 4200,
+            port: 5201,
             ui_dir: "./ui/dist/slicer-ui/browser".to_string(),
             host: "127.0.0.1".to_string(),
             work_dir: None,
         };
-        assert_eq!(cmd.port, 4200);
+        assert_eq!(cmd.port, 5201);
         assert_eq!(cmd.host, "127.0.0.1");
     }
 

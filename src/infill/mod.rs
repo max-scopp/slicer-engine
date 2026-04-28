@@ -42,7 +42,7 @@ use grid::generate_grid;
 use honeycomb::generate_honeycomb;
 use gyroid::generate_gyroid;
 use tpms_d::generate_tpms_d;
-use utils::{calculate_infill_region, clip_lines_to_region};
+use utils::clip_lines_to_region;
 
 /// Supported infill patterns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -112,25 +112,25 @@ pub fn generate_infill(
     // Clamp density to valid range [0, 1]
     let density = density.clamp(0.0, 1.0);
 
-    // Calculate infill region by offsetting perimeters inward
-    // This creates a gap between perimeter and infill for better adhesion
-    let infill_region = calculate_infill_region(perimeters);
-
-    if infill_region.is_empty() {
-        return Paths::default();
-    }
-
-    // Generate pattern-specific line segments
+    // `perimeters` is already the correctly-bounded interior region produced by
+    // `calculate_interior_region` in `add_infill_to_layers`.  Do NOT apply an
+    // additional inward offset here: the caller has already placed the boundary
+    // at the inner edge of the innermost wall (accounting for all wall beads
+    // and the configured infill-overlap percentage).  A second inward deflation
+    // was causing a double-inset that collapsed the infill region entirely on
+    // features narrower than ~2× the extra offset, producing the "missing
+    // infill on many layers" artifact visible on complex geometry (e.g. the
+    // 3DBenchy cabin and chimney transition layers).
     let raw_lines = match pattern {
-        InfillPattern::Rectilinear => generate_rectilinear(&infill_region, density, angle_offset),
-        InfillPattern::Grid => generate_grid(&infill_region, density, angle_offset),
-        InfillPattern::Honeycomb => generate_honeycomb(&infill_region, density, angle_offset),
-        InfillPattern::Gyroid => generate_gyroid(&infill_region, density, z_height),
-        InfillPattern::TpmsD => generate_tpms_d(&infill_region, density, z_height),
+        InfillPattern::Rectilinear => generate_rectilinear(perimeters, density, angle_offset),
+        InfillPattern::Grid => generate_grid(perimeters, density, angle_offset),
+        InfillPattern::Honeycomb => generate_honeycomb(perimeters, density, angle_offset),
+        InfillPattern::Gyroid => generate_gyroid(perimeters, density, z_height),
+        InfillPattern::TpmsD => generate_tpms_d(perimeters, density, z_height),
     };
 
     // Clip the generated lines to the infill region boundaries
-    clip_lines_to_region(&raw_lines, &infill_region)
+    clip_lines_to_region(&raw_lines, perimeters)
 }
 
 #[cfg(test)]

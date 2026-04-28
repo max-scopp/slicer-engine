@@ -1,0 +1,56 @@
+//! Core data types for Arachne wall generation.
+
+use clipper2::Path;
+use crate::settings::params::SlicingParams;
+
+/// Resolved Arachne parameters with all values in absolute mm.
+///
+/// Constructed from [`SlicingParams`] via [`ArachneParams::from_slicing_params`].
+pub struct ArachneParams {
+    /// Nozzle diameter in mm.
+    pub nozzle_diameter_mm: f64,
+    /// Maximum number of perimeter beads per shell.
+    pub wall_count: usize,
+    /// Minimum bead width in mm (= `wall_line_width_min × nozzle_diameter_mm`).
+    pub wall_line_width_min_mm: f64,
+    /// Maximum bead width in mm (= `wall_line_width_max × nozzle_diameter_mm`).
+    pub wall_line_width_max_mm: f64,
+    /// Number of innermost beads that may absorb residual width variation.
+    pub wall_distribution_count: usize,
+}
+
+impl ArachneParams {
+    /// Build [`ArachneParams`] from the slicing-parameter bag.
+    pub fn from_slicing_params(params: &SlicingParams) -> Self {
+        let d = params.nozzle_diameter_mm;
+        Self {
+            nozzle_diameter_mm: d,
+            wall_count: params.wall_count,
+            wall_line_width_min_mm: params.wall_line_width_min * d,
+            wall_line_width_max_mm: params.wall_line_width_max * d,
+            wall_distribution_count: params.wall_distribution_count,
+        }
+    }
+}
+
+/// A single computed extrusion bead produced by the Arachne generator.
+pub struct Bead {
+    /// Centerline path (a closed polygon offset inward from the shell boundary).
+    pub path: Path,
+    /// Extrusion width in mm for this bead.
+    pub width_mm: f64,
+    /// True if this is the outermost wall bead, false for inner walls.
+    pub is_outer: bool,
+}
+
+/// Sub-phase timing breakdown for [`crate::arachne::generate_arachne_walls`].
+///
+/// All times are the **sum of CPU time across all rayon worker threads**; they
+/// will be larger than the wall-clock duration of the phase on multi-core machines.
+/// The ratio of the two counters reveals where the per-island cost is concentrated.
+pub struct ArachneSubTimings {
+    /// Total CPU time (all threads) spent inside collapse depth calculation.
+    pub collapse_depth_ms: u64,
+    /// Total CPU time (all threads) spent in bead-centerline [`shrink`](super::beads::shrink) calls.
+    pub bead_shrink_ms: u64,
+}

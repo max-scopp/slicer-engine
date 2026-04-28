@@ -49,6 +49,10 @@
 /// | [`MESH_LOAD`] | STL file read + mesh parsing |
 /// | [`MESH_ANALYSIS`] | AABB / volume / surface-area computation |
 /// | [`SLICING`] | Triangle–plane intersection → `Vec<SliceLayer>` |
+/// | [`ARACHNE_WALLS`] | Variable-width perimeter bead generation |
+/// | [`INFILL_REGION_SNAPSHOT`] | Pre-strip infill interior region snapshot |
+/// | [`WALL_RESTRICTIONS`] | Single-wall first/top-layer restriction pass |
+/// | [`INTERIOR_REGIONS`] | Per-layer interior region computation for surfaces |
 /// | [`SURFACES`] | Top/bottom solid-surface generation |
 /// | [`INFILL`] | Sparse and solid infill pattern generation |
 /// | [`GCODE_GENERATION`] | G-code program construction |
@@ -62,6 +66,18 @@ pub mod phases {
     pub const MESH_ANALYSIS: &str = "mesh_analysis";
     /// Triangle–plane intersection and layer contour extraction phase.
     pub const SLICING: &str = "slicing";
+    /// Variable-width perimeter bead generation (Arachne algorithm).
+    pub const ARACHNE_WALLS: &str = "arachne_walls";
+    /// Snapshot of infill interior regions taken before wall stripping.
+    pub const INFILL_REGION_SNAPSHOT: &str = "infill_region_snapshot";
+    /// Single-wall restriction pass for first and top layers.
+    pub const WALL_RESTRICTIONS: &str = "wall_restrictions";
+    /// Per-layer interior region computation (boundary for surfaces and infill).
+    pub const INTERIOR_REGIONS: &str = "interior_regions";
+    /// Top-surface geometry detection pass inside the wall-restriction step.
+    pub const WALL_TOP_DETECT: &str = "wall_top_detect";
+    /// Inner-wall stripping pass of the single-wall restriction step.
+    pub const WALL_APPLY: &str = "wall_apply";
     /// Top/bottom solid-surface generation phase.
     pub const SURFACES: &str = "surfaces";
     /// Sparse and solid infill pattern generation phase.

@@ -4,6 +4,7 @@ import { HttpClient } from '@angular/common/http';
 import { DEFAULT_SETTINGS, SliceSettings } from '../models/slice-settings.model';
 import { WebSocketService } from './websocket.service';
 import { ServerMessage } from '../../generated/slicer-engine-ws-server-message-v1';
+import { environment } from '../../environments/environment';
 
 export type SlicerStatus = 'idle' | 'ready' | 'uploading' | 'slicing' | 'done' | 'error';
 
@@ -102,7 +103,7 @@ export class SlicerService {
 
   private handlePhaseMarker(msg: { phase: string; event: string; elapsed_ms?: number | null }): void {
     const now = Date.now();
-    
+
     if (msg.event === 'start') {
       // Phase started - add or update the timing entry
       this.phaseTimings.update(timings => {
@@ -138,7 +139,7 @@ export class SlicerService {
     const filename =
       this.selectedFile()?.name.replace(/\.stl$/i, '.gcode') ?? 'output.gcode';
     const link = document.createElement('a');
-    link.href = downloadUrl;
+    link.href = downloadUrl.startsWith('/') ? `${environment.apiUrl}${downloadUrl}` : downloadUrl;
     link.download = filename;
     link.click();
   }
@@ -171,7 +172,7 @@ export class SlicerService {
       formData.append('file', file);
 
       const uploadResponse = await this.http
-        .post<{ request_uuid: string }>('/api/upload', formData)
+        .post<{ request_uuid: string }>(`${environment.apiUrl}/upload`, formData)
         .toPromise();
 
       if (!uploadResponse) {

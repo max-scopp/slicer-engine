@@ -83,7 +83,12 @@ pub struct ShowResultSchema {
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 pub struct SlicingParamsSchema {
     pub layer_height: f64,
-    pub wall_thickness: f64,
+    pub wall_count: usize,
+    pub wall_line_width_min: f64,
+    pub wall_line_width_max: f64,
+    pub wall_transition_threshold: f64,
+    pub wall_transition_length: f64,
+    pub wall_distribution_count: usize,
     pub infill_density: f64,
     pub print_speed: f64,
     pub nozzle_temp: f64,

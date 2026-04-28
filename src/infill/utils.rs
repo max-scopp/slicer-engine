@@ -9,6 +9,13 @@ use clipper2::*;
 ///
 /// Creates a small gap (typically 0.1-0.2mm) between the perimeter wall and
 /// infill to ensure good layer adhesion and prevent gaps.
+///
+/// NOTE: This function is **not** used in the main pipeline any more.  The
+/// pipeline uses `calculate_interior_region` (in `core/infill.rs`) to compute
+/// the correctly-bounded interior region before calling `generate_infill`,
+/// so an additional inward shrink here would double-inset and collapse the
+/// infill region for narrow features.  Kept for potential future use.
+#[allow(dead_code)]
 pub fn calculate_infill_region(perimeters: &Paths) -> Paths {
     // Offset inward by 0.15mm to create gap between perimeter and infill
     // Negative offset = inward (deflate)

@@ -10,6 +10,12 @@ use crate::settings::params::{LifecycleMarkerConfig, SlicingParams};
 
 // ── Private helpers ────────────────────────────────────────────────────────────
 
+/// Minimum width difference (mm) that triggers a new `;WIDTH:` annotation.
+///
+/// Changes smaller than this epsilon are treated as equal, preventing redundant
+/// WIDTH comments for floating-point rounding differences between beads.
+const WIDTH_EPSILON: f64 = 1e-6;
+
 /// Compute the extrusion length (mm of filament) needed to print a straight
 /// line of length `move_len` at the given `layer_height` with the configured
 /// nozzle and filament diameters.
@@ -240,7 +246,7 @@ impl GcodeGenerator {
              ; nozzle_temp: {} °C\n\
              ; bed_temp: {} °C\n\
              ; print_speed: {} mm/s\n\
-             ; wall_thickness: {} mm\n\
+             ; wall_count: {} walls (Arachne VWE)\n\
              ; infill_density: {:.0}%\n\
              ; ---\n",
             self.dialect.flavor_name(),
@@ -248,7 +254,7 @@ impl GcodeGenerator {
             params.nozzle_temp,
             params.bed_temp,
             params.print_speed,
-            params.wall_thickness,
+            params.wall_count,
             params.infill_density * 100.0,
         );
 
@@ -332,6 +338,7 @@ impl GcodeGenerator {
             }
 
             let mut last_role: Option<crate::core::ExtrusionRole> = None;
+            let mut last_width: Option<f64> = None;
 
             for (path_idx, path) in layer.paths.iter().enumerate() {
                 let raw_points: Vec<(f64, f64)> = path.iter().map(|p| (p.x(), p.y())).collect();
@@ -339,9 +346,11 @@ impl GcodeGenerator {
                     continue;
                 }
 
-                // Fetch the role unconditionally — needed both for TYPE annotations
-                // and to decide whether to close the contour below.
+                // Fetch the role and resolve the effective extrusion width
                 let role = layer.role_for_path(path_idx);
+                let width_mm = layer
+                    .width_for_path(path_idx)
+                    .unwrap_or_else(|| role.default_width_mm());
 
                 // Apply Ramer-Douglas-Peucker simplification when a tolerance is set.
                 // `douglas_peucker` always preserves the first and last point, so a
@@ -359,11 +368,17 @@ impl GcodeGenerator {
                     "path should have >= 2 points after simplification"
                 );
 
-                // Emit ;TYPE: / ;WIDTH: annotation when the extrusion role changes
+                // Emit ;TYPE: / ;WIDTH: annotation when the role OR extrusion
+                // width changes.  This ensures slicers / post-processors always
+                // see an up-to-date WIDTH comment before each Arachne bead.
                 if self.marker_config.enabled {
-                    if last_role != Some(role) {
+                    let role_changed = last_role != Some(role);
+                    let width_changed =
+                        last_width.is_none_or(|w| (w - width_mm).abs() > WIDTH_EPSILON);
+
+                    if role_changed || width_changed {
                         let type_name = role.type_name();
-                        let width = format!("{:.2}", role.default_width_mm());
+                        let width_str = format!("{:.2}", width_mm);
 
                         let type_ann = self
                             .marker_config
@@ -375,7 +390,7 @@ impl GcodeGenerator {
                             &z_str,
                             &height_str,
                             type_name,
-                            &width,
+                            &width_str,
                         ));
                         out.push('\n');
 
@@ -389,11 +404,12 @@ impl GcodeGenerator {
                             &z_str,
                             &height_str,
                             type_name,
-                            &width,
+                            &width_str,
                         ));
                         out.push('\n');
 
                         last_role = Some(role);
+                        last_width = Some(width_mm);
                     }
                 }
 
@@ -438,7 +454,7 @@ impl GcodeGenerator {
                     e_total += extrusion_for_move(
                         len,
                         params.layer_height,
-                        params.nozzle_diameter_mm,
+                        width_mm,
                         params.filament_diameter_mm,
                     );
                     out.push_str(&format!(
@@ -455,7 +471,7 @@ impl GcodeGenerator {
                 // producing the "weird line crossing" artifact visible in gyroid infill.
                 let is_closed_loop = matches!(
                     role,
-                    crate::core::ExtrusionRole::Perimeter | crate::core::ExtrusionRole::Skirt
+                    crate::core::ExtrusionRole::OuterWall | crate::core::ExtrusionRole::InnerWall | crate::core::ExtrusionRole::Skirt
                 );
                 if is_closed_loop {
                     let dx = start_x - prev.0;
@@ -465,7 +481,7 @@ impl GcodeGenerator {
                         e_total += extrusion_for_move(
                             len,
                             params.layer_height,
-                            params.nozzle_diameter_mm,
+                            width_mm,
                             params.filament_diameter_mm,
                         );
                         out.push_str(&format!(
@@ -901,12 +917,12 @@ mod tests {
         let mut layer = SliceLayer::new(0.2);
         let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
         layer.paths.push(square);
-        layer.path_roles.push(crate::core::ExtrusionRole::Perimeter);
+        layer.path_roles.push(crate::core::ExtrusionRole::OuterWall);
 
         let gcode =
             GcodeGenerator::new(GcodeFlavor::Marlin).generate(&[layer], &SlicingParams::default());
         assert!(
-            gcode.contains(";TYPE:Perimeter"),
+            gcode.contains(";TYPE:Outer wall"),
             ";TYPE: annotation must be present"
         );
         assert!(
@@ -924,23 +940,23 @@ mod tests {
         layer.paths.push(sq.clone());
         layer.paths.push(sq.clone());
         layer.paths.push(sq);
-        layer.path_roles.push(crate::core::ExtrusionRole::Perimeter);
-        layer.path_roles.push(crate::core::ExtrusionRole::Perimeter);
+        layer.path_roles.push(crate::core::ExtrusionRole::OuterWall);
+        layer.path_roles.push(crate::core::ExtrusionRole::OuterWall);
         layer.path_roles.push(crate::core::ExtrusionRole::Infill);
 
         let gcode =
             GcodeGenerator::new(GcodeFlavor::Marlin).generate(&[layer], &SlicingParams::default());
 
-        // Perimeter TYPE should appear exactly once (no duplicate at role boundary)
-        let perimeter_count = gcode.matches(";TYPE:Perimeter").count();
+        // OuterWall TYPE should appear exactly once (no duplicate at role boundary)
+        let outer_wall_count = gcode.matches(";TYPE:Outer wall").count();
         assert_eq!(
-            perimeter_count, 1,
-            "Perimeter TYPE emitted {} times",
-            perimeter_count
+            outer_wall_count, 1,
+            "Outer wall TYPE emitted {} times",
+            outer_wall_count
         );
 
         // Infill TYPE should appear exactly once
-        let infill_count = gcode.matches(";TYPE:Infill").count();
+        let infill_count = gcode.matches(";TYPE:Sparse infill").count();
         assert_eq!(
             infill_count, 1,
             "Infill TYPE emitted {} times",
@@ -996,7 +1012,7 @@ mod tests {
             .with_marker_config(config)
             .generate(&[layer], &SlicingParams::default());
         assert!(
-            gcode.contains(";FEATURE Infill"),
+            gcode.contains(";FEATURE Sparse infill"),
             "custom type annotation not rendered: {gcode}"
         );
     }
@@ -1093,8 +1109,8 @@ mod tests {
             "missing print_speed"
         );
         assert!(
-            gcode.contains("; wall_thickness: 1.2 mm"),
-            "missing wall_thickness"
+            gcode.contains("; wall_count: 3 walls (Arachne VWE)"),
+            "missing wall_count"
         );
         assert!(
             gcode.contains("; infill_density: 20%"),
