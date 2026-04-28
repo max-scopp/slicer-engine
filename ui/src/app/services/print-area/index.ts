@@ -10,9 +10,10 @@
  */
 export { PrintAreaService } from './print-area.service';
 export {
-  DEFAULT_PRINT_AREA_CONFIG,
-  type DragAnchor,
-  type PrintAreaBounds,
-  type PrintAreaConfig,
-  type SelectOptions,
+    DEFAULT_PRINT_AREA_CONFIG,
+    type DragAnchor,
+    type PrintAreaBounds,
+    type PrintAreaConfig,
+    type SelectOptions
 } from './types';
+

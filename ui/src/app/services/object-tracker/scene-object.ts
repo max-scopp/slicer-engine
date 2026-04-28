@@ -1,12 +1,6 @@
 import { Signal, computed, signal } from '@angular/core';
 
-import {
-  EulerRotation,
-  IDENTITY_TRANSFORM,
-  SceneObjectInit,
-  Transform,
-  Vec3,
-} from './types';
+import { EulerRotation, IDENTITY_TRANSFORM, SceneObjectInit, Transform, Vec3 } from './types';
 
 /**
  * Live, reactive representation of a single object placed in the 3D scene.
@@ -69,11 +63,7 @@ export class SceneObject {
   /** Set the absolute position (any omitted axis keeps its current value). */
   setPosition(x: number, y: number, z?: number): void {
     const current = this._position();
-    if (
-      !Number.isFinite(x) ||
-      !Number.isFinite(y) ||
-      (z !== undefined && !Number.isFinite(z))
-    ) {
+    if (!Number.isFinite(x) || !Number.isFinite(y) || (z !== undefined && !Number.isFinite(z))) {
       return;
     }
     const nz = z ?? current.z;

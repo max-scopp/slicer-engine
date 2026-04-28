@@ -5,10 +5,10 @@ import { DragStore } from './drag-store';
 import { sanitisePrintAreaConfig } from './sanitise';
 import { SelectionStore } from './selection-store';
 import {
-  DEFAULT_PRINT_AREA_CONFIG,
-  PrintAreaBounds,
-  PrintAreaConfig,
-  SelectOptions,
+    DEFAULT_PRINT_AREA_CONFIG,
+    PrintAreaBounds,
+    PrintAreaConfig,
+    SelectOptions,
 } from './types';
 
 /**

@@ -8,9 +8,10 @@
 export { ObjectTrackerService } from './object-tracker.service';
 export { SceneObject } from './scene-object';
 export {
-  IDENTITY_TRANSFORM,
-  type EulerRotation,
-  type SceneObjectInit,
-  type Transform,
-  type Vec3,
+    IDENTITY_TRANSFORM,
+    type EulerRotation,
+    type SceneObjectInit,
+    type Transform,
+    type Vec3
 } from './types';
+

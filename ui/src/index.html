@@ -60,7 +60,7 @@
             function (e) {
               if (!allow(e.target)) e.preventDefault();
             },
-            { passive: false }
+            { passive: false },
           );
         });
         document.addEventListener(
@@ -70,7 +70,7 @@
               e.preventDefault();
             }
           },
-          { passive: false }
+          { passive: false },
         );
         // Suppress double-tap zoom (iOS triggers it within ~300ms of a tap).
         var lastTouchEnd = 0;
@@ -83,7 +83,7 @@
             }
             lastTouchEnd = now;
           },
-          { passive: false }
+          { passive: false },
         );
       })();
     </script>
