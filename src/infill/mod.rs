@@ -29,6 +29,8 @@
 //! ```
 
 use clipper2::*;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 mod rectilinear;
 mod grid;
@@ -45,7 +47,7 @@ use tpms_d::generate_tpms_d;
 use utils::clip_lines_to_region;
 
 /// Supported infill patterns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 pub enum InfillPattern {
     /// Parallel lines alternating direction per layer (default, fastest).
     #[default]

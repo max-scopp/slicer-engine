@@ -1,7 +1,8 @@
 import { Injectable, inject, signal, effect } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { HttpClient } from '@angular/common/http';
-import { DEFAULT_SETTINGS, SliceSettings } from '../models/slice-settings.model';
+import { WsSlicingParams } from '../../generated/slicer-engine-ws-client-message-v1';
+import { DEFAULT_SETTINGS } from '../models/slice-settings.model';
 import { WebSocketService } from './websocket.service';
 import { ServerMessage } from '../../generated/slicer-engine-ws-server-message-v1';
 import { environment } from '../../environments/environment';
@@ -29,7 +30,7 @@ export class SlicerService {
   private readonly http = inject(HttpClient);
 
   readonly selectedFile = signal<File | null>(null);
-  readonly settings = signal<SliceSettings>(DEFAULT_SETTINGS);
+  readonly settings = signal<WsSlicingParams>(DEFAULT_SETTINGS);
   readonly status = signal<SlicerStatus>('idle');
   readonly outputLog = signal<string[]>([]);
   readonly previousSessions = signal<PreviousSession[]>([]);
@@ -153,7 +154,7 @@ export class SlicerService {
     ]);
   }
 
-  updateSettings(patch: Partial<SliceSettings>): void {
+  updateSettings(patch: Partial<WsSlicingParams>): void {
     this.settings.update(current => ({ ...current, ...patch }));
   }
 
@@ -187,22 +188,12 @@ export class SlicerService {
       ]);
 
       // Step 2: Send slice request via WebSocket with request_uuid
-      const s = this.settings();
       this.status.set('slicing');
 
       this.ws.send({
         type: 'Slice',
         request_uuid: requestUuid,
-        settings: {
-          layer_height: s.layerHeight,
-          print_speed: s.printSpeed,
-          nozzle_temp: s.nozzleTemp,
-          bed_temp: s.bedTemp,
-          gcode_flavor: s.gcodeFlavor,
-          infill_density: s.infillDensity,
-          infill_pattern: s.infillPattern,
-          infill_angle: s.infillAngle,
-        },
+        settings: this.settings(),
       });
     } catch (error) {
       this.status.set('error');
