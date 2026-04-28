@@ -72,6 +72,8 @@ const TARGET_MINOR_PIXELS = 14;
 const MINOR_OPACITY = 0.25;
 const MAJOR_OPACITY = 0.6;
 const BED_OUTLINE_OPACITY = 0.9;
+/** Duration (ms) of the cross-fade between old and new grid scales. */
+const GRID_SCALE_TRANSITION_MS = 350;
 
 const DEFAULT_PRINT_AREA: PrintAreaConfig = {
   printableAreaWidth: 220,
@@ -134,6 +136,7 @@ export class ViewerScene {
   private grid: Group;
   private gridMaterials: { material: LineBasicMaterial; baseOpacity: number }[] = [];
   private currentGridSpacingMm = 0;
+  private gridTransition: GridTransition | null = null;
   private printArea: PrintAreaConfig = { ...DEFAULT_PRINT_AREA };
   private rafHandle = 0;
   private disposed = false;
@@ -564,11 +567,24 @@ export class ViewerScene {
     if (snapped === this.currentGridSpacingMm) {
       return;
     }
-    const replacement = this.createGrid(snapped);
-    this.scene.remove(this.grid);
-    disposeObject(this.grid);
-    this.scene.add(replacement);
-    this.grid = replacement;
+
+    // Clean up any previous in-flight transition immediately.
+    if (this.gridTransition) {
+      this.scene.remove(this.gridTransition.outgoing);
+      disposeObject(this.gridTransition.outgoing);
+      this.gridTransition = null;
+    }
+
+    // Keep the current grid in the scene as the outgoing (fading-out) layer.
+    const outgoing = this.grid;
+    const outgoingMaterials = this.gridMaterials;
+
+    // createGrid updates this.gridMaterials and this.currentGridSpacingMm.
+    const incoming = this.createGrid(snapped);
+    this.scene.add(incoming);
+    this.grid = incoming;
+
+    this.gridTransition = { outgoing, outgoingMaterials, startTime: performance.now() };
   }
 
   /**
@@ -593,11 +609,34 @@ export class ViewerScene {
     const t = clamp01((cosAngle - GRID_FADE_HIDE) / (GRID_FADE_FULL - GRID_FADE_HIDE));
     // Smoothstep for a softer ramp at both ends of the fade window.
     const fade = t * t * (3 - 2 * t);
+
+    // Cross-fade between the outgoing (old) grid and the incoming (new) grid.
+    let crossFadeIn = 1.0;
+    if (this.gridTransition) {
+      const elapsed = performance.now() - this.gridTransition.startTime;
+      const progress = Math.min(elapsed / GRID_SCALE_TRANSITION_MS, 1.0);
+      const smooth = progress * progress * (3 - 2 * progress);
+      crossFadeIn = smooth;
+      const crossFadeOut = 1.0 - smooth;
+
+      for (const entry of this.gridTransition.outgoingMaterials) {
+        const opacity = entry.baseOpacity * fade * crossFadeOut;
+        entry.material.opacity = opacity;
+        entry.material.visible = opacity > 0.001;
+      }
+
+      if (progress >= 1.0) {
+        this.scene.remove(this.gridTransition.outgoing);
+        disposeObject(this.gridTransition.outgoing);
+        this.gridTransition = null;
+      }
+    }
+
     for (const entry of this.gridMaterials) {
-      const target = entry.baseOpacity * fade;
-      if (entry.material.opacity !== target) {
-        entry.material.opacity = target;
-        entry.material.visible = target > 0.001;
+      const opacity = entry.baseOpacity * fade * crossFadeIn;
+      if (entry.material.opacity !== opacity) {
+        entry.material.opacity = opacity;
+        entry.material.visible = opacity > 0.001;
       }
     }
   }
@@ -964,6 +1003,12 @@ interface AutoscrollState {
   pointerId: number;
   anchorY: number;
   currentY: number;
+}
+
+interface GridTransition {
+  outgoing: Group;
+  outgoingMaterials: { material: LineBasicMaterial; baseOpacity: number }[];
+  startTime: number;
 }
 
 function easeInOutCubic(t: number): number {
