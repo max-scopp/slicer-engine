@@ -1,4 +1,5 @@
-import { ChangeDetectionStrategy, Component, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
+import { ViewerControl } from '../../services/viewer-control';
 import { Icon } from '../../shared/icon/icon';
 import { RadioButtonValue } from '../../shared/radio-group/radio-button-value';
 import { RadioGroup } from '../../shared/radio-group/radio-group';
@@ -12,6 +13,12 @@ import { Card } from '../card/card';
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class ThreeDViewToolbar {
-  selectedView = signal('3D');
-  selectedCursorMode = signal('orbit');
+  private readonly viewerControl = inject(ViewerControl);
+
+  readonly selectedView = this.viewerControl.view;
+  readonly selectedCursorMode = this.viewerControl.cursorMode;
+
+  resetView(): void {
+    this.viewerControl.reset();
+  }
 }

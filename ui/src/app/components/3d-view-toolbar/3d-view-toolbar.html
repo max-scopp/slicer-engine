@@ -1,8 +1,14 @@
-<nexus-card class="button-radio-group" [(radioGroup)]="selectedView">
-  <button radioButtonValue="3D">3D</button>
-  <button radioButtonValue="Top">Top</button>
-  <button radioButtonValue="Front">Front</button>
-</nexus-card>
+<div class="view-group">
+  <nexus-card class="button-radio-group" [(radioGroup)]="selectedView">
+    <button radioButtonValue="3D">3D</button>
+    <button radioButtonValue="Top">Top</button>
+    <button radioButtonValue="Front">Front</button>
+  </nexus-card>
+
+  <button class="reset-view-button" type="button" title="Reset view" (click)="resetView()">
+    <nexus-icon name="restart"></nexus-icon>
+  </button>
+</div>
 
 <nexus-card class="button-radio-group icon-group" [(radioGroup)]="selectedCursorMode">
   <button radioButtonValue="orbit">

@@ -11,6 +11,7 @@ import {
   signal,
   viewChild,
 } from '@angular/core';
+import { ViewerControl } from '../../services/viewer-control';
 import { ChunkedLineGeometry } from './chunked-line-geometry';
 import { GcodeSource, loadGcode } from './gcode-loader';
 import { ModelSource, loadModel } from './model-loader';
@@ -82,6 +83,7 @@ export class ViewerComponent implements OnDestroy {
 
   private readonly hostRef = viewChild.required<ElementRef<HTMLElement>>('host');
   private readonly elementRef = inject(ElementRef);
+  private readonly viewerControl = inject(ViewerControl);
 
   /** Current loading status for the optional overlay. */
   readonly status = signal<'idle' | 'loading' | 'streaming' | 'ready' | 'error'>('idle');
@@ -108,6 +110,28 @@ export class ViewerComponent implements OnDestroy {
       }
       this.gcodeGeometry?.setTravelVisible(showTravel);
       this.applySource(mode, model, gcode);
+    });
+
+    // React to view-preset changes from the toolbar.
+    effect(() => {
+      const view = this.viewerControl.view();
+      this.scene?.setView(view);
+    });
+
+    // React to cursor-mode changes from the toolbar.
+    effect(() => {
+      const mode = this.viewerControl.cursorMode();
+      this.scene?.setCursorMode(mode);
+    });
+
+    // React to reset requests from the toolbar.
+    effect(() => {
+      const tick = this.viewerControl.resetTick();
+      // Skip the very first emission so we don't redundantly reset on init.
+      if (tick === 0) {
+        return;
+      }
+      this.scene?.resetView();
     });
   }
 
@@ -139,6 +163,10 @@ export class ViewerComponent implements OnDestroy {
   private initScene(): void {
     const host = this.hostRef().nativeElement;
     this.scene = new ViewerScene(host);
+    // Apply the current toolbar selections so the scene starts in sync with
+    // whatever view / cursor mode the user already had selected.
+    this.scene.setCursorMode(this.viewerControl.cursorMode());
+    this.scene.setView(this.viewerControl.view());
     // Trigger initial source application now that the scene exists.
     this.applySource(this.mode(), this.model(), this.gcodeSource());
   }

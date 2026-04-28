@@ -5,6 +5,7 @@ import {
   DirectionalLight,
   GridHelper,
   Group,
+  MOUSE,
   Mesh,
   MeshBasicMaterial,
   PerspectiveCamera,
@@ -14,6 +15,38 @@ import {
   WebGLRenderer,
 } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+
+export type ViewerView = '3D' | 'Top' | 'Front';
+export type ViewerCursorMode = 'orbit' | 'pan' | 'zoom' | 'rotate' | 'pullToSurface';
+
+/** Direction vector (camera → target inverted) of the default 3D framing. */
+const DEFAULT_VIEW_DIR = new Vector3(1, -1, 0.8).normalize();
+const DEFAULT_FIT_PADDING = 1.4;
+const VIEW_TRANSITION_MS = 600;
+
+/** Field of view (deg) used for the perspective "3D" preset. */
+const PERSPECTIVE_FOV = 45;
+/**
+ * Field of view (deg) used to fake an orthographic projection. A very small
+ * FOV combined with a proportionally large camera distance approximates a
+ * parallel projection while keeping a single PerspectiveCamera — which lets
+ * us tween FOV smoothly between ortho and perspective views without ever
+ * swapping camera types.
+ */
+const ORTHO_FOV = 1;
+
+/** Initial camera pose used at startup and as the target of resetView(). */
+const INITIAL_CAMERA_POSITION = new Vector3(220, -240, 180);
+const INITIAL_CAMERA_TARGET = new Vector3(0, 0, 0);
+const INITIAL_CAMERA_UP = new Vector3(0, 0, 1);
+
+/**
+ * Fixed near/far plane distances for the camera. Combined with the renderer's
+ * `logarithmicDepthBuffer`, this keeps the entire scene visible regardless of
+ * how far the user dollies out or which angle they view from.
+ */
+const CAMERA_NEAR = 0.1;
+const CAMERA_FAR = 1_000_000;
 
 /**
  * Owns the Three.js scene, camera, renderer, controls and render loop.
@@ -35,6 +68,8 @@ export class ViewerScene {
   private grid: GridHelper;
   private rafHandle = 0;
   private disposed = false;
+  private currentView: ViewerView = '3D';
+  private animation: CameraAnimation | null = null;
 
   constructor(host: HTMLElement) {
     this.host = host;
@@ -45,18 +80,23 @@ export class ViewerScene {
     this.scene.add(this.contentRoot);
 
     const { clientWidth, clientHeight } = this.sizeOf(host);
+    const aspect = clientWidth / clientHeight;
     // Use Z-up so STL/G-code coordinates (printer convention) render with Z
     // as height; XY is the build plate.
-    this.camera = new PerspectiveCamera(45, clientWidth / clientHeight, 0.1, 5000);
-    this.camera.up.set(0, 0, 1);
+    this.camera = new PerspectiveCamera(PERSPECTIVE_FOV, aspect, CAMERA_NEAR, CAMERA_FAR);
+    this.camera.up.copy(INITIAL_CAMERA_UP);
     // Diagonal start view: looking at origin from +X, -Y, slightly above the
     // plate, so the user immediately sees all three printer axes.
-    this.camera.position.set(220, -240, 180);
-    this.camera.lookAt(0, 0, 0);
+    this.camera.position.copy(INITIAL_CAMERA_POSITION);
+    this.camera.lookAt(INITIAL_CAMERA_TARGET);
 
     this.renderer = new WebGLRenderer({
       antialias: true,
       alpha: true,
+      // Logarithmic depth buffer keeps depth precision usable across the
+      // very large near→far range we use (so nothing clips when dollying
+      // out or looking up at the build plate from below).
+      logarithmicDepthBuffer: true,
       powerPreference: 'high-performance',
     });
     this.renderer.setPixelRatio(window.devicePixelRatio);
@@ -107,24 +147,70 @@ export class ViewerScene {
   }
 
   /** Re-frame the camera so the whole content fits comfortably in view. */
-  fitToContent(padding = 1.4): void {
-    const box = new Box3().setFromObject(this.contentRoot);
-    if (box.isEmpty()) {
+  fitToContent(padding = DEFAULT_FIT_PADDING): void {
+    const sphere = this.contentBoundingSphere();
+    if (!sphere) {
       return;
     }
-    const sphere = new Sphere();
-    box.getBoundingSphere(sphere);
-    const radius = Math.max(sphere.radius, 1);
-    const fov = (this.camera.fov * Math.PI) / 180;
-    const distance = (radius * padding) / Math.sin(fov / 2);
-    // Match the initial diagonal Z-up view: front-right, slightly above.
-    const dir = new Vector3(1, -1, 0.8).normalize();
-    this.camera.position.copy(sphere.center).addScaledVector(dir, distance);
-    this.camera.near = Math.max(distance / 1000, 0.1);
-    this.camera.far = distance * 10;
-    this.camera.updateProjectionMatrix();
+    const fovRad = (this.camera.fov * Math.PI) / 180;
+    const distance = (sphere.radius * padding) / Math.sin(fovRad / 2);
+    this.camera.position.copy(sphere.center).addScaledVector(DEFAULT_VIEW_DIR, distance);
     this.controls.target.copy(sphere.center);
+    this.updateNearFar(distance, sphere.radius);
+    this.camera.updateProjectionMatrix();
     this.controls.update();
+  }
+
+  /**
+   * Switch to one of the named view presets with a smooth camera animation.
+   * Top / Front are rendered as a near-zero-FOV perspective view at a far
+   * distance, which is visually equivalent to an orthographic projection but
+   * lets us tween FOV / position continuously between presets.
+   */
+  setView(view: ViewerView): void {
+    if (view === this.currentView && !this.animation) {
+      return;
+    }
+    this.currentView = view;
+    this.animateToView(view);
+  }
+
+  /** Reset the camera to the default 3D framing using a smooth animation. */
+  resetView(): void {
+    this.currentView = '3D';
+    this.animateToPose({
+      position: INITIAL_CAMERA_POSITION.clone(),
+      target: INITIAL_CAMERA_TARGET.clone(),
+      up: INITIAL_CAMERA_UP.clone(),
+      fov: PERSPECTIVE_FOV,
+    });
+  }
+
+  /** Configure pointer interaction behaviour for the OrbitControls. */
+  setCursorMode(mode: ViewerCursorMode): void {
+    const c = this.controls;
+    c.enableRotate = true;
+    c.enablePan = true;
+    c.enableZoom = true;
+    switch (mode) {
+      case 'orbit':
+      case 'rotate':
+        c.mouseButtons = { LEFT: MOUSE.ROTATE, MIDDLE: MOUSE.DOLLY, RIGHT: MOUSE.PAN };
+        break;
+      case 'pan':
+        c.mouseButtons = { LEFT: MOUSE.PAN, MIDDLE: MOUSE.DOLLY, RIGHT: MOUSE.ROTATE };
+        break;
+      case 'zoom':
+        c.mouseButtons = { LEFT: MOUSE.DOLLY, MIDDLE: MOUSE.DOLLY, RIGHT: MOUSE.PAN };
+        break;
+      case 'pullToSurface':
+        // Placeholder: surface-pulling is not implemented yet, so we simply
+        // freeze the controls to make the active mode visually distinct.
+        c.enableRotate = false;
+        c.enablePan = false;
+        c.enableZoom = false;
+        break;
+    }
   }
 
   dispose(): void {
@@ -148,7 +234,11 @@ export class ViewerScene {
       return;
     }
     this.rafHandle = requestAnimationFrame(this.tick);
-    this.controls.update();
+    if (this.animation) {
+      this.advanceAnimation();
+    } else {
+      this.controls.update();
+    }
     this.renderer.render(this.scene, this.camera);
   };
 
@@ -189,6 +279,233 @@ export class ViewerScene {
     this.scene.add(replacement);
     this.grid = replacement;
   }
+
+  // ---------------------------------------------------------------------------
+  // View-preset animation
+  // ---------------------------------------------------------------------------
+
+  private contentBoundingSphere(): Sphere | null {
+    const box = new Box3().setFromObject(this.contentRoot);
+    if (box.isEmpty()) {
+      // Fall back to the build-plate grid extent so the camera still has
+      // something sensible to frame when no model is loaded.
+      box.set(new Vector3(-100, -100, 0), new Vector3(100, 100, 0));
+    }
+    const sphere = new Sphere();
+    box.getBoundingSphere(sphere);
+    if (sphere.radius <= 0 || !Number.isFinite(sphere.radius)) {
+      return null;
+    }
+    sphere.radius = Math.max(sphere.radius, 1);
+    return sphere;
+  }
+
+  /**
+   * Compute target framing for the requested view preset — a unit direction
+   * from target to camera, the desired FOV, target point and up vector. The
+   * camera distance is derived per-frame from FOV and bounding radius so the
+   * on-screen framing stays stable while FOV tweens.
+   */
+  private planView(view: ViewerView): {
+    dir: Vector3;
+    fov: number;
+    target: Vector3;
+    up: Vector3;
+  } {
+    const sphere = this.contentBoundingSphere() ?? new Sphere(new Vector3(), 100);
+    switch (view) {
+      case 'Top':
+        return {
+          dir: new Vector3(0, 0, 1),
+          fov: ORTHO_FOV,
+          target: sphere.center.clone(),
+          up: new Vector3(0, 1, 0),
+        };
+      case 'Front':
+        return {
+          dir: new Vector3(0, -1, 0),
+          fov: ORTHO_FOV,
+          target: sphere.center.clone(),
+          up: new Vector3(0, 0, 1),
+        };
+      case '3D':
+      default:
+        return {
+          dir: DEFAULT_VIEW_DIR.clone(),
+          fov: PERSPECTIVE_FOV,
+          target: sphere.center.clone(),
+          up: new Vector3(0, 0, 1),
+        };
+    }
+  }
+
+  private animateToView(view: ViewerView): void {
+    const plan = this.planView(view);
+    const sphere = this.contentBoundingSphere() ?? new Sphere(new Vector3(), 100);
+    // Pick a target distance that frames the bounding sphere with padding
+    // at the destination FOV. (For ORTHO_FOV this naturally produces a very
+    // large distance — the basis of our "fake ortho" effect.)
+    const toFovRad = (plan.fov * Math.PI) / 180;
+    const toDistance = (sphere.radius * DEFAULT_FIT_PADDING) / Math.sin(toFovRad / 2);
+
+    this.startAnimation({
+      toDir: plan.dir,
+      toFov: plan.fov,
+      toTarget: plan.target,
+      toUp: plan.up,
+      toDistance,
+    });
+  }
+
+  /**
+   * Animate to an absolute camera pose (position / target / up / fov). Used
+   * by {@link resetView} to restore the exact initial camera state regardless
+   * of what content is currently loaded.
+   */
+  private animateToPose(pose: {
+    position: Vector3;
+    target: Vector3;
+    up: Vector3;
+    fov: number;
+  }): void {
+    const offset = pose.position.clone().sub(pose.target);
+    const toDistance = offset.length();
+    const toDir = toDistance > 1e-6 ? offset.divideScalar(toDistance) : DEFAULT_VIEW_DIR.clone();
+
+    this.startAnimation({
+      toDir,
+      toFov: pose.fov,
+      toTarget: pose.target,
+      toUp: pose.up,
+      toDistance,
+    });
+  }
+
+  private startAnimation(spec: {
+    toDir: Vector3;
+    toFov: number;
+    toTarget: Vector3;
+    toUp: Vector3;
+    toDistance: number;
+  }): void {
+    const fromTarget = this.controls.target.clone();
+    // Derive the current camera direction from its position relative to the
+    // controls target, so the animation always begins from the user's actual
+    // current viewpoint (which may have been freely orbited).
+    const offset = this.camera.position.clone().sub(fromTarget);
+    const fromDistance = offset.length();
+    const fromDir =
+      fromDistance > 1e-6 ? offset.clone().divideScalar(fromDistance) : DEFAULT_VIEW_DIR.clone();
+    const fromUp = this.camera.up.clone().normalize();
+
+    // Disable controls during the transition so user input doesn't fight
+    // the tween. They are re-enabled when the animation finishes.
+    this.controls.enabled = false;
+
+    this.animation = {
+      startTime: performance.now(),
+      duration: VIEW_TRANSITION_MS,
+      fromDir,
+      toDir: spec.toDir.clone().normalize(),
+      fromFov: this.camera.fov,
+      toFov: spec.toFov,
+      fromTarget,
+      toTarget: spec.toTarget.clone(),
+      fromUp,
+      toUp: spec.toUp.clone().normalize(),
+      fromDistance,
+      toDistance: spec.toDistance,
+    };
+  }
+
+  private advanceAnimation(): void {
+    const anim = this.animation;
+    if (!anim) {
+      return;
+    }
+    const now = performance.now();
+    const t = Math.min(1, (now - anim.startTime) / anim.duration);
+    const eased = easeInOutCubic(t);
+
+    // Interpolated direction (kept unit-length so distance is purely a
+    // function of FOV and bounding radius).
+    const dir = anim.fromDir.clone().lerp(anim.toDir, eased);
+    if (dir.lengthSq() < 1e-6) {
+      dir.copy(anim.toDir);
+    } else {
+      dir.normalize();
+    }
+
+    // Interpolated up vector — same lerp-then-normalize trick is fine here
+    // because all our up vectors are axis-aligned and never antiparallel.
+    const up = anim.fromUp.clone().lerp(anim.toUp, eased);
+    if (up.lengthSq() < 1e-6) {
+      up.copy(anim.toUp);
+    } else {
+      up.normalize();
+    }
+
+    // Tween FOV and distance independently. Distance is interpolated
+    // directly so an absolute pose (e.g. resetView) lands at the exact
+    // requested position, while still keeping the on-screen size of the
+    // content sensible for view-preset transitions.
+    const fov = lerp(anim.fromFov, anim.toFov, eased);
+    const distance = lerp(anim.fromDistance, anim.toDistance, eased);
+
+    const target = anim.fromTarget.clone().lerp(anim.toTarget, eased);
+
+    this.camera.up.copy(up);
+    this.camera.fov = fov;
+    this.camera.position.copy(target).addScaledVector(dir, distance);
+    this.controls.target.copy(target);
+    this.updateNearFar(distance, Math.max(distance * 0.5, 1));
+    this.camera.lookAt(target);
+    this.camera.updateProjectionMatrix();
+
+    if (t >= 1) {
+      this.controls.enabled = true;
+      this.controls.update();
+      this.animation = null;
+    }
+  }
+
+  /**
+   * Pin the camera frustum to wide fixed bounds. The renderer is configured
+   * with a logarithmic depth buffer so this huge near→far range still has
+   * usable depth precision — and nothing is ever clipped, regardless of how
+   * far the user dollies out or which angle they look from. The arguments
+   * are accepted for API compatibility with the previous implementation.
+   */
+  private updateNearFar(_distance: number, _radius: number): void {
+    if (this.camera.near !== CAMERA_NEAR || this.camera.far !== CAMERA_FAR) {
+      this.camera.near = CAMERA_NEAR;
+      this.camera.far = CAMERA_FAR;
+      this.camera.updateProjectionMatrix();
+    }
+  }
+}
+
+interface CameraAnimation {
+  startTime: number;
+  duration: number;
+  fromDir: Vector3;
+  toDir: Vector3;
+  fromFov: number;
+  toFov: number;
+  fromTarget: Vector3;
+  toTarget: Vector3;
+  fromUp: Vector3;
+  toUp: Vector3;
+  fromDistance: number;
+  toDistance: number;
+}
+
+function easeInOutCubic(t: number): number {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
 }
 
 function disposeObject(obj: unknown): void {
