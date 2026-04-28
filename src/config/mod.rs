@@ -12,7 +12,7 @@
 //! 4. **CLI arguments** — override everything at runtime (not persisted)
 //!
 //! # Modules
-//! - [`types`]: Data structures (`AppConfig`, `SlicingConfig`, `ServerConfig`, …)
+//! - [`types`]: Data structures (`AppConfig`, `SlicingPreset`, `ServerConfig`, …)
 //! - [`io`]: `load_config`, `save_config`, `load_and_merge_config`, path helpers
 
 pub mod io;
@@ -24,5 +24,5 @@ pub use io::{
 };
 pub use types::{
     AppConfig, GlobalConfig, MachineConfig, MaterialProfile, ProfilesConfig, ServerConfig,
-    SlicingConfig, SlicingPreset,
+    SlicingPreset,
 };

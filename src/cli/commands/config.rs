@@ -216,7 +216,7 @@ pub fn apply_config_field(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Route by section prefix
     if let Some(slicing_key) = key.strip_prefix("slicing.") {
-        apply_slicing_field(&mut config.slicing, slicing_key, value)?;
+        apply_slicing_field(config, slicing_key, value)?;
     } else if let Some(server_key) = key.strip_prefix("server.") {
         apply_server_field(&mut config.server, server_key, value)?;
     } else if let Some(machine_key) = key.strip_prefix("machine.") {
@@ -232,90 +232,26 @@ pub fn apply_config_field(
 }
 
 fn apply_slicing_field(
-    slicing: &mut crate::config::SlicingConfig,
+    config: &mut AppConfig,
     key: &str,
     value: &serde_json::Value,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    macro_rules! set_f64 {
-        ($field:ident) => {
-            if key == stringify!($field) {
-                slicing.$field = Some(
-                    value
-                        .as_f64()
-                        .ok_or_else(|| format!("'{}' must be a number", key))?,
-                );
-                return Ok(());
-            }
-        };
-    }
-    macro_rules! set_usize {
-        ($field:ident) => {
-            if key == stringify!($field) {
-                slicing.$field = Some(
-                    value
-                        .as_u64()
-                        .ok_or_else(|| format!("'{}' must be a non-negative integer", key))?
-                        as usize,
-                );
-                return Ok(());
-            }
-        };
-    }
-    macro_rules! set_bool {
-        ($field:ident) => {
-            if key == stringify!($field) {
-                slicing.$field = Some(
-                    value
-                        .as_bool()
-                        .ok_or_else(|| format!("'{}' must be true or false", key))?,
-                );
-                return Ok(());
-            }
-        };
-    }
-    macro_rules! set_string {
-        ($field:ident) => {
-            if key == stringify!($field) {
-                slicing.$field = Some(
-                    value
-                        .as_str()
-                        .ok_or_else(|| format!("'{}' must be a string", key))?
-                        .to_string(),
-                );
-                return Ok(());
-            }
-        };
-    }
+    use crate::settings::params::SlicingParams;
 
-    set_f64!(layer_height);
-    set_f64!(wall_line_width_min);
-    set_f64!(wall_line_width_max);
-    set_f64!(wall_transition_threshold);
-    set_f64!(wall_transition_length);
-    set_f64!(infill_density);
-    set_f64!(infill_base_angle);
-    set_f64!(print_speed);
-    set_f64!(nozzle_temp);
-    set_f64!(bed_temp);
-    set_f64!(surface_infill_angle);
-    set_f64!(filament_diameter_mm);
-    set_f64!(nozzle_diameter_mm);
-    set_f64!(travel_speed_mm_min);
-    set_f64!(z_hop_mm);
-    set_f64!(retract_mm);
-    set_f64!(support_threshold_angle);
-    set_f64!(infill_overlap_percent);
-    set_f64!(path_tolerance);
-    set_usize!(wall_count);
-    set_usize!(wall_distribution_count);
-    set_usize!(top_layers);
-    set_usize!(bottom_layers);
-    set_bool!(only_one_wall_top);
-    set_bool!(only_one_wall_first_layer);
-    set_string!(infill_pattern);
-    set_string!(gcode_flavor);
+    let slicing = config.slicing.get_or_insert_with(SlicingParams::default);
+    let mut slicing_val = serde_json::to_value(&*slicing)
+        .map_err(|e| format!("Failed to serialize slicing params: {}", e))?;
+    let obj = slicing_val
+        .as_object_mut()
+        .ok_or("Internal error: slicing params is not a JSON object")?;
 
-    Err(format!("Unknown slicing config key: '{}'", key).into())
+    if !obj.contains_key(key) {
+        return Err(format!("Unknown slicing config key: '{}'", key).into());
+    }
+    obj.insert(key.to_string(), value.clone());
+    *slicing = serde_json::from_value(slicing_val)
+        .map_err(|e| format!("Invalid value for '{}': {}", key, e))?;
+    Ok(())
 }
 
 fn apply_server_field(
@@ -400,7 +336,7 @@ mod tests {
         let mut config = AppConfig::default();
         apply_config_field(&mut config, "slicing.layer_height", &serde_json::json!(0.12))
             .unwrap();
-        assert_eq!(config.slicing.layer_height, Some(0.12));
+        assert_eq!(config.slicing.unwrap().layer_height, 0.12);
     }
 
     #[test]

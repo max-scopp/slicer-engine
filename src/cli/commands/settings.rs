@@ -7,11 +7,10 @@ use std::path::PathBuf;
 use crate::cli::emit::Emitter;
 use crate::cli::error::CliError;
 use crate::cli::output::{EmitPayload, OutputFormat};
-use crate::config::{config_file, load_config, save_config};
+use crate::config::{config_file, load_and_merge_config, load_config, save_config};
 use crate::settings::diff::compare_settings;
-use crate::settings::params::{GlobalSettings, ObjectSettings};
+use crate::settings::params::{ObjectSettings, SlicingParams};
 use crate::settings::validator::SettingValidator;
-use crate::settings::{load_settings, save_settings};
 
 /// Manage and validate slicing settings.
 #[derive(Parser, Debug)]
@@ -168,7 +167,7 @@ impl EmitPayload for DiffResult<'_> {
     }
 }
 
-fn load_global(path: &PathBuf) -> Result<GlobalSettings, CliError> {
+fn load_global(path: &PathBuf) -> Result<SlicingParams, CliError> {
     let content = std::fs::read_to_string(path).map_err(|e| {
         CliError::invalid(format!(
             "Cannot read global settings '{}': {}",
@@ -178,7 +177,7 @@ fn load_global(path: &PathBuf) -> Result<GlobalSettings, CliError> {
     })?;
     serde_json::from_str(&content).map_err(|e| {
         CliError::invalid(format!(
-            "Invalid global settings JSON '{}': {}",
+            "Invalid global settings '{}': {}",
             path.display(),
             e
         ))
@@ -213,7 +212,7 @@ fn execute_validate(args: &ValidateArgs) -> Result<(), Box<dyn std::error::Error
     let global = load_global(&args.global)?;
     let object = load_object(&args.object)?;
 
-    let global_result = global.params.validate();
+    let global_result = global.validate();
     let object_result = object
         .overrides
         .as_ref()
@@ -273,10 +272,12 @@ fn execute_show(args: &ShowArgs) -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("Invalid output format: {}", e))?;
 
     let emitter = Emitter::new(format);
-    let settings = load_settings()?;
+    let config = load_and_merge_config(None)?;
+    let params = config.slicing.as_ref().cloned().unwrap_or_default();
 
     emitter.emit(&ShowResult {
-        settings: &settings,
+        config: &config,
+        params: &params,
     });
 
     Ok(())
@@ -289,9 +290,10 @@ fn execute_get(args: &GetArgs) -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("Invalid output format: {}", e))?;
 
     let emitter = Emitter::new(format);
-    let settings = load_settings()?;
+    let config = load_and_merge_config(None)?;
+    let params = config.slicing.unwrap_or_default();
 
-    let value = get_setting_value(&settings, &args.key)?;
+    let value = get_setting_value(&params, &args.key)?;
 
     emitter.emit(&GetResult {
         key: &args.key,
@@ -313,12 +315,7 @@ fn execute_set(args: &SetArgs) -> Result<(), Box<dyn std::error::Error>> {
     let parsed_value: Value =
         serde_json::from_str(&args.value).unwrap_or_else(|_| Value::String(args.value.clone()));
 
-    // Load current settings, apply the change, save to JSON settings file
-    let mut settings = load_settings()?;
-    set_setting_value(&mut settings, &args.key, &parsed_value)?;
-    save_settings(&settings)?;
-
-    // Also persist the change to the TOML config file
+    // Persist the change to TOML
     persist_setting_to_toml(&args.key, &parsed_value)?;
 
     emitter.emit(&SetResult {
@@ -354,6 +351,7 @@ fn get_json_path<'a>(val: &'a serde_json::Value, path: &str) -> Option<&'a serde
 ///
 /// Intermediate objects must already exist.  The final key is inserted or
 /// replaced.  Returns an error if any intermediate segment is not an object.
+#[cfg(test)]
 fn set_json_path(
     val: &mut serde_json::Value,
     path: &str,
@@ -380,11 +378,11 @@ fn set_json_path(
     Ok(())
 }
 
-/// Resolve a user-supplied key to a full dot-separated path in `GlobalSettings`.
+/// Resolve a user-supplied key to a valid dot-separated path in `SlicingParams`.
 ///
-/// Supports both full paths (`params.layer_height`) and flat shorthand aliases
-/// (`layer_height` → `params.layer_height`).  Returns the resolved path or an
-/// error if the key does not exist in the settings object.
+/// Supports both direct flat keys (`layer_height`) and legacy dotted paths
+/// (`params.layer_height` → `layer_height`).  Returns the resolved key or an
+/// error if it does not exist in the params object.
 fn resolve_key_path(
     val: &serde_json::Value,
     key: &str,
@@ -394,44 +392,44 @@ fn resolve_key_path(
         return Ok(key.to_string());
     }
 
-    // Try under the "params." prefix for backward-compatible flat keys
-    let nested = format!("params.{}", key);
-    if get_json_path(val, &nested).is_some() {
-        return Ok(nested);
+    // Accept legacy `params.<key>` aliases transparently
+    if let Some(stripped) = key.strip_prefix("params.") {
+        if get_json_path(val, stripped).is_some() {
+            return Ok(stripped.to_string());
+        }
     }
 
     Err(format!("Unknown setting key: '{}'", key).into())
 }
 
-/// Get a setting value by key from global settings.
+/// Get a setting value by key from slicing params.
 ///
-/// Accepts full dot-separated paths (e.g. `"params.layer_height"`) or flat
-/// shorthand aliases (e.g. `"layer_height"`).
+/// Accepts flat keys (e.g. `"layer_height"`) or legacy `params.` aliases.
 fn get_setting_value(
-    settings: &GlobalSettings,
+    params: &SlicingParams,
     key: &str,
 ) -> Result<Value, Box<dyn std::error::Error>> {
-    let val = serde_json::to_value(settings)?;
+    let val = serde_json::to_value(params)?;
     let resolved = resolve_key_path(&val, key)?;
     Ok(get_json_path(&val, &resolved)
         .expect("key was just resolved; must exist")
         .clone())
 }
 
-/// Set a setting value by key in global settings.
+/// Set a setting value by key in slicing params.
 ///
-/// Accepts full dot-separated paths (e.g. `"params.layer_height"`) or flat
-/// shorthand aliases (e.g. `"layer_height"`).  Semantic validation is applied
-/// for fields that require it (`infill_density` bounds, `gcode_flavor` enum).
+/// Accepts flat keys or legacy `params.` aliases.  Semantic validation is
+/// applied for special fields (`infill_density` bounds, `gcode_flavor` enum).
+#[cfg(test)]
 fn set_setting_value(
-    settings: &mut GlobalSettings,
+    params: &mut SlicingParams,
     key: &str,
     value: &Value,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut val = serde_json::to_value(&*settings)?;
+    let mut val = serde_json::to_value(&*params)?;
     let resolved = resolve_key_path(&val, key)?;
 
-    // Semantic validation for special fields (last segment of the resolved path)
+    // Semantic validation for special fields
     let leaf = resolved.rsplit('.').next().unwrap_or(&resolved);
     match leaf {
         "gcode_flavor" => {
@@ -450,15 +448,13 @@ fn set_setting_value(
                 return Err("infill_density must be between 0.0 and 1.0".into());
             }
         }
-        _ => {
-            // All other fields must be valid JSON (type checked by deserialisation below)
-        }
+        _ => {}
     }
 
     set_json_path(&mut val, &resolved, value.clone())?;
 
-    // Deserialize back — this catches type mismatches (e.g. string for a float field)
-    *settings =
+    // Deserialize back — catches type mismatches (e.g. string for a float field)
+    *params =
         serde_json::from_value(val).map_err(|e| format!("Invalid value for '{}': {}", key, e))?;
     Ok(())
 }
@@ -466,7 +462,8 @@ fn set_setting_value(
 // ── Payload types ─────────────────────────────────────────────────────────────
 
 struct ShowResult<'a> {
-    settings: &'a GlobalSettings,
+    config: &'a crate::config::AppConfig,
+    params: &'a SlicingParams,
 }
 
 impl EmitPayload for ShowResult<'_> {
@@ -475,48 +472,34 @@ impl EmitPayload for ShowResult<'_> {
     }
 
     fn display_human(&self) -> String {
+        let p = self.params;
         let mut lines = vec![
             "Global Settings:".to_string(),
-            format!("  layer_height: {} mm", self.settings.params.layer_height),
-            format!("  wall_count: {} walls", self.settings.params.wall_count),
-            format!(
-                "  wall_line_width_min: {} × nozzle",
-                self.settings.params.wall_line_width_min
-            ),
-            format!(
-                "  wall_line_width_max: {} × nozzle",
-                self.settings.params.wall_line_width_max
-            ),
+            format!("  layer_height: {} mm", p.layer_height),
+            format!("  wall_count: {} walls", p.wall_count),
+            format!("  wall_line_width_min: {} × nozzle", p.wall_line_width_min),
+            format!("  wall_line_width_max: {} × nozzle", p.wall_line_width_max),
             format!(
                 "  wall_transition_threshold: {} × nozzle",
-                self.settings.params.wall_transition_threshold
+                p.wall_transition_threshold
             ),
-            format!(
-                "  wall_transition_length: {} mm",
-                self.settings.params.wall_transition_length
-            ),
-            format!(
-                "  wall_distribution_count: {}",
-                self.settings.params.wall_distribution_count
-            ),
-            format!(
-                "  infill_density: {:.0}%",
-                self.settings.params.infill_density * 100.0
-            ),
-            format!("  print_speed: {} mm/s", self.settings.params.print_speed),
-            format!("  nozzle_temp: {}°C", self.settings.params.nozzle_temp),
-            format!("  bed_temp: {}°C", self.settings.params.bed_temp),
-            format!("  gcode_flavor: {}", self.settings.gcode_flavor),
+            format!("  wall_transition_length: {} mm", p.wall_transition_length),
+            format!("  wall_distribution_count: {}", p.wall_distribution_count),
+            format!("  infill_density: {:.0}%", p.infill_density * 100.0),
+            format!("  print_speed: {} mm/s", p.print_speed),
+            format!("  nozzle_temp: {}°C", p.nozzle_temp),
+            format!("  bed_temp: {}°C", p.bed_temp),
+            format!("  gcode_flavor: {}", p.gcode_flavor),
         ];
-        if let Some(s) = &self.settings.start_print_gcode {
+        if let Some(s) = &self.config.start_print_gcode {
             lines.push(format!("  start_print_gcode: {}", s));
         }
-        if let Some(s) = &self.settings.end_print_gcode {
+        if let Some(s) = &self.config.end_print_gcode {
             lines.push(format!("  end_print_gcode: {}", s));
         }
-        if !self.settings.lifecycle_markers.is_empty() {
+        if !self.config.lifecycle_markers.is_empty() {
             lines.push("  lifecycle_markers:".to_string());
-            let mut flavors: Vec<_> = self.settings.lifecycle_markers.iter().collect();
+            let mut flavors: Vec<_> = self.config.lifecycle_markers.iter().collect();
             flavors.sort_by_key(|(k, _)| k.as_str());
             for (flavor, cfg) in flavors {
                 lines.push(format!("    {}: enabled={}", flavor, cfg.enabled));
@@ -526,7 +509,7 @@ impl EmitPayload for ShowResult<'_> {
     }
 
     fn to_json(&self) -> Value {
-        serde_json::to_value(self.settings).unwrap_or(Value::Null)
+        serde_json::to_value(self.params).unwrap_or(Value::Null)
     }
 }
 
@@ -579,100 +562,33 @@ impl EmitPayload for SetResult<'_> {
 ///
 /// The `key` uses the same flat/dotted alias rules as [`resolve_key_path`].
 /// Keys under `params.*` map to `[slicing]` in the TOML file.
-/// The `gcode_flavor` key maps to `slicing.gcode_flavor`.
 /// Unknown keys are silently ignored (the JSON settings file is the canonical
 /// store; TOML is best-effort for human-readable persistence).
 fn persist_setting_to_toml(
     key: &str,
     value: &Value,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::settings::params::SlicingParams;
+
     let toml_path = config_file();
     let mut app_config = load_config(&toml_path)?;
 
     // Normalise: strip "params." prefix if present
     let bare_key = key.strip_prefix("params.").unwrap_or(key);
 
-    macro_rules! set_slicing_field {
-        ($field:ident, $ty:ty) => {
-            if bare_key == stringify!($field) {
-                if let Some(v) = value.as_f64() {
-                    app_config.slicing.$field = Some(v as $ty);
-                    save_config(&app_config, &toml_path)?;
-                }
-                return Ok(());
-            }
-        };
+    let slicing = app_config.slicing.get_or_insert_with(SlicingParams::default);
+    let mut slicing_val = serde_json::to_value(&*slicing)
+        .map_err(|e| format!("Failed to serialize slicing params: {}", e))?;
+    if let Some(obj) = slicing_val.as_object_mut() {
+        obj.insert(bare_key.to_string(), value.clone());
     }
-
-    macro_rules! set_slicing_bool {
-        ($field:ident) => {
-            if bare_key == stringify!($field) {
-                if let Some(v) = value.as_bool() {
-                    app_config.slicing.$field = Some(v);
-                    save_config(&app_config, &toml_path)?;
-                }
-                return Ok(());
-            }
-        };
-    }
-
-    macro_rules! set_slicing_usize {
-        ($field:ident) => {
-            if bare_key == stringify!($field) {
-                if let Some(v) = value.as_u64() {
-                    app_config.slicing.$field = Some(v as usize);
-                    save_config(&app_config, &toml_path)?;
-                }
-                return Ok(());
-            }
-        };
-    }
-
-    macro_rules! set_slicing_string {
-        ($field:ident) => {
-            if bare_key == stringify!($field) {
-                if let Some(s) = value.as_str() {
-                    app_config.slicing.$field = Some(s.to_string());
-                    save_config(&app_config, &toml_path)?;
-                }
-                return Ok(());
-            }
-        };
-    }
-
-    set_slicing_field!(layer_height, f64);
-    set_slicing_field!(wall_line_width_min, f64);
-    set_slicing_field!(wall_line_width_max, f64);
-    set_slicing_field!(wall_transition_threshold, f64);
-    set_slicing_field!(wall_transition_length, f64);
-    set_slicing_field!(infill_density, f64);
-    set_slicing_field!(infill_base_angle, f64);
-    set_slicing_field!(print_speed, f64);
-    set_slicing_field!(nozzle_temp, f64);
-    set_slicing_field!(bed_temp, f64);
-    set_slicing_field!(surface_infill_angle, f64);
-    set_slicing_field!(filament_diameter_mm, f64);
-    set_slicing_field!(nozzle_diameter_mm, f64);
-    set_slicing_field!(travel_speed_mm_min, f64);
-    set_slicing_field!(z_hop_mm, f64);
-    set_slicing_field!(retract_mm, f64);
-    set_slicing_field!(support_threshold_angle, f64);
-    set_slicing_field!(infill_overlap_percent, f64);
-    set_slicing_field!(path_tolerance, f64);
-    set_slicing_usize!(wall_count);
-    set_slicing_usize!(wall_distribution_count);
-    set_slicing_usize!(top_layers);
-    set_slicing_usize!(bottom_layers);
-    set_slicing_bool!(only_one_wall_top);
-    set_slicing_bool!(only_one_wall_first_layer);
-    set_slicing_string!(infill_pattern);
-    set_slicing_string!(gcode_flavor);
-
-    // gcode_flavor lives at the top level of GlobalSettings, not under params
-    if bare_key == "gcode_flavor" {
-        if let Some(s) = value.as_str() {
-            app_config.slicing.gcode_flavor = Some(s.to_string());
+    match serde_json::from_value::<SlicingParams>(slicing_val) {
+        Ok(new_params) => {
+            *slicing = new_params;
             save_config(&app_config, &toml_path)?;
+        }
+        Err(_) => {
+            // Key not in SlicingParams; silently skip TOML update
         }
     }
 
@@ -682,7 +598,7 @@ fn persist_setting_to_toml(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::params::{GlobalSettings, ObjectSettings, SlicingParams};
+    use crate::settings::params::{ObjectSettings, SlicingParams};
 
     #[test]
     fn test_settings_command_creation() {
@@ -708,7 +624,7 @@ mod tests {
 
     #[test]
     fn test_compare_settings_via_command_logic() {
-        let global = GlobalSettings::default();
+        let global = SlicingParams::default();
         let object = ObjectSettings {
             object_name: "test".to_string(),
             overrides: Some(SlicingParams {
@@ -773,29 +689,31 @@ mod tests {
 
     #[test]
     fn test_get_setting_value_layer_height() {
-        let settings = GlobalSettings::default();
-        let value = get_setting_value(&settings, "layer_height").unwrap();
+        let params = SlicingParams::default();
+        let value = get_setting_value(&params, "layer_height").unwrap();
         assert_eq!(value.as_f64().unwrap(), 0.2);
     }
 
     #[test]
     fn test_get_setting_value_nozzle_temp() {
-        let settings = GlobalSettings::default();
-        let value = get_setting_value(&settings, "nozzle_temp").unwrap();
+        let params = SlicingParams::default();
+        let value = get_setting_value(&params, "nozzle_temp").unwrap();
         assert_eq!(value.as_f64().unwrap(), 210.0);
     }
 
     #[test]
     fn test_get_setting_value_invalid_key() {
-        let settings = GlobalSettings::default();
-        assert!(get_setting_value(&settings, "invalid_key").is_err());
+        let params = SlicingParams::default();
+        assert!(get_setting_value(&params, "invalid_key").is_err());
     }
 
     #[test]
     fn test_show_result_schema() {
-        let settings = GlobalSettings::default();
+        let config = crate::config::AppConfig::default();
+        let params = SlicingParams::default();
         let r = ShowResult {
-            settings: &settings,
+            config: &config,
+            params: &params,
         };
         assert_eq!(r.schema(), "slicer-engine/global-settings-v1");
     }
@@ -822,77 +740,77 @@ mod tests {
 
     #[test]
     fn test_set_setting_value_layer_height() {
-        let mut settings = GlobalSettings::default();
+        let mut params = SlicingParams::default();
         let value = serde_json::json!(0.15);
-        assert!(set_setting_value(&mut settings, "layer_height", &value).is_ok());
-        assert_eq!(settings.params.layer_height, 0.15);
+        assert!(set_setting_value(&mut params, "layer_height", &value).is_ok());
+        assert_eq!(params.layer_height, 0.15);
     }
 
     #[test]
     fn test_set_setting_value_nozzle_temp() {
-        let mut settings = GlobalSettings::default();
+        let mut params = SlicingParams::default();
         let value = serde_json::json!(220.0);
-        assert!(set_setting_value(&mut settings, "nozzle_temp", &value).is_ok());
-        assert_eq!(settings.params.nozzle_temp, 220.0);
+        assert!(set_setting_value(&mut params, "nozzle_temp", &value).is_ok());
+        assert_eq!(params.nozzle_temp, 220.0);
     }
 
     #[test]
     fn test_set_setting_value_infill_density_valid() {
-        let mut settings = GlobalSettings::default();
+        let mut params = SlicingParams::default();
         let value = serde_json::json!(0.5);
-        assert!(set_setting_value(&mut settings, "infill_density", &value).is_ok());
-        assert_eq!(settings.params.infill_density, 0.5);
+        assert!(set_setting_value(&mut params, "infill_density", &value).is_ok());
+        assert_eq!(params.infill_density, 0.5);
     }
 
     #[test]
     fn test_set_setting_value_infill_density_invalid() {
-        let mut settings = GlobalSettings::default();
+        let mut params = SlicingParams::default();
         let value = serde_json::json!(1.5);
-        assert!(set_setting_value(&mut settings, "infill_density", &value).is_err());
+        assert!(set_setting_value(&mut params, "infill_density", &value).is_err());
     }
 
     #[test]
     fn test_set_setting_value_invalid_type() {
-        let mut settings = GlobalSettings::default();
+        let mut params = SlicingParams::default();
         let value = serde_json::json!("not a number");
-        assert!(set_setting_value(&mut settings, "layer_height", &value).is_err());
+        assert!(set_setting_value(&mut params, "layer_height", &value).is_err());
     }
 
     #[test]
     fn test_set_setting_value_invalid_key() {
-        let mut settings = GlobalSettings::default();
+        let mut params = SlicingParams::default();
         let value = serde_json::json!(0.2);
-        assert!(set_setting_value(&mut settings, "invalid_key", &value).is_err());
+        assert!(set_setting_value(&mut params, "invalid_key", &value).is_err());
     }
 
     // ── Dotted-path GET ─────────────────────────────────────────────────────
 
     #[test]
     fn test_get_setting_value_dotted_params_layer_height() {
-        let settings = GlobalSettings::default();
-        let value = get_setting_value(&settings, "params.layer_height").unwrap();
+        let params = SlicingParams::default();
+        let value = get_setting_value(&params, "params.layer_height").unwrap();
         assert_eq!(value.as_f64().unwrap(), 0.2);
     }
 
     #[test]
     fn test_get_setting_value_dotted_params_nozzle_temp() {
-        let settings = GlobalSettings::default();
-        let value = get_setting_value(&settings, "params.nozzle_temp").unwrap();
+        let params = SlicingParams::default();
+        let value = get_setting_value(&params, "params.nozzle_temp").unwrap();
         assert_eq!(value.as_f64().unwrap(), 210.0);
     }
 
     #[test]
     fn test_get_setting_value_gcode_flavor_direct() {
-        let settings = GlobalSettings::default();
-        let value = get_setting_value(&settings, "gcode_flavor").unwrap();
+        let params = SlicingParams::default();
+        let value = get_setting_value(&params, "gcode_flavor").unwrap();
         assert_eq!(value.as_str().unwrap(), "marlin");
     }
 
     #[test]
     fn test_get_setting_value_flat_alias_equals_dotted() {
-        let settings = GlobalSettings::default();
-        let flat = get_setting_value(&settings, "layer_height").unwrap();
-        let dotted = get_setting_value(&settings, "params.layer_height").unwrap();
+        let params = SlicingParams::default();
+        let flat = get_setting_value(&params, "layer_height").unwrap();
+        let dotted = get_setting_value(&params, "params.layer_height").unwrap();
         assert_eq!(flat, dotted);
     }
 
@@ -900,57 +818,60 @@ mod tests {
 
     #[test]
     fn test_set_setting_value_dotted_params_layer_height() {
-        let mut settings = GlobalSettings::default();
+        let mut params = SlicingParams::default();
         let value = serde_json::json!(0.05);
-        assert!(set_setting_value(&mut settings, "params.layer_height", &value).is_ok());
-        assert_eq!(settings.params.layer_height, 0.05);
+        assert!(set_setting_value(&mut params, "params.layer_height", &value).is_ok());
+        assert_eq!(params.layer_height, 0.05);
     }
 
     #[test]
     fn test_set_setting_value_dotted_params_infill_density_valid() {
-        let mut settings = GlobalSettings::default();
+        let mut params = SlicingParams::default();
         let value = serde_json::json!(0.6);
-        assert!(set_setting_value(&mut settings, "params.infill_density", &value).is_ok());
-        assert_eq!(settings.params.infill_density, 0.6);
+        assert!(set_setting_value(&mut params, "params.infill_density", &value).is_ok());
+        assert_eq!(params.infill_density, 0.6);
     }
 
     #[test]
     fn test_set_setting_value_dotted_params_infill_density_invalid() {
-        let mut settings = GlobalSettings::default();
+        let mut params = SlicingParams::default();
         let value = serde_json::json!(2.0);
-        assert!(set_setting_value(&mut settings, "params.infill_density", &value).is_err());
+        assert!(set_setting_value(&mut params, "params.infill_density", &value).is_err());
     }
 
     #[test]
     fn test_set_setting_value_dotted_gcode_flavor_valid() {
-        let mut settings = GlobalSettings::default();
+        use crate::gcode::GcodeFlavor;
+        let mut params = SlicingParams::default();
         let value = serde_json::json!("klipper");
-        assert!(set_setting_value(&mut settings, "gcode_flavor", &value).is_ok());
-        assert_eq!(settings.gcode_flavor, "klipper");
+        assert!(set_setting_value(&mut params, "gcode_flavor", &value).is_ok());
+        assert_eq!(params.gcode_flavor, GcodeFlavor::Klipper);
     }
 
     #[test]
     fn test_set_setting_value_dotted_gcode_flavor_invalid() {
-        let mut settings = GlobalSettings::default();
+        let mut params = SlicingParams::default();
         let value = serde_json::json!("unknown_flavor");
-        assert!(set_setting_value(&mut settings, "gcode_flavor", &value).is_err());
+        assert!(set_setting_value(&mut params, "gcode_flavor", &value).is_err());
     }
 
     #[test]
     fn test_set_setting_value_flat_and_dotted_equivalent() {
-        let mut s1 = GlobalSettings::default();
-        let mut s2 = GlobalSettings::default();
+        let mut p1 = SlicingParams::default();
+        let mut p2 = SlicingParams::default();
         let v = serde_json::json!(0.12);
-        set_setting_value(&mut s1, "layer_height", &v).unwrap();
-        set_setting_value(&mut s2, "params.layer_height", &v).unwrap();
-        assert_eq!(s1.params.layer_height, s2.params.layer_height);
+        set_setting_value(&mut p1, "layer_height", &v).unwrap();
+        set_setting_value(&mut p2, "params.layer_height", &v).unwrap();
+        assert_eq!(p1.layer_height, p2.layer_height);
     }
 
     #[test]
     fn test_show_result_human_includes_gcode_flavor() {
-        let settings = GlobalSettings::default();
+        let config = crate::config::AppConfig::default();
+        let params = SlicingParams::default();
         let r = ShowResult {
-            settings: &settings,
+            config: &config,
+            params: &params,
         };
         let human = r.display_human();
         assert!(
@@ -961,17 +882,20 @@ mod tests {
 
     #[test]
     fn test_show_result_human_includes_lifecycle_markers_when_present() {
+        use crate::config::AppConfig;
         use crate::settings::params::LifecycleMarkerConfig;
-        let mut settings = GlobalSettings::default();
-        settings.lifecycle_markers.insert(
+        let mut config = AppConfig::default();
+        config.lifecycle_markers.insert(
             "klipper".to_string(),
             LifecycleMarkerConfig {
                 enabled: false,
                 ..LifecycleMarkerConfig::default()
             },
         );
+        let params = SlicingParams::default();
         let r = ShowResult {
-            settings: &settings,
+            config: &config,
+            params: &params,
         };
         let human = r.display_human();
         assert!(

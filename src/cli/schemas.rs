@@ -74,11 +74,11 @@ pub struct SettingsDiffSchema {
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 pub struct DiffResultSchema(pub Vec<SettingsDiffSchema>);
 
-/// Global slicing settings snapshot.
+/// Slicing parameters schema snapshot.
 ///
 /// Returned by `settings show` (CLI) and `GetSettings` (WebSocket).
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
-pub struct GlobalSettingsSchema {
+pub struct SlicingParamsSchema {
     pub params: SlicingParams,
 }
 
@@ -144,8 +144,8 @@ pub fn all_schemas() -> Vec<SchemaDefinition> {
         },
         SchemaDefinition {
             schema_id: "slicer-engine/global-settings-v1",
-            schema: serde_json::to_value(schemars::schema_for!(GlobalSettingsSchema))
-                .expect("failed to serialize GlobalSettingsSchema"),
+            schema: serde_json::to_value(schemars::schema_for!(SlicingParamsSchema))
+                .expect("failed to serialize SlicingParamsSchema"),
         },
         SchemaDefinition {
             schema_id: "slicer-engine/settings-get-result-v1",

@@ -1,5 +1,6 @@
 //! TOML configuration data structures.
 
+use crate::settings::params::{LifecycleMarkerConfig, SlicingParams};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -125,41 +126,6 @@ impl Default for ServerConfig {
     }
 }
 
-/// Default slicing parameter overrides stored in the config file.
-///
-/// These mirror `SlicingParams` but every field is `Option<T>` so that only
-/// explicitly set values override the compiled-in defaults.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct SlicingConfig {
-    pub layer_height: Option<f64>,
-    pub wall_count: Option<usize>,
-    pub wall_line_width_min: Option<f64>,
-    pub wall_line_width_max: Option<f64>,
-    pub wall_transition_threshold: Option<f64>,
-    pub wall_transition_length: Option<f64>,
-    pub wall_distribution_count: Option<usize>,
-    pub infill_density: Option<f64>,
-    pub infill_pattern: Option<String>,
-    pub infill_base_angle: Option<f64>,
-    pub print_speed: Option<f64>,
-    pub nozzle_temp: Option<f64>,
-    pub bed_temp: Option<f64>,
-    pub top_layers: Option<usize>,
-    pub bottom_layers: Option<usize>,
-    pub surface_infill_angle: Option<f64>,
-    pub filament_diameter_mm: Option<f64>,
-    pub nozzle_diameter_mm: Option<f64>,
-    pub travel_speed_mm_min: Option<f64>,
-    pub z_hop_mm: Option<f64>,
-    pub retract_mm: Option<f64>,
-    pub only_one_wall_top: Option<bool>,
-    pub only_one_wall_first_layer: Option<bool>,
-    pub support_threshold_angle: Option<f64>,
-    pub infill_overlap_percent: Option<f64>,
-    pub path_tolerance: Option<f64>,
-    pub gcode_flavor: Option<String>,
-}
-
 /// Global application settings stored in the config file.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct GlobalConfig {
@@ -174,9 +140,9 @@ pub struct SlicingPreset {
     /// Human-readable description.
     #[serde(default)]
     pub description: Option<String>,
-    /// Slicing parameter overrides for this preset.
+    /// Slicing parameters for this preset.
     #[serde(flatten)]
-    pub params: SlicingConfig,
+    pub params: SlicingParams,
 }
 
 /// A named material profile.
@@ -219,9 +185,9 @@ pub struct AppConfig {
     /// Global application settings.
     #[serde(default)]
     pub global: GlobalConfig,
-    /// Default slicing parameters.
+    /// Default slicing parameters. When `None`, built-in defaults apply.
     #[serde(default)]
-    pub slicing: SlicingConfig,
+    pub slicing: Option<SlicingParams>,
     /// Server runtime configuration.
     #[serde(default)]
     pub server: ServerConfig,
@@ -231,4 +197,13 @@ pub struct AppConfig {
     /// Named profile collections.
     #[serde(default)]
     pub profiles: ProfilesConfig,
+    /// Custom G-code inserted before all print moves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_print_gcode: Option<String>,
+    /// Custom G-code inserted after all print moves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_print_gcode: Option<String>,
+    /// Per-flavor lifecycle marker overrides (`[lifecycle_markers.marlin]`, etc.).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub lifecycle_markers: HashMap<String, LifecycleMarkerConfig>,
 }

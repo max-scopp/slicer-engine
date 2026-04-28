@@ -58,12 +58,26 @@ impl ServeCommand {
             .into());
         }
 
+        // Ensure global config exists, writing defaults if not
+        let global_config = crate::config::io::config_file();
+        if !global_config.exists() {
+            crate::config::io::save_config(&Default::default(), &global_config)?;
+        }
+
+        let project_config = crate::config::io::find_project_config_toml();
+
+        eprintln!("Loading configuration:");
+        eprintln!("  Global config: {}", global_config.display());
+        if let Some(ref p) = project_config {
+            eprintln!("  Project config: {}", p.display());
+        }
+
         let host = self.host.clone();
         let port = self.port;
         let ui_dir = self.ui_dir.clone();
         let work_dir = self.work_dir.clone();
 
-        eprintln!("Serving Slicer Engine UI at http://{}:{}/", host, port);
+        eprintln!("\nServing Slicer Engine UI at http://{}:{}/", host, port);
         eprintln!("WebSocket endpoint:        ws://{}:{}/ws", host, port);
         eprintln!("Serving files from: {}", ui_dir);
         eprintln!("Press Ctrl+C to stop.");

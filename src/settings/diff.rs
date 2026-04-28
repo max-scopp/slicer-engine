@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use crate::settings::params::{GlobalSettings, ObjectSettings, SlicingParams};
+use crate::settings::params::{ObjectSettings, SlicingParams};
 
 /// Represents the difference for a single setting field between the global
 /// defaults and an object-level override.
@@ -22,8 +22,8 @@ pub struct SettingsDiff {
 ///
 /// If `object.overrides` is `None` the object inherits all global values;
 /// every field will be listed with `is_override = false`.
-pub fn compare_settings(global: &GlobalSettings, object: &ObjectSettings) -> Vec<SettingsDiff> {
-    let g = &global.params;
+pub fn compare_settings(global: &SlicingParams, object: &ObjectSettings) -> Vec<SettingsDiff> {
+    let g = global;
     let o: &SlicingParams = object.overrides.as_ref().unwrap_or(g);
 
     macro_rules! diff_f64 {
@@ -66,11 +66,11 @@ pub fn compare_settings(global: &GlobalSettings, object: &ObjectSettings) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::params::{GlobalSettings, ObjectSettings, SlicingParams};
+    use crate::settings::params::{ObjectSettings, SlicingParams};
 
     #[test]
     fn test_no_overrides_all_false() {
-        let global = GlobalSettings::default();
+        let global = SlicingParams::default();
         let object = ObjectSettings {
             object_name: "obj".to_string(),
             overrides: None,
@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn test_partial_override_detected() {
-        let global = GlobalSettings::default();
+        let global = SlicingParams::default();
         let object = ObjectSettings {
             object_name: "obj".to_string(),
             overrides: Some(SlicingParams {
@@ -119,7 +119,7 @@ mod tests {
 
     #[test]
     fn test_diff_contains_all_fields() {
-        let global = GlobalSettings::default();
+        let global = SlicingParams::default();
         let object = ObjectSettings {
             object_name: "obj".to_string(),
             overrides: None,
@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn test_wall_count_override_detected() {
-        let global = GlobalSettings::default();
+        let global = SlicingParams::default();
         let object = ObjectSettings {
             object_name: "obj".to_string(),
             overrides: Some(SlicingParams {

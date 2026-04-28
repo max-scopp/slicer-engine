@@ -127,18 +127,9 @@ pub fn load_and_merge_settings(
 
     // Layer 2: TOML config (global user config → project config)
     let toml_config = config::load_and_merge_config(project_config_path)?;
-    let toml_overlay = toml_slicing_to_json(&toml_config.slicing);
+    let toml_overlay = toml_slicing_to_json(toml_config.slicing.as_ref());
     if !toml_overlay.is_null() {
         merged = merge_json_configs(merged, toml_overlay);
-    }
-    // Apply gcode_flavor from TOML if set
-    if let Some(ref flavor) = toml_config.slicing.gcode_flavor {
-        if let Some(obj) = merged.as_object_mut() {
-            obj.insert(
-                "gcode_flavor".to_string(),
-                Value::String(flavor.clone()),
-            );
-        }
     }
 
     // Layer 3: legacy JSON user config (settings.json) takes priority over TOML
@@ -165,56 +156,17 @@ pub fn load_and_merge_settings(
     Ok(settings)
 }
 
-/// Convert a `SlicingConfig` (all-optional) into a JSON overlay for `params`.
+/// Convert a `SlicingParams` from TOML config into a JSON overlay for `params`.
 ///
-/// Only fields that are `Some` are included so they can be merged without
-/// overwriting defaults for unset fields.
-fn toml_slicing_to_json(slicing: &config::SlicingConfig) -> Value {
-    let mut params = serde_json::Map::new();
-
-    macro_rules! insert_if_some {
-        ($field:ident) => {
-            if let Some(ref v) = slicing.$field {
-                params.insert(
-                    stringify!($field).to_string(),
-                    serde_json::to_value(v).unwrap_or(Value::Null),
-                );
-            }
-        };
+/// Returns `Null` when no `[slicing]` section was present in TOML.
+fn toml_slicing_to_json(slicing: Option<&crate::settings::params::SlicingParams>) -> Value {
+    match slicing {
+        Some(params) => {
+            let params_val = serde_json::to_value(params).unwrap_or(Value::Null);
+            serde_json::json!({ "params": params_val })
+        }
+        None => Value::Null,
     }
-
-    insert_if_some!(layer_height);
-    insert_if_some!(wall_count);
-    insert_if_some!(wall_line_width_min);
-    insert_if_some!(wall_line_width_max);
-    insert_if_some!(wall_transition_threshold);
-    insert_if_some!(wall_transition_length);
-    insert_if_some!(wall_distribution_count);
-    insert_if_some!(infill_density);
-    insert_if_some!(infill_pattern);
-    insert_if_some!(infill_base_angle);
-    insert_if_some!(print_speed);
-    insert_if_some!(nozzle_temp);
-    insert_if_some!(bed_temp);
-    insert_if_some!(top_layers);
-    insert_if_some!(bottom_layers);
-    insert_if_some!(surface_infill_angle);
-    insert_if_some!(filament_diameter_mm);
-    insert_if_some!(nozzle_diameter_mm);
-    insert_if_some!(travel_speed_mm_min);
-    insert_if_some!(z_hop_mm);
-    insert_if_some!(retract_mm);
-    insert_if_some!(only_one_wall_top);
-    insert_if_some!(only_one_wall_first_layer);
-    insert_if_some!(support_threshold_angle);
-    insert_if_some!(infill_overlap_percent);
-    insert_if_some!(path_tolerance);
-
-    if params.is_empty() {
-        return Value::Null;
-    }
-
-    serde_json::json!({ "params": Value::Object(params) })
 }
 
 #[cfg(test)]
@@ -344,16 +296,15 @@ mod tests {
     #[test]
     fn test_load_and_merge_settings_priority() {
         let dir = tempfile::tempdir().unwrap();
-        // Project config sets layer_height = 0.15, gcode_flavor = klipper
+        // Project config sets layer_height = 0.15
         let project_path = dir.path().join("slicer.json");
         fs::write(
             &project_path,
-            r#"{"params":{"layer_height":0.15},"gcode_flavor":"klipper"}"#,
+            r#"{"params":{"layer_height":0.15}}"#,
         )
         .unwrap();
         let settings = load_and_merge_settings(Some(&project_path)).unwrap();
         // Project value wins over default (0.2)
         assert_eq!(settings.params.layer_height, 0.15);
-        assert_eq!(settings.gcode_flavor, "klipper");
     }
 }

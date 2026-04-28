@@ -100,7 +100,11 @@ pub async fn ws_handler(
     state: actix_web::web::Data<super::handlers::AppState>,
 ) -> Result<actix_web::HttpResponse, actix_web::Error> {
     // Derive the base URL from the request so download URLs are fully qualified
-    let scheme = if req.connection_info().scheme() == "https" { "https" } else { "http" };
+    let scheme = if req.connection_info().scheme() == "https" {
+        "https"
+    } else {
+        "http"
+    };
     let host = req.connection_info().host().to_string();
     let base_url = format!("{}://{}", scheme, host);
 
@@ -109,7 +113,9 @@ pub async fn ws_handler(
     let db = state.db.clone();
     let work_dir = state.work_dir.clone();
 
-    actix_web::rt::spawn(handle_ws_session(session, msg_stream, db, work_dir, base_url));
+    actix_web::rt::spawn(handle_ws_session(
+        session, msg_stream, db, work_dir, base_url,
+    ));
 
     Ok(response)
 }
@@ -265,7 +271,7 @@ async fn handle_slice(
         nozzle_temp: ws_params.nozzle_temp,
         bed_temp: ws_params.bed_temp,
         infill_density: ws_params.infill_density / 100.0,
-        infill_pattern: ws_params.infill_pattern.name().to_string(),
+        infill_pattern: ws_params.infill_pattern,
         infill_base_angle: ws_params.infill_angle,
         surface_infill_angle: ws_params.infill_angle,
         ..SlicingParams::default()

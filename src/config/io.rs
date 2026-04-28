@@ -88,9 +88,12 @@ pub fn load_and_merge_config(
         merge_config(&mut merged, global);
     }
 
-    // Layer 3: project config
+    // Layer 3: project config (TOML only; .json files are handled by legacy JSON path)
     let project_path: Option<PathBuf> = project_config_path
-        .filter(|p| p.exists())
+        .filter(|p| {
+            p.exists()
+                && p.extension().and_then(|e| e.to_str()) != Some("json")
+        })
         .map(|p| p.to_path_buf())
         .or_else(find_project_config_toml);
 
@@ -104,14 +107,26 @@ pub fn load_and_merge_config(
 
 /// Merge `overlay` on top of `base`, preferring `overlay` values wherever set.
 ///
-/// Only `Option<T>` fields in `SlicingConfig` and other optional sub-configs
-/// are conditionally merged; struct-valued fields like `server` and `machine`
-/// are merged field-by-field so that partial project configs work correctly.
+/// Slicing: if the overlay has a `[slicing]` section, it wins entirely.
+/// Server, machine, and global fields are merged field-by-field so that partial
+/// project configs work correctly.
 fn merge_config(base: &mut AppConfig, overlay: AppConfig) {
-    merge_slicing(&mut base.slicing, overlay.slicing);
+    if let Some(s) = overlay.slicing {
+        base.slicing = Some(s);
+    }
     merge_server(&mut base.server, overlay.server);
     merge_machine(&mut base.machine, overlay.machine);
     merge_global_cfg(&mut base.global, overlay.global);
+
+    if overlay.start_print_gcode.is_some() {
+        base.start_print_gcode = overlay.start_print_gcode;
+    }
+    if overlay.end_print_gcode.is_some() {
+        base.end_print_gcode = overlay.end_print_gcode;
+    }
+    for (k, v) in overlay.lifecycle_markers {
+        base.lifecycle_markers.insert(k, v);
+    }
 
     // Profiles are additive: overlay keys win, base keys not in overlay are kept.
     for (k, v) in overlay.profiles.presets {
@@ -123,47 +138,6 @@ fn merge_config(base: &mut AppConfig, overlay: AppConfig) {
     for (k, v) in overlay.profiles.materials {
         base.profiles.materials.insert(k, v);
     }
-}
-
-macro_rules! merge_option_field {
-    ($base:expr, $overlay:expr, $field:ident) => {
-        if let Some(v) = $overlay.$field {
-            $base.$field = Some(v);
-        }
-    };
-}
-
-fn merge_slicing(
-    base: &mut crate::config::types::SlicingConfig,
-    overlay: crate::config::types::SlicingConfig,
-) {
-    merge_option_field!(base, overlay, layer_height);
-    merge_option_field!(base, overlay, wall_count);
-    merge_option_field!(base, overlay, wall_line_width_min);
-    merge_option_field!(base, overlay, wall_line_width_max);
-    merge_option_field!(base, overlay, wall_transition_threshold);
-    merge_option_field!(base, overlay, wall_transition_length);
-    merge_option_field!(base, overlay, wall_distribution_count);
-    merge_option_field!(base, overlay, infill_density);
-    merge_option_field!(base, overlay, infill_pattern);
-    merge_option_field!(base, overlay, infill_base_angle);
-    merge_option_field!(base, overlay, print_speed);
-    merge_option_field!(base, overlay, nozzle_temp);
-    merge_option_field!(base, overlay, bed_temp);
-    merge_option_field!(base, overlay, top_layers);
-    merge_option_field!(base, overlay, bottom_layers);
-    merge_option_field!(base, overlay, surface_infill_angle);
-    merge_option_field!(base, overlay, filament_diameter_mm);
-    merge_option_field!(base, overlay, nozzle_diameter_mm);
-    merge_option_field!(base, overlay, travel_speed_mm_min);
-    merge_option_field!(base, overlay, z_hop_mm);
-    merge_option_field!(base, overlay, retract_mm);
-    merge_option_field!(base, overlay, only_one_wall_top);
-    merge_option_field!(base, overlay, only_one_wall_first_layer);
-    merge_option_field!(base, overlay, support_threshold_angle);
-    merge_option_field!(base, overlay, infill_overlap_percent);
-    merge_option_field!(base, overlay, path_tolerance);
-    merge_option_field!(base, overlay, gcode_flavor);
 }
 
 fn merge_server(
@@ -234,7 +208,8 @@ fn merge_global_cfg(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::types::{AppConfig, SlicingConfig};
+    use crate::config::types::AppConfig;
+    use crate::settings::params::SlicingParams;
 
     #[test]
     fn test_load_config_missing_file_returns_default() {
@@ -246,7 +221,10 @@ mod tests {
     #[test]
     fn test_round_trip_toml() {
         let mut config = AppConfig::default();
-        config.slicing.layer_height = Some(0.15);
+        config.slicing = Some(SlicingParams {
+            layer_height: 0.15,
+            ..SlicingParams::default()
+        });
         config.server.port = 5300;
 
         let dir = tempfile::tempdir().expect("temp dir");
@@ -254,33 +232,49 @@ mod tests {
 
         save_config(&config, &path).expect("save");
         let loaded = load_config(&path).expect("load");
-        assert_eq!(loaded.slicing.layer_height, Some(0.15));
+        assert_eq!(loaded.slicing.unwrap().layer_height, 0.15);
         assert_eq!(loaded.server.port, 5300);
     }
 
     #[test]
     fn test_merge_config_overlay_wins() {
-        let mut base = AppConfig::default();
-        base.slicing.layer_height = Some(0.2);
+        let mut base = AppConfig {
+            slicing: Some(SlicingParams {
+                layer_height: 0.2,
+                ..SlicingParams::default()
+            }),
+            ..AppConfig::default()
+        };
 
-        let mut overlay = AppConfig::default();
-        overlay.slicing.layer_height = Some(0.1);
-        overlay.slicing.nozzle_temp = Some(220.0);
+        let overlay = AppConfig {
+            slicing: Some(SlicingParams {
+                layer_height: 0.1,
+                nozzle_temp: 220.0,
+                ..SlicingParams::default()
+            }),
+            ..AppConfig::default()
+        };
 
         merge_config(&mut base, overlay);
-        assert_eq!(base.slicing.layer_height, Some(0.1));
-        assert_eq!(base.slicing.nozzle_temp, Some(220.0));
+        let slicing = base.slicing.unwrap();
+        assert_eq!(slicing.layer_height, 0.1);
+        assert_eq!(slicing.nozzle_temp, 220.0);
     }
 
     #[test]
     fn test_merge_config_base_preserved_when_overlay_none() {
-        let mut base = AppConfig::default();
-        base.slicing.layer_height = Some(0.2);
+        let mut base = AppConfig {
+            slicing: Some(SlicingParams {
+                layer_height: 0.2,
+                ..SlicingParams::default()
+            }),
+            ..AppConfig::default()
+        };
 
-        let overlay = AppConfig::default(); // all None
+        let overlay = AppConfig::default(); // slicing is None
 
         merge_config(&mut base, overlay);
-        assert_eq!(base.slicing.layer_height, Some(0.2));
+        assert_eq!(base.slicing.unwrap().layer_height, 0.2);
     }
 
     #[test]
@@ -300,8 +294,9 @@ layer_height = 0.3
 nozzle_temp = 215.0
 "#;
         let config: AppConfig = toml::from_str(toml_str).expect("parse");
-        assert_eq!(config.slicing.layer_height, Some(0.3));
-        assert_eq!(config.slicing.nozzle_temp, Some(215.0));
-        assert_eq!(config.slicing.bed_temp, None);
+        let slicing = config.slicing.expect("slicing section present");
+        assert_eq!(slicing.layer_height, 0.3);
+        assert_eq!(slicing.nozzle_temp, 215.0);
+        assert_eq!(slicing.bed_temp, 60.0); // default
     }
 }
