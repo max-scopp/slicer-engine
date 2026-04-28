@@ -12,6 +12,7 @@
 
 // Base styles
 @use './base/reset';
+@use './base/focus';
 @use './base/typography';
 @use './base/forms';
 @use './base/scrollbar';

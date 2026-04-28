@@ -1,29 +1,34 @@
 <div class="view-group">
   <nexus-card class="button-radio-group" [(radioGroup)]="selectedView">
-    <button radioButtonValue="3D">3D</button>
-    <button radioButtonValue="Top">Top</button>
-    <button radioButtonValue="Front">Front</button>
+    <button radioButtonValue="3D" [tooltip]="'3D perspective view'">3D</button>
+    <button radioButtonValue="Top" [tooltip]="'Top-down orthographic view'">Top</button>
+    <button radioButtonValue="Front" [tooltip]="'Front orthographic view'">Front</button>
   </nexus-card>
 
-  <button class="reset-view-button" type="button" title="Reset view" (click)="resetView()">
+  <button
+    class="reset-view-button"
+    type="button"
+    [tooltip]="'Reset camera to default position'"
+    (click)="resetView()"
+  >
     <nexus-icon name="restart"></nexus-icon>
   </button>
 </div>
 
 <nexus-card class="button-radio-group icon-group" [(radioGroup)]="selectedCursorMode">
-  <button radioButtonValue="orbit">
+  <button radioButtonValue="orbit" [tooltip]="'Orbit — rotate the view'">
     <nexus-icon name="rotate-camera-right"></nexus-icon>
   </button>
-  <button radioButtonValue="pan">
+  <button radioButtonValue="pan" [tooltip]="'Pan — drag to move'">
     <nexus-icon name="drag-hand-gesture"></nexus-icon>
   </button>
-  <button radioButtonValue="zoom">
+  <button radioButtonValue="zoom" [tooltip]="'Zoom in / out'">
     <nexus-icon name="zoom-in"></nexus-icon>
   </button>
-  <button radioButtonValue="rotate">
+  <button radioButtonValue="rotate" [tooltip]="'Rotate model around its own axes'">
     <nexus-icon name="axes"></nexus-icon>
   </button>
-  <button radioButtonValue="pullToSurface">
+  <button radioButtonValue="pullToSurface" [tooltip]="'Pull to surface'">
     <nexus-icon name="constrained-surface"></nexus-icon>
   </button>
 </nexus-card>

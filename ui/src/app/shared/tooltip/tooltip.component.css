@@ -1,0 +1,31 @@
+:host {
+  display: block;
+  pointer-events: none;
+}
+
+.tooltip-text {
+  display: block;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 70%, transparent);
+  color: var(--color-text-secondary);
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  backdrop-filter: blur(6px);
+  animation: nexus-tooltip-in var(--transition-fast) forwards;
+  box-shadow: var(--shadow-xs);
+  transform-origin: center;
+}
+
+@keyframes nexus-tooltip-in {
+  from {
+    opacity: 0;
+    transform: scale(0.88);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
