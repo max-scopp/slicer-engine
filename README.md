@@ -1,300 +1,141 @@
 # Slicer Engine
 
-A high-performance 3D model slicer engine written in Rust. Converts STL meshes into layer-by-layer slices and generates G-code for FFF 3D printers.
+A 3D model slicing engine written in Rust. Ground-up rewrite bringing the best practices from established slicers (Cura, PrusaSlicer, SuperSlicer) to a modern, unified codebase. Converts STL meshes into layer-by-layer slices and generates G-code for FFF 3D printers.
+
+Runs as desktop CLI, web UI (WebAssembly), or embedded library. Supports multiple G-code dialects (Marlin, Klipper, etc.).
 
 ## Quick Start
 
 ```bash
-# Build
-cargo build --release
-
-# Slice a model
 cargo run --release -- slice --input model.stl --output output.gcode
-
-# Validate settings
+cargo run --release -- serve --port 3000
 cargo run --release -- settings validate --global global.json --object object.json
 ```
 
-## Pipeline
+## Architecture
 
 ```mermaid
-graph LR
-    A["📄 STL File"] --> B["🔍 Load Mesh"]
-    B --> C["✂️ Slice Layers"]
-    C --> D["🖨️ Generate G-code"]
-    D --> E["📤 Output"]
+graph TB
+    subgraph "Core"
+        A["STL Loader"] --> B["Mesh Slicer"]
+        B --> C["Walls & Infill"]
+        C --> D["G-code Generator"]
+    end
     
-    F["⚙️ Settings JSON"] -.config.-> C
-    F -.config.-> D
+    subgraph "Interfaces"
+        E["Web UI"]
+        F["CLI"]
+        G["Library"]
+    end
+    
+    E -->|Uses| A
+    F -->|Uses| A
+    G -->|Uses| A
     
     style A fill:#e1f5ff
-    style E fill:#c8e6c9
-    style C fill:#fff9c4
-    style D fill:#f8bbd0
+    style B fill:#fff9c4
+    style C fill:#f8bbd0
+    style D fill:#c8e6c9
 ```
+
+---
 
 ## Documentation
 
-### Getting Started
-- **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** 🚀 – Visual cheat sheets and quick navigation (great for jumping into the code!)
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** ⭐ – Complete system architecture with Mermaid diagrams (detailed reference)
-- **[CONTRIBUTING.md](CONTRIBUTING.md)** – How to contribute, development workflow, coding standards
+- [QUICK_REFERENCE.md](QUICK_REFERENCE.md) – Commands
+- [ARCHITECTURE.md](ARCHITECTURE.md) – Design & modules
+- [CONTRIBUTING.md](CONTRIBUTING.md) – Workflow
+- [Mesh Operations](src/mesh/README.md) – STL, mesh types
+- [Slicing Algorithm](src/SLICING.md) – Implementation
+- [Settings](src/settings/README.md) – Configuration
+- [CLI](src/cli/README.md) – Commands
+- [G-code](src/gcode/README.md) – Output formats
+- [Arachne](src/arachne/README.md) – Variable-width walls
 
-### Detailed Guides
-- **[Mesh Operations](src/mesh/README.md)** – Loading STL, mesh types, transformations
-- **[Slicing Algorithm](src/SLICING.md)** – How slicing works (with diagrams)
-- **[Settings](src/settings/README.md)** – Configuration parameters and priority cascade
-- **[CLI Commands](src/cli/README.md)** – Usage reference
-- **[G-code Generation](src/gcode/README.md)** – Multi-flavor G-code emission
+---
 
-## Project Structure
+## Usage & Configuration
 
-```
-src/
-├── core.rs          # Slicing algorithm
-├── gcode/           # G-code emission (multi-flavor)
-├── mesh/            # STL loading & types
-├── settings/        # Parameters & validation
-└── cli/             # Command interface
-```
-
-## CLI Usage
-
-### Slice Command
-
+### Slice
 ```bash
-# Basic slice with default settings
-slicer-engine slice --input model.stl
-
-# Custom layer height and output file
-slicer-engine slice --input model.stl --layer-height 0.15 --output result.gcode
-
-# Klipper firmware flavor
-slicer-engine slice --input model.stl --gcode-flavor klipper
-
-# Custom start/end G-code (string or file path)
-slicer-engine slice --input model.stl \
-  --start-print-gcode "START_PRINT BED_TEMP=60 EXTRUDER_TEMP=210" \
-  --end-print-gcode "END_PRINT"
-
-# Force-enable or disable layer lifecycle markers
-slicer-engine slice --input model.stl --lifecycle-markers
-slicer-engine slice --input model.stl --no-lifecycle-markers
-
-# Use an explicit project config file
+slicer-engine slice --input model.stl --output output.gcode --layer-height 0.15 --gcode-flavor klipper
 slicer-engine slice --input model.stl --config ./slicer.json
-
-# Center and drop mesh to Z=0 before slicing
-slicer-engine slice --input model.stl --center --drop-to-floor
-
-# JSON output format
-slicer-engine slice --input model.stl --output-format json
 ```
 
-### Settings Command
-
-Manage persistent settings stored in `~/.config/slicer-engine/settings.json`.
-
-#### Get / Set values
-
-Both flat aliases and full dot-separated paths are accepted:
-
+### Settings
 ```bash
-# Get a value (flat alias or dotted path — equivalent)
-slicer-engine settings get layer_height
-slicer-engine settings get params.layer_height
-
-# Set a value
-slicer-engine settings set layer_height 0.15
-slicer-engine settings set params.nozzle_temp 215
-slicer-engine settings set gcode_flavor klipper
-
-# Set custom start/end G-code
-slicer-engine settings set start_print_gcode "START_PRINT BED_TEMP=60 EXTRUDER_TEMP=210"
-slicer-engine settings set end_print_gcode "END_PRINT"
-
-# Clear an optional field
-slicer-engine settings set start_print_gcode null
-
-# JSON output
-slicer-engine settings get layer_height --output-format json
-```
-
-#### Show all settings
-
-```bash
-slicer-engine settings show
+slicer-engine settings get/set layer_height 0.15
 slicer-engine settings show --output-format json
-```
-
-#### Validate / Diff
-
-```bash
-# Validate global + object settings files
 slicer-engine settings validate --global global.json --object object.json
-
-# Show which object params override the globals
-slicer-engine settings diff --global global.json --object object.json
 ```
 
-### Info Command
+### Priority: CLI args → `slicer.json` (project) → `~/.config/slicer-engine/settings.json` (user) → defaults
 
-```bash
-slicer-engine info
-slicer-engine info --verbose
-slicer-engine info --output-format json
-```
-
-## Settings & Config Priority
-
-Settings are resolved in this order (highest priority first):
-
-| Priority | Source |
-|----------|--------|
-| 1 (highest) | CLI arguments (`--layer-height`, `--gcode-flavor`, …) |
-| 2 | `slicer.json` in CWD (or `--config FILE`) |
-| 3 | `~/.config/slicer-engine/settings.json` (user config) |
-| 4 (lowest) | Built-in defaults |
-
-### Project config (`slicer.json`)
-
-Drop a `slicer.json` into your project directory to set project-level defaults.
-Only the keys you include are overridden; everything else falls back to the user config or defaults.
-
+Example `slicer.json`:
 ```json
-{
-  "params": {
-    "layer_height": 0.15,
-    "nozzle_temp": 215
-  },
-  "gcode_flavor": "klipper"
-}
+{ "params": { "layer_height": 0.15, "nozzle_temp": 215 }, "gcode_flavor": "klipper" }
 ```
 
-The file is auto-discovered when you run `slicer-engine slice` from the same directory.
-Use `--config FILE` for an explicit path:
+---
 
+## Web UI & Building
+
+### Web UI (Angular 21)
 ```bash
-slicer-engine slice --input model.stl --config ./profiles/klipper.json
+cd ui && npm install && npm start  # http://localhost:4200
+cargo run --release -- serve --port 3000
 ```
 
-See [Settings Reference](src/settings/README.md) for all parameters and validation rules.
-
-## Build Targets
-
+### Build
 ```bash
-cargo build --release                                          # Native
-cargo build --release --target x86_64-pc-windows-msvc        # Windows
-cargo build --release --target x86_64-apple-darwin           # macOS Intel
-cargo build --release --target aarch64-apple-darwin          # macOS ARM
-wasm-pack build --target web --release                        # WebAssembly
+cargo build --release                                      # Native
+cargo build --release --target x86_64-pc-windows-msvc    # Windows
+cargo build --release --target x86_64-apple-darwin       # macOS Intel
+cargo build --release --target aarch64-apple-darwin      # macOS ARM
+wasm-pack build --target web --release                    # WebAssembly
 ```
+
+---
 
 ## Development
 
 ```bash
+cargo build --release
 cargo test --release
 cargo fmt && cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-## Web UI
+See [CONTRIBUTING.md](CONTRIBUTING.md) for workflow details.
 
-A minimal Angular 21 single-page application lives in the `ui/` directory.
-It uses **signals**, standalone components, and the `@if`/`@for` control-flow
-syntax throughout — no NgModules.
-
-### Development
-
-```bash
-cd ui
-npm install          # first time only
-npm start            # Angular dev server → http://localhost:4200
-```
-
-### Production build
-
-```bash
-cd ui && npm run build   # output → ui/dist/slicer-ui/browser/
-```
-
-### Serve via CLI
-
-After building, launch the bundled UI with the Rust CLI:
-
-```bash
-# Default: http://127.0.0.1:4200, ui dir = ./ui/dist/slicer-ui/browser
-cargo run --release -- serve
-
-# Custom port / directory
-cargo run --release -- serve --port 8080 --ui-dir /path/to/dist
-```
-
-The `serve` command starts an **actix-web** static-file server with SPA
-fallback (all unknown routes return `index.html`), so Angular client-side
-routing works out of the box.
+---
 
 ## Features
 
-- ✓ Cross-platform (Windows, macOS, WASM)
-- ✓ STL loading (ASCII & binary)
-- ✓ Triangle-plane intersection slicing
-- ✓ G-code generation (Marlin & Klipper)
-- ✓ Custom start/end G-code (string or file)
-- ✓ Layer lifecycle markers with per-flavor, per-marker template overrides (`{z}`, `{height}`, `{type}`, `{width}`)
-- ✓ Four-level settings priority cascade with `slicer.json` project config
-- ✓ Dotted-path settings access (`params.layer_height`)
-- ✓ Settings validation & per-object overrides
-- ✓ Powered by [Clipper2](https://github.com/AngusJohnson/Clipper2)
-- ✓ Angular 21 web UI with signals & standalone components
+STL (ASCII/binary) • Triangle-plane slicing • Arachne variable-width walls • Infill patterns (rectilinear, grid, honeycomb, gyroid) • Multi-dialect G-code (Marlin, Klipper, Prusa) • Custom start/end G-code • Settings priority cascade • Per-object overrides • Web UI • CLI • Library API • Cross-platform (Windows, macOS, Linux, browser, embedded) • Built with [Clipper2](https://github.com/AngusJohnson/Clipper2)
 
-## CI/CD Pipeline
+---
 
-GitHub Actions automatically builds all platform targets, runs linting, formatting, and the test suite on every push and pull request.
+## References & More
 
-## Implementation & AI Disclaimer
+- [RepRap G-code Wiki](https://reprap.org/wiki/G-code) • [Arachne Paper](https://github.com/Ultimaker/CuraEngine/blob/main/docs/arachne.md) • [Clipper2](https://www.angusj.com/clipper2/Docs/Overview.htm) • [Marlin](https://marlinfw.org/meta/gcode/) • [Klipper](https://www.klipper3d.org/G-Codes.html) • [Rust](https://doc.rust-lang.org/book/)
 
-This project is not a clean-room rewrite from a formal, derived requirements list.
-Development may be inspired by ideas, optimization strategies, and implementation patterns commonly used in other slicers.
-That said, this repository has a different purpose, codebase, language (Rust), and infrastructure, and is implemented independently for its own architecture and goals.
+See [ARCHITECTURE.md](ARCHITECTURE.md#learning-resources) for more. Contribute via [CONTRIBUTING.md](CONTRIBUTING.md).
 
-The primary goal of AI use in this project is development velocity, logic research, and solving mathematical challenges effectively.
+---
 
-IMPORTANT: ALL AI-GENERATED OR AI-ASSISTED CODE MUST BE REVIEWED AND APPROVED BY HUMAN MAINTAINERS BEFORE MERGE OR RELEASE.
-"BLIND AUTOPILOT" DEVELOPMENT IS NOT ENCOURAGED OR ACCEPTED.
+## Implementation Notes
+
+Built on proven approaches from established slicers, but written from scratch in Rust. AI tools assist with development and problem-solving; all AI-generated code is reviewed and approved by human maintainers before merge.
+
+---
 
 ## License
 
-**LEGAL NOTICE:** This is an interim state. Until an official license is decided and published, all rights are reserved and no use, reproduction, modification, or distribution of this software is permitted without explicit written authorization.
+All rights reserved until an official license is decided. No use, reproduction, modification, or distribution permitted without written authorization. TBD
 
-TBD
+---
 
-## Contributing
+## Support
 
-**New contributors:** Read [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow and coding standards.
-
-**Quick start:**
-1. Read [ARCHITECTURE.md](ARCHITECTURE.md) to understand the system
-2. Fork the repository
-3. Create a feature branch
-4. Make changes and test locally
-5. Ensure code passes linting: `cargo clippy --all-targets --all-features -- -D warnings`
-6. Format code: `cargo fmt`
-7. Push and create a pull request
-
-### Learning Resources
-
-**Arachne & Algorithms:**
-- [Arachne Paper](https://github.com/Ultimaker/CuraEngine/blob/main/docs/arachne.md) — Variable-width extrusion algorithm
-- [Clipper2 Documentation](https://www.angusj.com/clipper2/Docs/Overview.htm) — Polygon clipping library
-
-**3D Printing & G-code:**
-- [RepRap G-code Wiki](https://reprap.org/wiki/G-code) — G-code command reference
-- [Marlin Documentation](https://marlinfw.org/meta/gcode/) — Marlin-specific commands
-- [Klipper G-code Reference](https://www.klipper3d.org/G-Codes.html) — Klipper commands
-
-**Rust:**
-- [The Rust Book](https://doc.rust-lang.org/book/) — Official guide
-- [Rust by Example](https://doc.rust-lang.org/rust-by-example/) — Learn with examples
-
-See [ARCHITECTURE.md § Learning Resources](ARCHITECTURE.md#learning-resources) for more links.
+[Issues](https://github.com/max-scopp/slicer-engine/issues) • [Discussions](https://github.com/max-scopp/slicer-engine/discussions) • [Contributing](CONTRIBUTING.md)
 
