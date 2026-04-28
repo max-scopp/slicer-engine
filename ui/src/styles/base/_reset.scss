@@ -1,0 +1,8 @@
+/// CSS reset and box-sizing
+/// @group base
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}

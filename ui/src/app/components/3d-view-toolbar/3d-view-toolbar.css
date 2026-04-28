@@ -1,0 +1,29 @@
+:host {
+  padding: 0 var(--spacing-lg);
+
+  display: flex;
+  place-items: center;
+  justify-content: space-between;
+
+  height: 60px;
+}
+
+.button-radio-group {
+  display: flex;
+  padding: 3px;
+
+  > button {
+    font-size: 12px;
+  }
+
+  &.icon-group {
+    button {
+      padding-top: 6px;
+      padding-bottom: 6px;
+    }
+
+    nexus-icon {
+      --icon-size: 16px;
+    }
+  }
+}

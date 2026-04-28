@@ -11,12 +11,17 @@
       "projectType": "application",
       "schematics": {
         "@schematics/angular:component": {
-          "style": "scss"
+          "style": "scss",
+          "standalone": true,
+          "skipTests": true
+        },
+        "@schematics/angular:application": {
+          "strict": true
         }
       },
       "root": "",
       "sourceRoot": "src",
-      "prefix": "app",
+      "prefix": "nexus",
       "architect": {
         "build": {
           "builder": "@angular/build:application",
@@ -28,10 +33,15 @@
               {
                 "glob": "**/*",
                 "input": "public"
+              },
+              {
+                "glob": "**/*.svg",
+                "input": "node_modules/iconoir/icons/regular",
+                "output": "/assets/icons"
               }
             ],
             "styles": [
-              "src/styles.scss"
+              "src/styles/main.scss"
             ]
           },
           "configurations": {

@@ -3,7 +3,7 @@ import { CommonModule } from '@angular/common';
 import { SlicerService, PreviousSession } from '../../services/slicer.service';
 
 @Component({
-  selector: 'app-history-panel',
+  selector: 'nexus-history-panel',
   standalone: true,
   imports: [CommonModule],
   templateUrl: './history-panel.component.html',

@@ -51,7 +51,7 @@ function buildFields(): FieldDef[] {
 }
 
 @Component({
-    selector: 'app-settings-panel',
+    selector: 'nexus-settings-panel',
     standalone: true,
     imports: [FormsModule, MarkdownComponent],
     templateUrl: './settings-panel.component.html',

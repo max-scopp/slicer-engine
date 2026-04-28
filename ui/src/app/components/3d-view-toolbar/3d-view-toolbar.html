@@ -1,0 +1,23 @@
+<nexus-card class="button-radio-group" [(radioGroup)]="selectedView">
+  <button radioButtonValue="3D">3D</button>
+  <button radioButtonValue="Top">Top</button>
+  <button radioButtonValue="Front">Front</button>
+</nexus-card>
+
+<nexus-card class="button-radio-group icon-group" [(radioGroup)]="selectedCursorMode">
+  <button radioButtonValue="orbit">
+    <nexus-icon name="rotate-camera-right"></nexus-icon>
+  </button>
+  <button radioButtonValue="pan">
+    <nexus-icon name="drag-hand-gesture"></nexus-icon>
+  </button>
+  <button radioButtonValue="zoom">
+    <nexus-icon name="zoom-in"></nexus-icon>
+  </button>
+  <button radioButtonValue="rotate">
+    <nexus-icon name="axes"></nexus-icon>
+  </button>
+  <button radioButtonValue="pullToSurface">
+    <nexus-icon name="constrained-surface"></nexus-icon>
+  </button>
+</nexus-card>

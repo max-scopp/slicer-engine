@@ -1,0 +1,25 @@
+:host {
+  display: flex;
+  align-items: center;
+  gap: 1ch;
+}
+
+:host([routerlink]) {
+  cursor: pointer;
+}
+
+.nexus-logo {
+  --icon-size: 14px;
+
+  width: 24px;
+  height: 24px;
+
+  background: var(--color-text-primary);
+  color: var(--color-bg-secondary);
+
+  border-radius: var(--radius-md);
+}
+
+.nexus-product-name {
+  font-weight: 600;
+}

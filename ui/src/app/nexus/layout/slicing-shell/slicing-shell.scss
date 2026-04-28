@@ -1,0 +1,29 @@
+:host {
+  position: relative;
+  display: flex;
+  height: 100%;
+}
+
+.shell-content {
+  position: relative;
+
+  flex: 1;
+  overflow: auto;
+}
+
+.print-estimates {
+  $off: 40px;
+
+  position: absolute;
+  bottom: $off;
+  right: $off;
+}
+
+.shell-toolbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+
+  z-index: 100;
+}

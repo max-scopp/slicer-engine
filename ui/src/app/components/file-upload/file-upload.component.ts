@@ -2,7 +2,7 @@ import { Component, inject } from '@angular/core';
 import { SlicerService } from '../../services/slicer.service';
 
 @Component({
-  selector: 'app-file-upload',
+  selector: 'nexus-file-upload',
   standalone: true,
   templateUrl: './file-upload.component.html',
   styleUrl: './file-upload.component.scss',

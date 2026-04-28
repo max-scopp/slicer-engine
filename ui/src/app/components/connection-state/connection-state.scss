@@ -1,0 +1,49 @@
+:host {
+  display: inline-flex;
+  animation: fade-in 800ms 300ms ease-out both;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.dot.pulse {
+  animation: dot-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.retry-btn {
+  all: unset;
+  cursor: pointer;
+  text-decoration: underline;
+  font-size: inherit;
+  font-weight: inherit;
+  color: inherit;
+  margin-left: 2px;
+
+  &:hover {
+    opacity: 0.75;
+  }
+}

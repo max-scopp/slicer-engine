@@ -1,11 +1,11 @@
-import { Injectable, inject, signal, effect } from '@angular/core';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { HttpClient } from '@angular/common/http';
-import { WsSlicingParams } from '../../generated/slicer-engine-ws-client-message-v1';
-import { DEFAULT_SETTINGS } from '../models/slice-settings.model';
-import { WebSocketService } from './websocket.service';
-import { ServerMessage } from '../../generated/slicer-engine-ws-server-message-v1';
+import { Injectable, effect, inject, signal } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { environment } from '../../environments/environment';
+import { WsSlicingParams } from '../../generated/slicer-engine-ws-client-message-v1';
+import { ServerMessage } from '../../generated/slicer-engine-ws-server-message-v1';
+import { DEFAULT_SETTINGS } from '../models/slice-settings.model';
+import { SlicerConnection } from './slicer-connection';
 
 export type SlicerStatus = 'idle' | 'ready' | 'uploading' | 'slicing' | 'done' | 'error';
 
@@ -26,7 +26,7 @@ export interface PhaseTimingData {
 
 @Injectable({ providedIn: 'root' })
 export class SlicerService {
-  private readonly ws = inject(WebSocketService);
+  private readonly ws = inject(SlicerConnection);
   private readonly http = inject(HttpClient);
 
   readonly selectedFile = signal<File | null>(null);
@@ -38,7 +38,7 @@ export class SlicerService {
 
   constructor() {
     // Pipe all WebSocket server messages into local state
-    this.ws.messages$.pipe(takeUntilDestroyed()).subscribe(msg => this.handleMessage(msg));
+    this.ws.messages$.pipe(takeUntilDestroyed()).subscribe((msg) => this.handleMessage(msg));
 
     // Reflect WebSocket connection status in the log
     effect(() => {
@@ -46,9 +46,9 @@ export class SlicerService {
       if (connStatus === 'connected') {
         // Will also receive the 'connected' ServerMessage with version from server
       } else if (connStatus === 'disconnected') {
-        this.outputLog.update(l => [...l, '[ws] Disconnected from server.']);
-      } else if (connStatus === 'error') {
-        this.outputLog.update(l => [...l, '[ws] Connection error — is the server running?']);
+        this.outputLog.update((l) => [...l, '[ws] Disconnected from server.']);
+      } else if (connStatus === 'failed') {
+        this.outputLog.update((l) => [...l, '[ws] Connection error — is the server running?']);
         if (this.status() === 'slicing') {
           this.status.set('error');
         }
@@ -59,23 +59,23 @@ export class SlicerService {
   private handleMessage(msg: ServerMessage): void {
     switch (msg.type) {
       case 'Connected':
-        this.outputLog.update(l => [...l, `[ws] Connected to slicer-engine v${msg.version}`]);
+        this.outputLog.update((l) => [...l, `[ws] Connected to slicer-engine v${msg.version}`]);
         break;
       case 'Log':
-        this.outputLog.update(l => [...l, `[${msg.level}] ${msg.message}`]);
+        this.outputLog.update((l) => [...l, `[${msg.level}] ${msg.message}`]);
         break;
       case 'PhaseMarker':
         this.handlePhaseMarker(msg);
         break;
       case 'Progress':
-        this.outputLog.update(l => [
+        this.outputLog.update((l) => [
           ...l,
           `Progress: ${msg.current_layer} / ${msg.total_layers} layers`,
         ]);
         break;
       case 'SliceComplete':
         this.status.set('done');
-        this.outputLog.update(l => [
+        this.outputLog.update((l) => [
           ...l,
           `Slice complete — ${msg.layer_count} layers generated.`,
           'Downloading G-code…',
@@ -86,29 +86,33 @@ export class SlicerService {
         break;
       case 'SessionsList':
         this.previousSessions.set(
-          msg.sessions.map(s => ({
+          msg.sessions.map((s) => ({
             request_uuid: s.request_uuid,
             original_filename: s.original_filename,
             layer_count: s.layer_count,
             created_at: s.created_at,
             download_url: s.download_url,
-          }))
+          })),
         );
         break;
       case 'Error':
         this.status.set('error');
-        this.outputLog.update(l => [...l, `[error] ${msg.message}`]);
+        this.outputLog.update((l) => [...l, `[error] ${msg.message}`]);
         break;
     }
   }
 
-  private handlePhaseMarker(msg: { phase: string; event: string; elapsed_ms?: number | null }): void {
+  private handlePhaseMarker(msg: {
+    phase: string;
+    event: string;
+    elapsed_ms?: number | null;
+  }): void {
     const now = Date.now();
 
     if (msg.event === 'start') {
       // Phase started - add or update the timing entry
-      this.phaseTimings.update(timings => {
-        const existing = timings.find(t => t.phase === msg.phase);
+      this.phaseTimings.update((timings) => {
+        const existing = timings.find((t) => t.phase === msg.phase);
         if (existing) {
           existing.startTime = now;
           existing.endTime = undefined;
@@ -118,27 +122,29 @@ export class SlicerService {
           return [...timings, { phase: msg.phase, startTime: now }];
         }
       });
-      this.outputLog.update(l => [...l, `[phase] ${msg.phase} → start`]);
+      this.outputLog.update((l) => [...l, `[phase] ${msg.phase} → start`]);
     } else if (msg.event === 'end' && msg.elapsed_ms != null) {
       // Phase ended - update with elapsed time
-      this.phaseTimings.update(timings => {
-        const existing = timings.find(t => t.phase === msg.phase);
+      this.phaseTimings.update((timings) => {
+        const existing = timings.find((t) => t.phase === msg.phase);
         if (existing) {
           existing.endTime = now;
           existing.elapsedMs = msg.elapsed_ms ?? undefined;
           return [...timings];
         } else {
           // Phase end without start (shouldn't happen, but handle it)
-          return [...timings, { phase: msg.phase, endTime: now, elapsedMs: msg.elapsed_ms ?? undefined }];
+          return [
+            ...timings,
+            { phase: msg.phase, endTime: now, elapsedMs: msg.elapsed_ms ?? undefined },
+          ];
         }
       });
-      this.outputLog.update(l => [...l, `[phase] ${msg.phase} ✓ ${msg.elapsed_ms} ms`]);
+      this.outputLog.update((l) => [...l, `[phase] ${msg.phase} ✓ ${msg.elapsed_ms} ms`]);
     }
   }
 
   private downloadGcode(downloadUrl: string): void {
-    const filename =
-      this.selectedFile()?.name.replace(/\.stl$/i, '.gcode') ?? 'output.gcode';
+    const filename = this.selectedFile()?.name.replace(/\.stl$/i, '.gcode') ?? 'output.gcode';
     const link = document.createElement('a');
     link.href = downloadUrl.startsWith('/') ? `${environment.apiUrl}${downloadUrl}` : downloadUrl;
     link.download = filename;
@@ -148,14 +154,14 @@ export class SlicerService {
   selectFile(file: File): void {
     this.selectedFile.set(file);
     this.status.set('ready');
-    this.outputLog.update(log => [
+    this.outputLog.update((log) => [
       ...log,
       `File selected: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`,
     ]);
   }
 
   updateSettings(patch: Partial<WsSlicingParams>): void {
-    this.settings.update(current => ({ ...current, ...patch }));
+    this.settings.update((current) => ({ ...current, ...patch }));
   }
 
   async slice(): Promise<void> {
@@ -165,7 +171,7 @@ export class SlicerService {
     }
 
     this.status.set('uploading');
-    this.outputLog.update(log => [...log, 'Uploading file…']);
+    this.outputLog.update((log) => [...log, 'Uploading file…']);
 
     try {
       // Step 1: Upload file via HTTP
@@ -181,7 +187,7 @@ export class SlicerService {
       }
 
       const requestUuid = uploadResponse.request_uuid;
-      this.outputLog.update(log => [
+      this.outputLog.update((log) => [
         ...log,
         `Upload complete. Request ID: ${requestUuid}`,
         'Starting slice job…',
@@ -197,7 +203,7 @@ export class SlicerService {
       });
     } catch (error) {
       this.status.set('error');
-      this.outputLog.update(log => [
+      this.outputLog.update((log) => [
         ...log,
         `[error] Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
       ]);
@@ -224,4 +230,3 @@ export class SlicerService {
     link.click();
   }
 }
-

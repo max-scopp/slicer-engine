@@ -3,7 +3,7 @@ import { FormsModule } from '@angular/forms';
 import { SlicerService } from '../../services/slicer.service';
 
 @Component({
-  selector: 'app-status-panel',
+  selector: 'nexus-status-panel',
   standalone: true,
   imports: [FormsModule],
   templateUrl: './status-panel.component.html',
