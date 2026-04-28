@@ -214,9 +214,10 @@ export class ViewerComponent implements OnDestroy {
     // overlays (the viewport-cube gizmo) can read it without going through
     // Angular's change-detection.
     const state = this.viewerControl.cameraState;
-    this.scene.cameraStateSink = (dir, up) => {
+    this.scene.cameraStateSink = (dir, up, fov) => {
       state.direction.copy(dir);
       state.up.copy(up);
+      state.fov = fov;
     };
     // Allow external gizmos (viewport-cube drag) to orbit the main camera.
     this.viewerControl.orbitSink = (azimuth, polar) => this.scene?.orbitBy(azimuth, polar);

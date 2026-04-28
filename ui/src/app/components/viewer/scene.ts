@@ -185,6 +185,30 @@ const AUTOSCROLL_ACCEL_EXPONENT = 1.6;
 const AUTOSCROLL_MAX_FACTOR_PER_FRAME = 4;
 
 /**
+ * Sentinel value used to disable a slot in {@link OrbitControls.touches}.
+ * The TOUCH enum exposes ROTATE / PAN / DOLLY_PAN / DOLLY_ROTATE; assigning
+ * any other numeric value causes OrbitControls' state machine to fall
+ * through to the no-op `default` branch, leaving the gesture untouched
+ * for our custom handler to claim. We need a numeric (not `null`) so the
+ * `touches` object's typing stays valid.
+ */
+const TOUCH_DISABLED = -1 as unknown as TOUCH;
+
+/**
+ * Below this pinch-distance change (in CSS pixels) the dolly is suppressed,
+ * to keep small finger jitter from accumulating into noticeable zoom drift
+ * during a primarily-rotate-or-pan two-finger gesture.
+ */
+const TWO_FINGER_DOLLY_DEAD_ZONE_PX = 1.5;
+/**
+ * Below this twist (in radians) per move event, the roll is suppressed.
+ * Typical untrained two-finger pan/zoom gestures wobble by ~0.5° between
+ * frames; ignoring those keeps the horizon level unless the user actively
+ * twists.
+ */
+const TWO_FINGER_ROLL_DEAD_ZONE_RAD = 0.01;
+
+/**
  * Owns the Three.js scene, camera, renderer, controls and render loop.
  *
  * Mode-specific content (mesh / gcode lines) is added to {@link contentRoot}.
@@ -240,7 +264,7 @@ export class ViewerScene {
    * camera direction (target→camera, normalised) and up vector. Used by the
    * viewport-cube gizmo to mirror the main camera's orientation.
    */
-  cameraStateSink: ((direction: Vector3, up: Vector3) => void) | null = null;
+  cameraStateSink: ((direction: Vector3, up: Vector3, fov: number) => void) | null = null;
 
   /**
    * Hook for selection / drag interactions. The viewer assigns this once it
@@ -261,6 +285,14 @@ export class ViewerScene {
   private readonly ndcScratch = new Vector2();
   private readonly groundHitScratch = new Vector3();
   private pressState: SelectionPressState | null = null;
+  /**
+   * Tracks a left-button press that landed on empty space (no selectable
+   * raycast hit). If the gesture stays under {@link SELECTION_DRAG_THRESHOLD_PX}
+   * by pointerup, it is treated as a deselect-click; otherwise it was the
+   * start of a camera orbit and is ignored. We deliberately do not
+   * preventDefault on these events so OrbitControls keeps handling the orbit.
+   */
+  private emptyPressState: { pointerId: number; downX: number; downY: number } | null = null;
 
   constructor(host: HTMLElement, initialPrintArea?: PrintAreaConfig) {
     this.host = host;
@@ -329,6 +361,7 @@ export class ViewerScene {
     this.controls.screenSpacePanning = true;
     this.installOrbitInertia();
     this.installTouchOrbitTuning();
+    this.installCustomTwoFingerControls();
     // Anchor the orbit target at the bed centre so dragging rotates around
     // the printable area instead of the machine origin / gizmo.
     this.controls.target.copy(initialPose.target);
@@ -647,15 +680,18 @@ export class ViewerScene {
       case 'orbit':
       case 'rotate':
         c.mouseButtons = { LEFT: MOUSE.ROTATE, MIDDLE, RIGHT: MOUSE.PAN };
-        c.touches = { ONE: TOUCH.ROTATE, TWO: TOUCH.DOLLY_PAN };
+        // Two-finger gestures (pinch-zoom + pan + twist-to-roll) are handled
+        // entirely by {@link installCustomTwoFingerControls}; disable the
+        // built-in TWO action so OrbitControls doesn't fight us.
+        c.touches = { ONE: TOUCH.ROTATE, TWO: TOUCH_DISABLED };
         break;
       case 'pan':
         c.mouseButtons = { LEFT: MOUSE.PAN, MIDDLE, RIGHT: MOUSE.ROTATE };
-        c.touches = { ONE: TOUCH.PAN, TWO: TOUCH.DOLLY_ROTATE };
+        c.touches = { ONE: TOUCH.PAN, TWO: TOUCH_DISABLED };
         break;
       case 'zoom':
         c.mouseButtons = { LEFT: MOUSE.DOLLY, MIDDLE, RIGHT: MOUSE.PAN };
-        c.touches = { ONE: TOUCH.DOLLY_PAN, TWO: TOUCH.DOLLY_PAN };
+        c.touches = { ONE: TOUCH.DOLLY_PAN, TWO: TOUCH_DISABLED };
         break;
       case 'pullToSurface':
         // Placeholder: surface-pulling is not implemented yet, so we simply
@@ -726,6 +762,14 @@ export class ViewerScene {
     const hitId = this.raycastSelectable(event);
     if (hitId === null) {
       // Don't steal empty-bed clicks — let OrbitControls orbit the camera.
+      // But remember the press so a clean (non-drag) release can deselect.
+      if (this.currentSelectedIds.size > 0) {
+        this.emptyPressState = {
+          pointerId: event.pointerId,
+          downX: event.clientX,
+          downY: event.clientY,
+        };
+      }
       return;
     }
     event.preventDefault();
@@ -742,6 +786,15 @@ export class ViewerScene {
   };
 
   private onSelectionPointerMove = (event: PointerEvent): void => {
+    const eps = this.emptyPressState;
+    if (eps && event.pointerId === eps.pointerId) {
+      const dxPx = event.clientX - eps.downX;
+      const dyPx = event.clientY - eps.downY;
+      if (Math.hypot(dxPx, dyPx) >= SELECTION_DRAG_THRESHOLD_PX) {
+        // Promoted to an orbit drag — abandon the deselect intent.
+        this.emptyPressState = null;
+      }
+    }
     const ps = this.pressState;
     if (!ps || event.pointerId !== ps.pointerId || !this.selectionHandlers) {
       return;
@@ -793,6 +846,15 @@ export class ViewerScene {
   };
 
   private onSelectionPointerUp = (event: PointerEvent): void => {
+    const eps = this.emptyPressState;
+    if (eps && event.pointerId === eps.pointerId) {
+      this.emptyPressState = null;
+      const dxPx = event.clientX - eps.downX;
+      const dyPx = event.clientY - eps.downY;
+      if (Math.hypot(dxPx, dyPx) < SELECTION_DRAG_THRESHOLD_PX) {
+        this.selectionHandlers?.clearSelection();
+      }
+    }
     const ps = this.pressState;
     if (!ps || event.pointerId !== ps.pointerId) {
       return;
@@ -814,6 +876,9 @@ export class ViewerScene {
   };
 
   private onSelectionPointerCancel = (event: PointerEvent): void => {
+    if (this.emptyPressState && event.pointerId === this.emptyPressState.pointerId) {
+      this.emptyPressState = null;
+    }
     const ps = this.pressState;
     if (!ps || event.pointerId !== ps.pointerId) {
       return;
@@ -976,7 +1041,7 @@ export class ViewerScene {
     if (offset.lengthSq() < 1e-6) {
       offset.copy(DEFAULT_VIEW_DIR);
     }
-    this.cameraStateSink(offset.normalize(), this.camera.up.clone().normalize());
+    this.cameraStateSink(offset.normalize(), this.camera.up.clone().normalize(), this.camera.fov);
   }
 
   private handleResize(): void {
@@ -1187,6 +1252,290 @@ export class ViewerScene {
     el.addEventListener('pointerdown', onDown);
     el.addEventListener('pointerup', onEnd);
     el.addEventListener('pointercancel', onEnd);
+  }
+
+  /**
+   * Install a capture-phase touch handler that takes over the canvas
+   * whenever two (or more) touches are active. While engaged it processes
+   * the gesture as a combined pinch (dolly), centroid translation (pan)
+   * and twist (roll around the camera's view axis), then releases control
+   * back to OrbitControls when the user drops to one finger or lifts off.
+   *
+   * Why this is custom instead of using {@link TOUCH.DOLLY_PAN} or
+   * {@link TOUCH.DOLLY_ROTATE}: OrbitControls only exposes one TWO-finger
+   * action, so the user has to pick between two-finger pan and two-finger
+   * rotate. A modern 3D viewer (Onshape, Sketchfab, Shapr3D) lets the
+   * user do all three simultaneously, and "twist" naturally maps to roll
+   * — which OrbitControls does not support at all (its `_quat` is fixed
+   * to the camera's original up vector). We side-step both limitations
+   * by manipulating `camera.position`, `controls.target` and `camera.up`
+   * directly; OrbitControls' next `update()` call simply re-derives the
+   * orientation via `lookAt(target)` using the rolled-up vector, so the
+   * roll persists.
+   */
+  private installCustomTwoFingerControls(): void {
+    const el = this.renderer.domElement;
+    const touches = new Map<number, { x: number; y: number }>();
+    const state = {
+      active: false,
+      lastDist: 0,
+      lastAngle: 0,
+      lastCx: 0,
+      lastCy: 0,
+      savedControlsEnabled: true,
+      // Set while we are dispatching synthetic pointercancel events to
+      // OrbitControls. Our own capture-phase `onUp` must ignore those or
+      // it would drop the touches it just engaged on.
+      suppressOwnCancel: false,
+    };
+
+    const recomputeAnchors = (): void => {
+      const pts = [...touches.values()];
+      if (pts.length < 2) return;
+      const a = pts[0];
+      const b = pts[1];
+      state.lastDist = Math.hypot(b.x - a.x, b.y - a.y);
+      state.lastAngle = Math.atan2(b.y - a.y, b.x - a.x);
+      state.lastCx = (a.x + b.x) / 2;
+      state.lastCy = (a.y + b.y) / 2;
+    };
+
+    const beginTwoFinger = (): void => {
+      state.active = true;
+      state.savedControlsEnabled = this.controls.enabled;
+      this.controls.enabled = false;
+      // Cancel any orbit inertia and any in-flight selection drag started
+      // by the first finger so the second finger doesn't fight a stale
+      // single-finger gesture.
+      this.orbitVelAzimuth = 0;
+      this.orbitVelPolar = 0;
+      this.orbitVelTarget.set(0, 0, 0);
+      this.cancelActiveDrag();
+      // OrbitControls already started tracking the FIRST finger as a
+      // single-touch ROTATE before we engaged. If we just toggle
+      // `controls.enabled = false`, its internal pointer set still holds
+      // that pointer — and the moment we re-enable on lift-down to one
+      // finger, it resumes rotating from a stale anchor (causing a wild
+      // spin / jump). Fire a synthetic `pointercancel` for every active
+      // touch so OrbitControls' `_onPointerCancel` clears its state.
+      // Re-disabling immediately afterwards keeps it from acting on the
+      // cancel itself. We toggle around the dispatch because OC's cancel
+      // handler bails early when `enabled === false`.
+      this.controls.enabled = true;
+      state.suppressOwnCancel = true;
+      for (const id of touches.keys()) {
+        try {
+          el.dispatchEvent(
+            new PointerEvent('pointercancel', { pointerId: id, pointerType: 'touch' }),
+          );
+        } catch {
+          // Older browsers may reject the constructor; harmless to skip.
+        }
+      }
+      state.suppressOwnCancel = false;
+      this.controls.enabled = false;
+      recomputeAnchors();
+    };
+
+    const endTwoFinger = (): void => {
+      if (!state.active) return;
+      state.active = false;
+      this.controls.enabled = state.savedControlsEnabled;
+    };
+
+    const onDown = (event: PointerEvent): void => {
+      if (event.pointerType !== 'touch') return;
+      touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (touches.size === 2 && !state.active) {
+        beginTwoFinger();
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+      } else if (state.active) {
+        // Third+ finger: keep tracking but re-anchor so the centroid
+        // doesn't jump.
+        recomputeAnchors();
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+      }
+    };
+
+    const onMove = (event: PointerEvent): void => {
+      if (event.pointerType !== 'touch') return;
+      const t = touches.get(event.pointerId);
+      if (!t) return;
+      t.x = event.clientX;
+      t.y = event.clientY;
+      // While engaged, swallow ALL touch moves — including the lone
+      // remaining finger after a partial lift — so OrbitControls cannot
+      // pick up the residual pointer and start an unwanted rotate.
+      if (state.active) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+      }
+      if (!state.active || touches.size < 2) return;
+
+      const pts = [...touches.values()];
+      const a = pts[0];
+      const b = pts[1];
+      const dist = Math.hypot(b.x - a.x, b.y - a.y);
+      const angle = Math.atan2(b.y - a.y, b.x - a.x);
+      const cx = (a.x + b.x) / 2;
+      const cy = (a.y + b.y) / 2;
+
+      // --- Pinch → dolly --------------------------------------------------
+      if (state.lastDist > 0 && Math.abs(dist - state.lastDist) > TWO_FINGER_DOLLY_DEAD_ZONE_PX) {
+        const factor = state.lastDist / Math.max(dist, 1e-3);
+        this.applyTouchDolly(factor, cx, cy);
+      }
+
+      // --- Twist → roll ---------------------------------------------------
+      let dAngle = angle - state.lastAngle;
+      if (dAngle > Math.PI) dAngle -= 2 * Math.PI;
+      else if (dAngle < -Math.PI) dAngle += 2 * Math.PI;
+      if (Math.abs(dAngle) > TWO_FINGER_ROLL_DEAD_ZONE_RAD) {
+        // Screen Y grows downward but world rotation conventions are
+        // right-handed; negate so a clockwise twist of the fingers (as the
+        // user sees them) rolls the scene clockwise too.
+        this.applyTouchRoll(-dAngle);
+      }
+
+      // --- Centroid → pan -------------------------------------------------
+      const dx = cx - state.lastCx;
+      const dy = cy - state.lastCy;
+      if (dx !== 0 || dy !== 0) {
+        this.applyTouchPan(dx, dy);
+      }
+
+      state.lastDist = dist;
+      state.lastAngle = angle;
+      state.lastCx = cx;
+      state.lastCy = cy;
+    };
+
+    const onUp = (event: PointerEvent): void => {
+      if (event.pointerType !== 'touch') return;
+      // Ignore the synthetic pointercancel events we dispatch at engage
+      // time — those are aimed at OrbitControls, not at our own state.
+      if (state.suppressOwnCancel) return;
+      if (!touches.delete(event.pointerId)) return;
+      if (!state.active) return;
+      // Defer ending the gesture (and re-enabling OrbitControls) until
+      // every finger has lifted. If we re-enabled while the user still
+      // had one finger down, OrbitControls would immediately resume a
+      // single-touch ROTATE from the lone remaining pointer — which the
+      // user perceives as the camera "spinning off" the moment they let
+      // go of one finger. While we wait, also swallow the up event so OC
+      // doesn't see it as the end of a gesture it never started.
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      if (touches.size === 0) {
+        endTwoFinger();
+      } else {
+        // 3+→2 or 2→1: re-anchor so the remaining touches don't jump.
+        recomputeAnchors();
+      }
+    };
+
+    el.addEventListener('pointerdown', onDown, { capture: true });
+    el.addEventListener('pointermove', onMove, { capture: true });
+    el.addEventListener('pointerup', onUp, { capture: true });
+    el.addEventListener('pointercancel', onUp, { capture: true });
+  }
+
+  /**
+   * Dolly toward / away from the world point under the pinch centroid.
+   * `factor < 1` zooms in (fingers spreading apart), `factor > 1` zooms
+   * out. Implements the standard "zoom-to-cursor" math:
+   *   C' = T + (C - T) * f                    (basic dolly toward target)
+   *   S  = (W - T) * (1 - f)                  (shift to anchor W on screen)
+   *   C'' = C' + S,   T'' = T + S
+   * where W is the intersection of the pinch-centroid ray with the plane
+   * through T perpendicular to the view direction. With this, the world
+   * point under the centroid stays under the centroid as the user pinches.
+   */
+  private applyTouchDolly(factor: number, cx: number, cy: number): void {
+    const camera = this.camera;
+    const target = this.controls.target;
+    // Multiple touch transforms can chain within a single pointermove
+    // event — refresh world matrices so the raycaster sees the live pose.
+    camera.updateMatrixWorld(true);
+    const offset = camera.position.clone().sub(target);
+    const oldDist = offset.length();
+    if (oldDist < 1e-6) return;
+    let newDist = oldDist * factor;
+    newDist = Math.max(this.controls.minDistance, Math.min(this.controls.maxDistance, newDist));
+    const f = newDist / oldDist;
+    if (Math.abs(f - 1) < 1e-6) return;
+
+    // Anchor W: ray through pinch centroid intersected with the plane
+    // through `target` whose normal points back toward the camera.
+    const viewNormal = offset.clone().normalize();
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ndcX = ((cx - rect.left) / Math.max(rect.width, 1)) * 2 - 1;
+    const ndcY = -(((cy - rect.top) / Math.max(rect.height, 1)) * 2 - 1);
+    this.raycaster.setFromCamera(this.ndcScratch.set(ndcX, ndcY), camera);
+    const plane = new Plane().setFromNormalAndCoplanarPoint(viewNormal, target);
+    const W = new Vector3();
+    const hit = this.raycaster.ray.intersectPlane(plane, W);
+
+    // Apply dolly. Order matters: shift after the dolly, both about T.
+    camera.position.copy(target).add(offset.multiplyScalar(f));
+
+    if (hit) {
+      const shift = W.sub(target).multiplyScalar(1 - f);
+      camera.position.add(shift);
+      target.add(shift);
+    }
+  }
+
+  /**
+   * Translate both camera and target by a screen-space pixel delta of the
+   * pinch centroid, projected to world units at the current target depth.
+   * Mirrors OrbitControls' screen-space pan but driven by our own delta
+   * stream so it composes cleanly with the simultaneous dolly + roll.
+   */
+  private applyTouchPan(dxPx: number, dyPx: number): void {
+    const camera = this.camera;
+    const target = this.controls.target;
+    // The right/up basis is read from `camera.matrix`; keep it in sync
+    // with any dolly/roll applied earlier in the same move event.
+    camera.updateMatrix();
+    const distance = camera.position.distanceTo(target);
+    const fovRad = (camera.fov * Math.PI) / 180;
+    const viewportHeight = Math.max(this.renderer.domElement.clientHeight, 1);
+    const worldPerPixel = (2 * Math.tan(fovRad / 2) * distance) / viewportHeight;
+
+    // Right and up basis vectors in world space, derived from the live
+    // camera matrix so they include any roll we have already applied.
+    const right = new Vector3().setFromMatrixColumn(camera.matrix, 0);
+    const up = new Vector3().setFromMatrixColumn(camera.matrix, 1);
+    const pan = new Vector3();
+    pan.addScaledVector(right, -dxPx * worldPerPixel);
+    pan.addScaledVector(up, dyPx * worldPerPixel);
+    camera.position.add(pan);
+    target.add(pan);
+  }
+
+  /**
+   * Roll the camera by `angle` radians around its forward (view) axis.
+   * Implemented by rotating `camera.up`; OrbitControls' `update()` calls
+   * `lookAt(target)` every frame using the live up vector, so the roll
+   * persists across subsequent orbit updates without any further hooks.
+   */
+  private applyTouchRoll(angle: number): void {
+    const camera = this.camera;
+    const forward = this.controls.target.clone().sub(camera.position).normalize();
+    if (forward.lengthSq() < 1e-12) return;
+    const q = new Quaternion().setFromAxisAngle(forward, angle);
+    camera.up.applyQuaternion(q).normalize();
+    camera.lookAt(this.controls.target);
+    // `lookAt` updates the quaternion but not the matrix; refresh so the
+    // following pan in the same move event reads the new basis vectors.
+    camera.updateMatrix();
   }
 
   /**

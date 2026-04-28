@@ -36,6 +36,12 @@ export class ViewerControl {
     direction: new Vector3(1, -1, 0.8).normalize(),
     /** Camera up vector. */
     up: new Vector3(0, 0, 1),
+    /**
+     * Live perspective field-of-view (degrees) of the main camera. The
+     * viewport-cube mirrors this so its own projection matches — small FOV
+     * (~1°) reads as orthographic, ~45° as perspective.
+     */
+    fov: 45,
   };
 
   /**

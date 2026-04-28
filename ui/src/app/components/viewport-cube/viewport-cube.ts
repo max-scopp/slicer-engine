@@ -10,12 +10,17 @@ import {
 import {
   BoxGeometry,
   CanvasTexture,
+  ConeGeometry,
+  CylinderGeometry,
+  Group,
   LinearFilter,
   Mesh,
   MeshBasicMaterial,
-  OrthographicCamera,
+  PerspectiveCamera,
   Raycaster,
   Scene,
+  Sprite,
+  SpriteMaterial,
   Vector2,
   Vector3,
   WebGLRenderer,
@@ -34,23 +39,100 @@ interface FaceSpec {
   label: string;
   direction: Vector3;
   up: Vector3;
+  /**
+   * Rotation (radians) applied to the face label canvas so the text reads
+   * upright when the camera is snapped to face that side with the
+   * corresponding `up` vector. Required because BoxGeometry's per-face UV
+   * tangent frames don't align with the world Z-up convention used by the
+   * scene, so unrotated text would appear sideways or upside-down on the
+   * ±X / +Y / -Z faces.
+   */
+  textRotation: number;
 }
 
 const FACE_SPECS: readonly FaceSpec[] = [
-  { label: 'RIGHT', direction: new Vector3(1, 0, 0), up: new Vector3(0, 0, 1) },
-  { label: 'LEFT', direction: new Vector3(-1, 0, 0), up: new Vector3(0, 0, 1) },
-  { label: 'BACK', direction: new Vector3(0, 1, 0), up: new Vector3(0, 0, 1) },
-  { label: 'FRONT', direction: new Vector3(0, -1, 0), up: new Vector3(0, 0, 1) },
-  { label: 'TOP', direction: new Vector3(0, 0, 1), up: new Vector3(0, 1, 0) },
-  { label: 'BOTTOM', direction: new Vector3(0, 0, -1), up: new Vector3(0, 1, 0) },
+  {
+    label: 'RIGHT',
+    direction: new Vector3(1, 0, 0),
+    up: new Vector3(0, 0, 1),
+    textRotation: -Math.PI / 2,
+  },
+  {
+    label: 'LEFT',
+    direction: new Vector3(-1, 0, 0),
+    up: new Vector3(0, 0, 1),
+    textRotation: Math.PI / 2,
+  },
+  {
+    label: 'BACK',
+    direction: new Vector3(0, 1, 0),
+    up: new Vector3(0, 0, 1),
+    textRotation: Math.PI,
+  },
+  {
+    label: 'FRONT',
+    direction: new Vector3(0, -1, 0),
+    up: new Vector3(0, 0, 1),
+    textRotation: 0,
+  },
+  {
+    label: 'TOP',
+    direction: new Vector3(0, 0, 1),
+    up: new Vector3(0, 1, 0),
+    textRotation: 0,
+  },
+  {
+    label: 'BOTTOM',
+    direction: new Vector3(0, 0, -1),
+    up: new Vector3(0, 1, 0),
+    textRotation: Math.PI,
+  },
 ];
 
 const CUBE_SIZE = 1;
 // Half-extent of the cube's bounding sphere — guarantees the cube fits no
 // matter how it is rotated (corner distance from center is sqrt(3)/2 * size).
 const CUBE_HALF_EXTENT = (CUBE_SIZE * Math.sqrt(3)) / 2;
-// Padding factor around the cube inside the orthographic frustum.
-const FRUSTUM_PADDING = 1.1;
+// Padding factor around the cube inside the orthographic frustum. Wider than
+// strictly needed for the cube alone so the dimensional-guide axes (which
+// run along the three cube edges meeting at the -X/-Y/-Z corner) and their
+// X/Y/Z end labels stay fully on-screen at every camera orientation.
+const FRUSTUM_PADDING = 1.55;
+
+// RGB axes gizmo — colour convention matches the main scene's
+// `buildAxesGizmo` (X = red, Y = green, Z = blue) so the orientation cube
+// reads identically to the build-plate gizmo in the main viewer.
+const AXIS_COLOR_X = 0xff3344;
+const AXIS_COLOR_Y = 0x33dd55;
+const AXIS_COLOR_Z = 0x4488ff;
+// The gizmo lives at the cube's -X/-Y/-Z corner (visually "bottom-left-back")
+// and its three coloured shafts run **along** the three cube edges that meet
+// at that corner. The shafts therefore double as dimensional guides: each
+// edge is annotated with the world-axis (X/Y/Z) it represents, with an arrow
+// head + label at the +end of every edge so the user can read the build-volume
+// orientation at a glance. Each shaft is offset slightly outboard of its edge
+// (perpendicular to its own axis) so it sits just outside the cube faces and
+// doesn't z-fight with the textured face beneath it.
+const AXIS_EDGE_OFFSET = 0.04;
+const AXIS_LENGTH = CUBE_SIZE;
+const AXIS_SHAFT_RADIUS = 0.018;
+const AXIS_HEAD_LENGTH = 0.14;
+const AXIS_HEAD_RADIUS = 0.05;
+// Small perpendicular tick mark at the origin end of each axis — mimics the
+// end caps on architectural dimension lines, making it obvious that the
+// coloured shaft represents the *length* of the cube edge along that axis.
+const AXIS_TICK_LENGTH = 0.09;
+const AXIS_TICK_RADIUS = 0.01;
+// Distance from the tip of the arrow head to the centre of the X/Y/Z label
+// sprite, expressed in world units of the cube scene.
+const AXIS_LABEL_OFFSET = 0.12;
+const AXIS_LABEL_SIZE = 0.26;
+
+// Opacity of the cube's face tiles. Low enough that the RGB gizmo running
+// along the back edges shows clearly through the front faces, high enough
+// that the face labels (FRONT / BACK / TOP / etc.) and themed border still
+// read as a solid clickable button.
+const CUBE_FACE_OPACITY = 0.85;
 // Distance from the camera to the cube. Arbitrary for an orthographic camera
 // — only direction matters — but kept large enough to stay well inside the
 // near/far range.
@@ -102,8 +184,9 @@ export class ViewportCube implements AfterViewInit, OnDestroy {
 
   private renderer: WebGLRenderer | null = null;
   private scene: Scene | null = null;
-  private camera: OrthographicCamera | null = null;
+  private camera: PerspectiveCamera | null = null;
   private cube: Mesh | null = null;
+  private axesGizmo: Group | null = null;
   private raycaster = new Raycaster();
   private rafHandle = 0;
   private hoveredFace = -1;
@@ -120,6 +203,7 @@ export class ViewportCube implements AfterViewInit, OnDestroy {
   private needsRender = true;
   private readonly lastRenderedDirection = new Vector3(NaN, NaN, NaN);
   private readonly lastRenderedUp = new Vector3(NaN, NaN, NaN);
+  private lastRenderedFov = NaN;
 
   private dragging = false;
   private pointerId: number | null = null;
@@ -142,6 +226,9 @@ export class ViewportCube implements AfterViewInit, OnDestroy {
         m.map?.dispose();
         m.dispose();
       }
+    }
+    if (this.axesGizmo) {
+      disposeAxesGizmo(this.axesGizmo);
     }
     this.renderer?.dispose();
   }
@@ -167,17 +254,12 @@ export class ViewportCube implements AfterViewInit, OnDestroy {
     this.scene = new Scene();
     this.scene.background = null;
 
-    // Orthographic camera sized to the cube's bounding sphere so the cube
-    // never visually clips against the canvas edges, regardless of rotation.
-    const halfExtent = CUBE_HALF_EXTENT * FRUSTUM_PADDING;
-    this.camera = new OrthographicCamera(
-      -halfExtent,
-      halfExtent,
-      halfExtent,
-      -halfExtent,
-      0.1,
-      100,
-    );
+    // Perspective camera that mirrors the main scene's FOV every frame so
+    // the cube reads as orthographic when the main view is ortho (FOV ≈ 1°)
+    // and as perspective when the main view is perspective (FOV ≈ 45°).
+    // Initial parameters are placeholders — `resize()` and `tick()` set the
+    // real aspect / FOV / distance.
+    this.camera = new PerspectiveCamera(45, 1, 0.01, 100);
     this.camera.up.set(0, 0, 1);
     this.camera.position.set(0, 0, CUBE_DISTANCE);
     this.camera.lookAt(0, 0, 0);
@@ -185,14 +267,23 @@ export class ViewportCube implements AfterViewInit, OnDestroy {
     const materials = FACE_SPECS.map(
       (face) =>
         new MeshBasicMaterial({
-          map: makeFaceTexture(face.label, false, readPalette()),
-          transparent: false,
+          map: makeFaceTexture(face.label, false, readPalette(), face.textRotation),
+          // Semi-transparent so the RGB axis gizmo running along the cube's
+          // back edges remains visible through the front faces \u2014 a tinted
+          // glass effect that keeps the orientation guides readable from
+          // every angle without forcing the gizmo above the cube in z-order.
+          transparent: true,
+          opacity: CUBE_FACE_OPACITY,
+          depthWrite: false,
         }),
     );
 
     const geometry = new BoxGeometry(CUBE_SIZE, CUBE_SIZE, CUBE_SIZE);
     this.cube = new Mesh(geometry, materials);
     this.scene.add(this.cube);
+
+    this.axesGizmo = buildAxesGizmo();
+    this.scene.add(this.axesGizmo);
 
     this.resize();
     this.resizeObserver = new ResizeObserver(() => this.resize());
@@ -225,7 +316,12 @@ export class ViewportCube implements AfterViewInit, OnDestroy {
     const palette = readPalette();
     for (let i = 0; i < materials.length; i++) {
       materials[i].map?.dispose();
-      materials[i].map = makeFaceTexture(FACE_SPECS[i].label, i === this.hoveredFace, palette);
+      materials[i].map = makeFaceTexture(
+        FACE_SPECS[i].label,
+        i === this.hoveredFace,
+        palette,
+        FACE_SPECS[i].textRotation,
+      );
       materials[i].needsUpdate = true;
     }
     this.needsRender = true;
@@ -239,22 +335,7 @@ export class ViewportCube implements AfterViewInit, OnDestroy {
     const w = Math.max(canvas.clientWidth, 1);
     const h = Math.max(canvas.clientHeight, 1);
     this.renderer.setSize(w, h, false);
-
-    // Keep the cube square inside any non-square canvas by widening the
-    // frustum on the longer axis.
-    const aspect = w / h;
-    const halfExtent = CUBE_HALF_EXTENT * FRUSTUM_PADDING;
-    if (aspect >= 1) {
-      this.camera.left = -halfExtent * aspect;
-      this.camera.right = halfExtent * aspect;
-      this.camera.top = halfExtent;
-      this.camera.bottom = -halfExtent;
-    } else {
-      this.camera.left = -halfExtent;
-      this.camera.right = halfExtent;
-      this.camera.top = halfExtent / aspect;
-      this.camera.bottom = -halfExtent / aspect;
-    }
+    this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.needsRender = true;
   }
@@ -274,16 +355,35 @@ export class ViewportCube implements AfterViewInit, OnDestroy {
     const state = this.viewerControl.cameraState;
     if (
       !this.lastRenderedDirection.equals(state.direction) ||
-      !this.lastRenderedUp.equals(state.up)
+      !this.lastRenderedUp.equals(state.up) ||
+      this.lastRenderedFov !== state.fov
     ) {
       this.lastRenderedDirection.copy(state.direction);
       this.lastRenderedUp.copy(state.up);
+      this.lastRenderedFov = state.fov;
       this.needsRender = true;
     }
     if (!this.needsRender) {
       return;
     }
-    this.camera.position.copy(state.direction).multiplyScalar(CUBE_DISTANCE);
+    // Mirror the main camera's FOV. Distance from the cube is then derived
+    // from FOV so the cube + axes gizmo always inscribe the same fraction
+    // of the viewport regardless of projection — narrow FOV = far camera
+    // (visually orthographic), wide FOV = closer camera (visually perspective).
+    const fovRad = (state.fov * Math.PI) / 180;
+    const fitRadius = CUBE_HALF_EXTENT * FRUSTUM_PADDING;
+    // Account for non-square aspects: the limiting half-fov is on the
+    // smaller axis (vertical FOV by default; horizontal scales by aspect).
+    const aspect = this.camera.aspect;
+    const vHalfFov = fovRad / 2;
+    const hHalfFov = Math.atan(Math.tan(vHalfFov) * aspect);
+    const limitHalfFov = Math.min(vHalfFov, hHalfFov);
+    const distance = fitRadius / Math.tan(limitHalfFov);
+    this.camera.fov = state.fov;
+    this.camera.near = Math.max(distance - fitRadius * 2, 0.01);
+    this.camera.far = distance + fitRadius * 2;
+    this.camera.updateProjectionMatrix();
+    this.camera.position.copy(state.direction).multiplyScalar(distance);
     this.camera.up.copy(state.up);
     this.camera.lookAt(0, 0, 0);
     this.renderer.render(this.scene, this.camera);
@@ -368,13 +468,23 @@ export class ViewportCube implements AfterViewInit, OnDestroy {
     if (this.hoveredFace >= 0) {
       const prev = materials[this.hoveredFace];
       prev.map?.dispose();
-      prev.map = makeFaceTexture(FACE_SPECS[this.hoveredFace].label, false, palette);
+      prev.map = makeFaceTexture(
+        FACE_SPECS[this.hoveredFace].label,
+        false,
+        palette,
+        FACE_SPECS[this.hoveredFace].textRotation,
+      );
       prev.needsUpdate = true;
     }
     if (face >= 0) {
       const next = materials[face];
       next.map?.dispose();
-      next.map = makeFaceTexture(FACE_SPECS[face].label, true, palette);
+      next.map = makeFaceTexture(
+        FACE_SPECS[face].label,
+        true,
+        palette,
+        FACE_SPECS[face].textRotation,
+      );
       next.needsUpdate = true;
     }
     this.hoveredFace = face;
@@ -436,7 +546,12 @@ function readPalette(): CubePalette {
  * standard themed button: surface fill, rounded inner tile, themed border,
  * primary-tinted hover state, themed label text.
  */
-function makeFaceTexture(label: string, hovered: boolean, palette: CubePalette): CanvasTexture {
+function makeFaceTexture(
+  label: string,
+  hovered: boolean,
+  palette: CubePalette,
+  textRotation: number,
+): CanvasTexture {
   const size = 256;
   const canvas = document.createElement('canvas');
   canvas.width = size;
@@ -469,10 +584,26 @@ function makeFaceTexture(label: string, hovered: boolean, palette: CubePalette):
   ctx.stroke();
 
   ctx.fillStyle = hovered ? palette.primary : palette.text;
-  ctx.font = '600 48px "Inter", system-ui, sans-serif';
+  // Monospace so every face label has identical letter geometry, which keeps
+  // the cube reading like a uniform button grid even when the labels rotate
+  // per-face. Bumped a notch above the previous Inter size for legibility at
+  // the small canvas-texture footprint.
+  ctx.font = '700 64px "JetBrains Mono", "Fira Code", "SF Mono", Consolas, ui-monospace, monospace';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(label, size / 2, size / 2);
+  // Rotate around the canvas centre so the label reads upright when this
+  // face is viewed head-on with the scene's Z-up convention. BoxGeometry's
+  // per-face UV tangent frames don't all align with world Z-up, so without
+  // this correction ±X / +Y / -Z labels would appear sideways or upside-down.
+  if (textRotation !== 0) {
+    ctx.save();
+    ctx.translate(size / 2, size / 2);
+    ctx.rotate(textRotation);
+    ctx.fillText(label, 0, 0);
+    ctx.restore();
+  } else {
+    ctx.fillText(label, size / 2, size / 2);
+  }
 
   const tex = new CanvasTexture(canvas);
   tex.minFilter = LinearFilter;
@@ -502,4 +633,151 @@ function drawRoundedRect(
   ctx.lineTo(x, y + radius);
   ctx.quadraticCurveTo(x, y, x + radius, y);
   ctx.closePath();
+}
+
+/**
+ * Build the small RGB axes gizmo that sits at the cube's -X/-Y/-Z corner
+ * ("bottom-left-back"). The three coloured shafts run **along** the three
+ * cube edges meeting at that corner, doubling as dimensional guides for the
+ * build-volume orientation: red = X, green = Y, blue = Z, each ending in a
+ * matching arrow head + billboarded sprite label so the user can always
+ * read which colour maps to which axis regardless of camera angle.
+ *
+ * The gizmo lives in the same scene as the cube — depth testing against
+ * the cube's opaque faces naturally hides the parts that should be behind
+ * the cube when viewed from the opposite octant.
+ */
+function buildAxesGizmo(): Group {
+  const group = new Group();
+  const half = CUBE_SIZE / 2;
+  const eps = AXIS_EDGE_OFFSET;
+
+  // Each axis runs along the cube edge starting at -half on its own axis,
+  // offset by `eps` outboard on the two perpendicular axes so the shaft sits
+  // just outside the cube faces (no z-fighting with the textured face).
+  const xOrigin = new Vector3(-half, -half - eps, -half - eps);
+  const yOrigin = new Vector3(-half - eps, -half, -half - eps);
+  const zOrigin = new Vector3(-half - eps, -half - eps, -half);
+
+  group.add(buildAxisArrow('X', new Vector3(1, 0, 0), AXIS_COLOR_X, xOrigin));
+  group.add(buildAxisArrow('Y', new Vector3(0, 1, 0), AXIS_COLOR_Y, yOrigin));
+  group.add(buildAxisArrow('Z', new Vector3(0, 0, 1), AXIS_COLOR_Z, zOrigin));
+
+  return group;
+}
+
+/**
+ * Build one axis arrow (start tick + shaft + head + label sprite) pointing
+ * along `direction` from `origin`. `direction` must be a unit cardinal vector.
+ * The shaft length spans the full cube edge so the arrow visually annotates
+ * the edge as a dimension line.
+ */
+function buildAxisArrow(label: string, direction: Vector3, color: number, origin: Vector3): Group {
+  const arrow = new Group();
+  const shaftLength = AXIS_LENGTH - AXIS_HEAD_LENGTH;
+
+  // Standard depth-tested opaque material — the gizmo lives "inside" the
+  // cube space and we want the cube's semi-transparent faces to visibly
+  // overlay it from the front while the axes stay readable through the
+  // tinted glass effect. Opaque draws before transparent in three.js, so
+  // ordering is automatic.
+  const material = new MeshBasicMaterial({ color });
+
+  // Perpendicular tick at the origin end — architectural dimension-line cap
+  // marking the start of the measured span. Built along +X (perpendicular to
+  // the shaft's local +Y) so it sits flat against the cube corner.
+  const tickGeometry = new CylinderGeometry(
+    AXIS_TICK_RADIUS,
+    AXIS_TICK_RADIUS,
+    AXIS_TICK_LENGTH,
+    8,
+  );
+  const tick = new Mesh(tickGeometry, material);
+  tick.rotation.z = Math.PI / 2;
+  arrow.add(tick);
+
+  // Shaft — CylinderGeometry's default axis is +Y, so build along +Y and
+  // rotate the whole arrow into place via setFromUnitVectors below.
+  const shaftGeometry = new CylinderGeometry(AXIS_SHAFT_RADIUS, AXIS_SHAFT_RADIUS, shaftLength, 16);
+  const shaft = new Mesh(shaftGeometry, material);
+  shaft.position.y = shaftLength / 2;
+  arrow.add(shaft);
+
+  // Arrow head sits on top of the shaft.
+  const headGeometry = new ConeGeometry(AXIS_HEAD_RADIUS, AXIS_HEAD_LENGTH, 16);
+  const head = new Mesh(headGeometry, material);
+  head.position.y = shaftLength + AXIS_HEAD_LENGTH / 2;
+  arrow.add(head);
+
+  // Billboarded label sprite — always faces the camera, sits just past the
+  // arrow tip in the arrow's local +Y direction (rotated into world space
+  // alongside the rest of the arrow). Standard depth testing means the
+  // semi-transparent cube tints the labels on the far side, matching the
+  // shafts.
+  const sprite = new Sprite(
+    new SpriteMaterial({
+      map: makeAxisLabelTexture(label, color),
+      transparent: true,
+    }),
+  );
+  sprite.position.y = AXIS_LENGTH + AXIS_LABEL_OFFSET;
+  sprite.scale.set(AXIS_LABEL_SIZE, AXIS_LABEL_SIZE, 1);
+  arrow.add(sprite);
+
+  // Orient the +Y-aligned arrow so its tip points along `direction`.
+  arrow.position.copy(origin);
+  arrow.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), direction);
+
+  return arrow;
+}
+
+/**
+ * Build a CanvasTexture for an axis label sprite. The label is drawn in the
+ * matching axis colour on a transparent background.
+ */
+function makeAxisLabelTexture(label: string, color: number): CanvasTexture {
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    return new CanvasTexture(canvas);
+  }
+
+  const hex = `#${color.toString(16).padStart(6, '0')}`;
+  ctx.font = '700 96px "Inter", system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  // Subtle dark halo for legibility against light cube faces.
+  ctx.lineWidth = 8;
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
+  ctx.strokeText(label, size / 2, size / 2);
+  ctx.fillStyle = hex;
+  ctx.fillText(label, size / 2, size / 2);
+
+  const tex = new CanvasTexture(canvas);
+  tex.minFilter = LinearFilter;
+  tex.magFilter = LinearFilter;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/** Recursively dispose every Mesh / Sprite resource owned by the gizmo. */
+function disposeAxesGizmo(root: Group): void {
+  root.traverse((obj) => {
+    if (obj instanceof Mesh) {
+      obj.geometry.dispose();
+      const mat = obj.material as MeshBasicMaterial | MeshBasicMaterial[];
+      if (Array.isArray(mat)) {
+        for (const m of mat) m.dispose();
+      } else {
+        mat.dispose();
+      }
+    } else if (obj instanceof Sprite) {
+      const mat = obj.material;
+      mat.map?.dispose();
+      mat.dispose();
+    }
+  });
 }
