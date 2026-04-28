@@ -93,18 +93,23 @@ impl ProcessLogger for WsLogger {
     }
 }
 
-/// Upgrade an HTTP GET to a WebSocket connection and hand off to the session handler
+/// Upgrade an HTTP GET to a WebSocket connection and hand off to the session handler.
 pub async fn ws_handler(
     req: actix_web::HttpRequest,
     stream: actix_web::web::Payload,
     state: actix_web::web::Data<super::handlers::AppState>,
 ) -> Result<actix_web::HttpResponse, actix_web::Error> {
+    // Derive the base URL from the request so download URLs are fully qualified
+    let scheme = if req.connection_info().scheme() == "https" { "https" } else { "http" };
+    let host = req.connection_info().host().to_string();
+    let base_url = format!("{}://{}", scheme, host);
+
     let (response, session, msg_stream) = actix_ws::handle(&req, stream)?;
 
     let db = state.db.clone();
     let work_dir = state.work_dir.clone();
 
-    actix_web::rt::spawn(handle_ws_session(session, msg_stream, db, work_dir));
+    actix_web::rt::spawn(handle_ws_session(session, msg_stream, db, work_dir, base_url));
 
     Ok(response)
 }
@@ -116,7 +121,11 @@ async fn handle_ws_session(
     msg_stream: actix_ws::MessageStream,
     db: Arc<crate::db::Database>,
     work_dir: std::path::PathBuf,
+    base_url: String,
 ) {
+    let logger = StderrLogger;
+    logger.log_info("[WS] New session started");
+
     // Aggregate WebSocket continuation frames (limit: 64 MiB per message)
     let mut stream = msg_stream
         .aggregate_continuations()
@@ -127,6 +136,7 @@ async fn handle_ws_session(
         version: env!("CARGO_PKG_VERSION").to_string(),
     };
     if send_msg(&mut session, &hello).await.is_err() {
+        logger.log_warn("[WS] Failed to send Connected message, closing session");
         return;
     }
 
@@ -138,22 +148,27 @@ async fn handle_ws_session(
                     request_uuid,
                     settings,
                 }) => {
+                    logger.log_debug(&format!("[WS] Processing slice request: {}", request_uuid));
                     handle_slice(
                         &mut session,
                         request_uuid,
                         settings,
                         db.clone(),
                         work_dir.clone(),
+                        base_url.clone(),
                     )
                     .await;
                 }
                 Ok(ClientMessage::ListSessions) => {
-                    handle_list_sessions(&mut session, db.clone()).await;
+                    logger.log_debug("[WS] Processing list sessions request");
+                    handle_list_sessions(&mut session, db.clone(), base_url.clone()).await;
                 }
                 Ok(ClientMessage::Reset) => {
+                    logger.log_debug("[WS] Processing reset request");
                     let _ = send_msg(&mut session, &ServerMessage::log_info("Reset.")).await;
                 }
                 Err(e) => {
+                    logger.log_warn(&format!("[WS] Failed to parse message: {}", e));
                     let _ = send_msg(
                         &mut session,
                         &ServerMessage::error(format!("Unrecognised message: {e}")),
@@ -161,11 +176,15 @@ async fn handle_ws_session(
                     .await;
                 }
             },
-            AggregatedMessage::Close(_) => break,
+            AggregatedMessage::Close(_) => {
+                logger.log_debug("[WS] Close message received");
+                break;
+            }
             _ => {}
         }
     }
 
+    logger.log_info("[WS] Session ended");
     let _ = session.close(None).await;
 }
 
@@ -182,6 +201,7 @@ async fn handle_slice(
     ws_params: crate::ws_protocol::WsSlicingParams,
     db: Arc<crate::db::Database>,
     work_dir: std::path::PathBuf,
+    base_url: String,
 ) {
     macro_rules! send_or_return {
         ($msg:expr) => {
@@ -321,7 +341,7 @@ async fn handle_slice(
 
         let complete = ServerMessage::SliceComplete {
             layer_count,
-            download_url: format!("/api/download/{}", uuid),
+            download_url: format!("{}/api/download/{}", base_url, uuid),
         };
         let _ = tx.blocking_send(to_json(&complete));
 
@@ -350,6 +370,7 @@ async fn handle_slice(
 async fn handle_list_sessions(
     session: &mut actix_ws::Session,
     db: std::sync::Arc<crate::db::Database>,
+    base_url: String,
 ) {
     // Query database for completed sessions
     let sessions = tokio::task::spawn_blocking(move || db.get_completed_sessions())
@@ -368,7 +389,7 @@ async fn handle_list_sessions(
                 original_filename: session.original_filename,
                 layer_count: session.download_file_size.map(|size| size as usize),
                 created_at: session.created_at.to_rfc3339(),
-                download_url: format!("/api/download/{}", session.request_uuid),
+                download_url: format!("{}/api/download/{}", base_url, session.request_uuid),
             }
         })
         .collect::<Vec<_>>();

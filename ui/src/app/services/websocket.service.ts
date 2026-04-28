@@ -4,6 +4,7 @@ import { catchError, share } from 'rxjs/operators';
 import { WebSocketSubject, webSocket } from 'rxjs/webSocket';
 import { ServerMessage } from '../../generated/slicer-engine-ws-server-message-v1';
 import { ClientMessage } from '../../generated/slicer-engine-ws-client-message-v1';
+import { environment } from '../../environments/environment';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 
@@ -30,16 +31,21 @@ export class WebSocketService {
   }
 
   private createSubject(): WebSocketSubject<unknown> {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const url = `${protocol}//${window.location.host}/ws`;
+    const url = environment.wsUrl;
 
     return webSocket<unknown>({
       url,
       openObserver: {
-        next: () => this.status.set('connected'),
+        next: () => {
+          console.log('[WebSocket] Connected to', url);
+          this.status.set('connected');
+        },
       },
       closeObserver: {
-        next: () => this.status.set('disconnected'),
+        next: () => {
+          console.log('[WebSocket] Disconnected from', url);
+          this.status.set('disconnected');
+        },
       },
     });
   }
