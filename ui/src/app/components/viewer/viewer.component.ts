@@ -13,7 +13,6 @@ import {
 } from '@angular/core';
 import { PrintAreaService } from '../../services/print-area';
 import { ViewerControl } from '../../services/viewer-control';
-import { PrintAreaService } from '../../services/print-area';
 import { ChunkedLineGeometry } from './chunked-line-geometry';
 import { GcodeSource, loadGcode } from './gcode-loader';
 import { ModelSource, loadModel } from './model-loader';
@@ -182,7 +181,7 @@ export class ViewerComponent implements OnDestroy {
 
   private initScene(): void {
     const host = this.hostRef().nativeElement;
-    this.scene = new ViewerScene(host);
+    this.scene = new ViewerScene(host, this.printArea.config());
     // Mirror the live camera direction/up into ViewerControl so external
     // overlays (the viewport-cube gizmo) can read it without going through
     // Angular's change-detection.

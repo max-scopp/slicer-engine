@@ -40,9 +40,13 @@ const PERSPECTIVE_FOV = 45;
  */
 const ORTHO_FOV = 1;
 
-/** Initial camera pose used at startup and as the target of resetView(). */
-const INITIAL_CAMERA_POSITION = new Vector3(220, -240, 180);
-const INITIAL_CAMERA_TARGET = new Vector3(0, 0, 0);
+/**
+ * Initial camera pose, expressed relative to the centre of the printable
+ * area. The camera sits at `bedCenter + INITIAL_CAMERA_OFFSET` and looks at
+ * `bedCenter`, so the user always starts framed on the bed regardless of
+ * where the bed is placed in machine space.
+ */
+const INITIAL_CAMERA_OFFSET = new Vector3(220, -240, 180);
 const INITIAL_CAMERA_UP = new Vector3(0, 0, 1);
 
 /**
@@ -145,8 +149,11 @@ export class ViewerScene {
    */
   cameraStateSink: ((direction: Vector3, up: Vector3) => void) | null = null;
 
-  constructor(host: HTMLElement) {
+  constructor(host: HTMLElement, initialPrintArea?: PrintAreaConfig) {
     this.host = host;
+    if (initialPrintArea) {
+      this.printArea = { ...initialPrintArea };
+    }
 
     // Transparent background so the underlying page (including its themed
     // background colour) shows through.
@@ -159,10 +166,12 @@ export class ViewerScene {
     // as height; XY is the build plate.
     this.camera = new PerspectiveCamera(PERSPECTIVE_FOV, aspect, CAMERA_NEAR, CAMERA_FAR);
     this.camera.up.copy(INITIAL_CAMERA_UP);
-    // Diagonal start view: looking at origin from +X, -Y, slightly above the
-    // plate, so the user immediately sees all three printer axes.
-    this.camera.position.copy(INITIAL_CAMERA_POSITION);
-    this.camera.lookAt(INITIAL_CAMERA_TARGET);
+    // Diagonal start view: looking at the centre of the bed from a fixed
+    // diagonal offset, so the user immediately sees the printable area
+    // (not the machine origin / gizmo).
+    const initialPose = this.initialPoseForBed();
+    this.camera.position.copy(initialPose.position);
+    this.camera.lookAt(initialPose.target);
 
     this.renderer = new WebGLRenderer({
       antialias: true,
@@ -181,6 +190,9 @@ export class ViewerScene {
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
+    // Anchor the orbit target at the bed centre so dragging rotates around
+    // the printable area instead of the machine origin / gizmo.
+    this.controls.target.copy(initialPose.target);
     // Punch up the wheel/middle-button dolly speed so a single scroll tick
     // covers noticeably more distance — the default (1.0) feels sluggish
     // given the very large camera range we expose.
@@ -284,12 +296,29 @@ export class ViewerScene {
   /** Reset the camera to the default 3D framing using a smooth animation. */
   resetView(): void {
     this.currentView = '3D';
+    const pose = this.initialPoseForBed();
     this.animateToPose({
-      position: INITIAL_CAMERA_POSITION.clone(),
-      target: INITIAL_CAMERA_TARGET.clone(),
+      position: pose.position,
+      target: pose.target,
       up: INITIAL_CAMERA_UP.clone(),
       fov: PERSPECTIVE_FOV,
     });
+  }
+
+  /**
+   * Compute the default camera pose as a function of the current print area:
+   * target = bed centre at z = 0, position = target + {@link INITIAL_CAMERA_OFFSET}.
+   * Centralised so the constructor and {@link resetView} stay in lock-step.
+   */
+  private initialPoseForBed(): { position: Vector3; target: Vector3 } {
+    const { movableAreaX, movableAreaY, printableAreaWidth, printableAreaHeight } = this.printArea;
+    const target = new Vector3(
+      movableAreaX + printableAreaWidth / 2,
+      movableAreaY + printableAreaHeight / 2,
+      0,
+    );
+    const position = target.clone().add(INITIAL_CAMERA_OFFSET);
+    return { position, target };
   }
 
   /**
