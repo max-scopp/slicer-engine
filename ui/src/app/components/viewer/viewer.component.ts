@@ -11,6 +11,7 @@ import {
   signal,
   viewChild,
 } from '@angular/core';
+import { PrintAreaService } from '../../services/print-area';
 import { ViewerControl } from '../../services/viewer-control';
 import { ChunkedLineGeometry } from './chunked-line-geometry';
 import { GcodeSource, loadGcode } from './gcode-loader';
@@ -84,6 +85,7 @@ export class ViewerComponent implements OnDestroy {
   private readonly hostRef = viewChild.required<ElementRef<HTMLElement>>('host');
   private readonly elementRef = inject(ElementRef);
   private readonly viewerControl = inject(ViewerControl);
+  private readonly printArea = inject(PrintAreaService);
 
   /** Current loading status for the optional overlay. */
   readonly status = signal<'idle' | 'loading' | 'streaming' | 'ready' | 'error'>('idle');
@@ -142,6 +144,13 @@ export class ViewerComponent implements OnDestroy {
       }
       this.scene?.animateToDirection(req.direction, req.up);
     });
+
+    // Mirror the print-area configuration into the scene so the bed grid
+    // tracks any settings/UI changes (dimensions or movable-area offset).
+    effect(() => {
+      const config = this.printArea.config();
+      this.scene?.setPrintArea(config);
+    });
   }
 
   ngOnDestroy(): void {
@@ -187,6 +196,8 @@ export class ViewerComponent implements OnDestroy {
     // whatever view / cursor mode the user already had selected.
     this.scene.setCursorMode(this.viewerControl.cursorMode());
     this.scene.setView(this.viewerControl.view());
+    // Seed the bed grid from the current print-area configuration.
+    this.scene.setPrintArea(this.printArea.config());
     // Trigger initial source application now that the scene exists.
     this.applySource(this.mode(), this.model(), this.gcodeSource());
   }

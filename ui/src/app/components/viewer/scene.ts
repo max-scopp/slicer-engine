@@ -2,11 +2,13 @@ import {
   AmbientLight,
   Box3,
   BoxGeometry,
+  BufferGeometry,
   Color,
   DirectionalLight,
-  GridHelper,
+  Float32BufferAttribute,
   Group,
   LineBasicMaterial,
+  LineSegments,
   MOUSE,
   Mesh,
   MeshBasicMaterial,
@@ -17,6 +19,7 @@ import {
   WebGLRenderer,
 } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import type { PrintAreaConfig } from '../../services/print-area';
 
 export type ViewerView = '3D' | 'Top' | 'Front';
 export type ViewerCursorMode = 'orbit' | 'pan' | 'zoom' | 'rotate' | 'pullToSurface';
@@ -51,19 +54,27 @@ const CAMERA_NEAR = 0.1;
 const CAMERA_FAR = 1_000_000;
 
 /**
- * Adaptive build-plate grid configuration. The grid uses two stacked
- * `GridHelper`s — a faint "minor" grid at the chosen spacing and a brighter
- * "major" grid every {@link MAJOR_EVERY} minor cells. The minor spacing snaps
- * to a power of 10 in millimetres, clamped between 1 mm and 1 m, picked so
- * one minor cell occupies roughly {@link TARGET_MINOR_PIXELS} screen pixels.
+ * Adaptive build-plate grid configuration. The grid is bounded to the
+ * configured printable area (width × height) and stays at that fixed extent
+ * regardless of camera zoom — only the cell spacing snaps to a power of 10
+ * in millimetres, picked so one minor cell covers roughly
+ * {@link TARGET_MINOR_PIXELS} screen pixels. Major lines are drawn brighter
+ * every {@link MAJOR_EVERY} minor cells.
  */
 const GRID_MIN_SPACING_MM = 1;
 const GRID_MAX_SPACING_MM = 1000;
-const GRID_MINOR_CELLS = 200;
 const MAJOR_EVERY = 10;
 const TARGET_MINOR_PIXELS = 14;
 const MINOR_OPACITY = 0.25;
 const MAJOR_OPACITY = 0.6;
+const BED_OUTLINE_OPACITY = 0.9;
+
+const DEFAULT_PRINT_AREA: PrintAreaConfig = {
+  printableAreaWidth: 220,
+  printableAreaHeight: 220,
+  movableAreaX: 0,
+  movableAreaY: 0,
+};
 
 /**
  * Below this `|cos(angle)|` between the view direction and the grid normal
@@ -119,6 +130,7 @@ export class ViewerScene {
   private grid: Group;
   private gridMaterials: { material: LineBasicMaterial; baseOpacity: number }[] = [];
   private currentGridSpacingMm = 0;
+  private printArea: PrintAreaConfig = { ...DEFAULT_PRINT_AREA };
   private rafHandle = 0;
   private disposed = false;
   private currentView: ViewerView = '3D';
@@ -170,9 +182,18 @@ export class ViewerScene {
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
     // Punch up the wheel/middle-button dolly speed so a single scroll tick
-    // covers noticeably more distance \u2014 the default (1.0) feels sluggish
+    // covers noticeably more distance — the default (1.0) feels sluggish
     // given the very large camera range we expose.
     this.controls.zoomSpeed = 2.5;
+    // Bound the camera-to-target distance to a sane range. Without an
+    // explicit `minDistance`, OrbitControls allows the offset to shrink
+    // toward zero asymptotically — which manifests as the autoscroll-zoom
+    // visually freezing while still consuming the gesture (each frame the
+    // step becomes too small to perceive but never zero). A small positive
+    // floor lets the existing clamp in `applyAutoscrollZoom` actually halt
+    // motion at the limit. The ceiling matches `CAMERA_FAR` headroom.
+    this.controls.minDistance = 1;
+    this.controls.maxDistance = 100_000;
     this.installAutoscrollZoom();
     this.scene.add(new AmbientLight(0xffffff, 0.55));
     const dir = new DirectionalLight(0xffffff, 0.9);
@@ -181,6 +202,7 @@ export class ViewerScene {
 
     this.grid = this.createGrid(10);
     this.scene.add(this.grid);
+    this.currentGridSpacingMm = 0; // force first updateAdaptiveGrid to (re)build
 
     // Thick RGB axes at the build-plate origin. Built from thin BoxGeometry
     // boxes (rather than AxesHelper's GL lines) so they have real volume,
@@ -201,6 +223,24 @@ export class ViewerScene {
     });
 
     this.tick();
+  }
+
+  /**
+   * Update the build-plate dimensions and offset. Rebuilds the grid using
+   * the current zoom-driven spacing so callers don't have to think about
+   * cache invalidation.
+   */
+  setPrintArea(config: PrintAreaConfig): void {
+    this.printArea = { ...config };
+    // Reset the cached spacing so updateAdaptiveGrid is guaranteed to
+    // rebuild on the next tick (extent depends on printArea, not just spacing).
+    const spacing = this.currentGridSpacingMm > 0 ? this.currentGridSpacingMm : 10;
+    this.currentGridSpacingMm = 0;
+    const replacement = this.createGrid(spacing);
+    this.scene.remove(this.grid);
+    disposeObject(this.grid);
+    this.scene.add(replacement);
+    this.grid = replacement;
   }
 
   /** Remove every child of {@link contentRoot} and dispose its GPU resources. */
@@ -412,30 +452,50 @@ export class ViewerScene {
   }
 
   /**
-   * Build a two-tier build-plate grid (minor + major lines) at the given
-   * minor-cell spacing in millimetres. Both helpers use the themed border
-   * colour, with the major grid drawn brighter and on top.
+   * Build a two-tier build-plate grid (minor + major + outline) bounded to
+   * the current {@link printArea}. Lines lie in the world XY plane and the
+   * grid's lower-left corner sits at (movableAreaX, movableAreaY); the
+   * gizmo at the world origin is intentionally independent.
    */
   private createGrid(spacingMm: number): Group {
     const color = readBorderColor();
     const group = new Group();
-    group.rotation.x = Math.PI / 2; // align XZ helpers with the XY build plate
     group.renderOrder = 0;
 
     const materials: { material: LineBasicMaterial; baseOpacity: number }[] = [];
+    const { movableAreaX, movableAreaY, printableAreaWidth, printableAreaHeight } = this.printArea;
 
-    const minorSize = spacingMm * GRID_MINOR_CELLS;
-    const minor = new GridHelper(minorSize, GRID_MINOR_CELLS, color, color);
-    applyGridMaterial(minor, MINOR_OPACITY, materials);
+    // Build minor + major line sets. Lines are placed at integer multiples
+    // of `spacingMm` measured from the bed's lower-left corner, so the
+    // pattern stays aligned with the bed regardless of where it sits in
+    // machine space (negative or otherwise).
+    const { minorPositions, majorPositions } = buildBedGridPositions(
+      printableAreaWidth,
+      printableAreaHeight,
+      spacingMm,
+      MAJOR_EVERY,
+    );
+    const offset = { x: movableAreaX, y: movableAreaY };
 
-    const majorDivisions = GRID_MINOR_CELLS / MAJOR_EVERY;
-    const major = new GridHelper(minorSize, majorDivisions, color, color);
-    applyGridMaterial(major, MAJOR_OPACITY, materials);
-    // Render major lines slightly later so they overdraw the minor grid.
+    const minor = makeLineSegments(minorPositions, offset, color, MINOR_OPACITY, materials);
+    const major = makeLineSegments(majorPositions, offset, color, MAJOR_OPACITY, materials);
     major.renderOrder = 1;
+
+    // Always-visible bed outline so the printable area is unambiguous even
+    // when the spacing has snapped to a value that misses one of the edges.
+    const outlinePositions = buildBedOutlinePositions(printableAreaWidth, printableAreaHeight);
+    const outline = makeLineSegments(
+      outlinePositions,
+      offset,
+      color,
+      BED_OUTLINE_OPACITY,
+      materials,
+    );
+    outline.renderOrder = 2;
 
     group.add(minor);
     group.add(major);
+    group.add(outline);
     this.currentGridSpacingMm = spacingMm;
     this.gridMaterials = materials;
     return group;
@@ -457,7 +517,9 @@ export class ViewerScene {
    * Pick a minor-cell spacing such that one cell projects to roughly
    * {@link TARGET_MINOR_PIXELS} on screen, snap it to the nearest power of
    * 10 in [{@link GRID_MIN_SPACING_MM}, {@link GRID_MAX_SPACING_MM}], and
-   * rebuild the grid only when the snapped level actually changes.
+   * rebuild the grid only when the snapped level actually changes. The
+   * grid extent itself stays fixed to the configured print area — only
+   * the subdivision granularity reacts to the camera zoom.
    */
   private updateAdaptiveGrid(): void {
     const distance = this.camera.position.distanceTo(this.controls.target);
@@ -651,9 +713,14 @@ export class ViewerScene {
   private contentBoundingSphere(): Sphere | null {
     const box = new Box3().setFromObject(this.contentRoot);
     if (box.isEmpty()) {
-      // Fall back to the build-plate grid extent so the camera still has
+      // Fall back to the configured printable area so the camera still has
       // something sensible to frame when no model is loaded.
-      box.set(new Vector3(-100, -100, 0), new Vector3(100, 100, 0));
+      const { movableAreaX, movableAreaY, printableAreaWidth, printableAreaHeight } =
+        this.printArea;
+      box.set(
+        new Vector3(movableAreaX, movableAreaY, 0),
+        new Vector3(movableAreaX + printableAreaWidth, movableAreaY + printableAreaHeight, 0),
+      );
     }
     const sphere = new Sphere();
     box.getBoundingSphere(sphere);
@@ -879,35 +946,114 @@ function lerp(a: number, b: number, t: number): number {
 }
 
 /**
- * Configure a {@link GridHelper}'s line material for transparent overlay
- * rendering at the given opacity. The material is shared across all line
- * segments of the helper, so a single mutation is enough. Each material is
- * also recorded into `sink` so the caller can later modulate its opacity
- * (e.g. to fade the grid based on viewing angle) without rebuilding.
+ * Build minor + major grid line endpoints for a `width × height` bed in the
+ * XY plane, with lines spaced `spacingMm` apart aligned to the bed's
+ * lower-left corner (which is treated as local (0, 0)). Lines that fall on
+ * a multiple of `majorEvery` cells are emitted into the major set instead
+ * of the minor set, so the two are mutually exclusive and can be rendered
+ * with different opacities without overdraw.
+ *
+ * Returned arrays are flat XYZ triplets ready for a `BufferGeometry`'s
+ * position attribute (every six floats = one line segment).
  */
-function applyGridMaterial(
-  grid: GridHelper,
+function buildBedGridPositions(
+  width: number,
+  height: number,
+  spacingMm: number,
+  majorEvery: number,
+): { minorPositions: Float32Array; majorPositions: Float32Array } {
+  const minor: number[] = [];
+  const major: number[] = [];
+  if (!(width > 0) || !(height > 0) || !(spacingMm > 0)) {
+    return { minorPositions: new Float32Array(0), majorPositions: new Float32Array(0) };
+  }
+
+  // Vertical lines (constant X, span Y from 0 to height).
+  const xCount = Math.floor(width / spacingMm);
+  for (let i = 0; i <= xCount; i++) {
+    const x = i * spacingMm;
+    if (x > width) {
+      break;
+    }
+    const target = i % majorEvery === 0 ? major : minor;
+    target.push(x, 0, 0, x, height, 0);
+  }
+
+  // Horizontal lines (constant Y, span X from 0 to width).
+  const yCount = Math.floor(height / spacingMm);
+  for (let j = 0; j <= yCount; j++) {
+    const y = j * spacingMm;
+    if (y > height) {
+      break;
+    }
+    const target = j % majorEvery === 0 ? major : minor;
+    target.push(0, y, 0, width, y, 0);
+  }
+
+  return {
+    minorPositions: new Float32Array(minor),
+    majorPositions: new Float32Array(major),
+  };
+}
+
+/** Four edges of the bed rectangle as XYZ line-segment endpoints. */
+function buildBedOutlinePositions(width: number, height: number): Float32Array {
+  if (!(width > 0) || !(height > 0)) {
+    return new Float32Array(0);
+  }
+  return new Float32Array([
+    0,
+    0,
+    0,
+    width,
+    0,
+    0,
+    width,
+    0,
+    0,
+    width,
+    height,
+    0,
+    width,
+    height,
+    0,
+    0,
+    height,
+    0,
+    0,
+    height,
+    0,
+    0,
+    0,
+    0,
+  ]);
+}
+
+/**
+ * Build a `LineSegments` mesh for the given flat XYZ position buffer with a
+ * transparent overlay material. The mesh is translated by `offset` so the
+ * caller can place the bed at an arbitrary (x, y) in machine coordinates
+ * without having to bake the offset into every vertex.
+ */
+function makeLineSegments(
+  positions: Float32Array,
+  offset: { x: number; y: number },
+  color: number,
   opacity: number,
   sink: { material: LineBasicMaterial; baseOpacity: number }[],
-): void {
-  const mat = grid.material as LineBasicMaterial | LineBasicMaterial[];
-  const apply = (m: LineBasicMaterial) => {
-    m.transparent = true;
-    m.opacity = opacity;
-    m.depthWrite = false;
-    // Keep the material's vertex colours (per-line colour baked by GridHelper)
-    // but force a single tint so opacity blending stays uniform.
-    m.color = new Color(m.color.getHex());
-    m.needsUpdate = true;
-    sink.push({ material: m, baseOpacity: opacity });
-  };
-  if (Array.isArray(mat)) {
-    for (const m of mat) {
-      apply(m);
-    }
-  } else {
-    apply(mat);
-  }
+): LineSegments {
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
+  const material = new LineBasicMaterial({
+    color: new Color(color),
+    transparent: true,
+    opacity,
+    depthWrite: false,
+  });
+  sink.push({ material, baseOpacity: opacity });
+  const segments = new LineSegments(geometry, material);
+  segments.position.set(offset.x, offset.y, 0);
+  return segments;
 }
 
 function clamp01(v: number): number {
