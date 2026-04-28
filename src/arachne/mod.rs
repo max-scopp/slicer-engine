@@ -162,8 +162,27 @@ fn generate_arachne_walls_for_layer(layer: &mut SliceLayer, params: &ArachnePara
         .collect();
 
     // Compute Arachne beads from the raw contours.
-    let input = Paths::new(raw_perimeters);
-    let beads = compute_arachne_beads(&input, params);
+    //
+    // The raw contours produced by `chain_segments` have **arbitrary winding**
+    // (CCW or CW depending on triangle orientation in the input mesh) and may
+    // overlap, duplicate, or be nested (e.g. when slicing through engraved
+    // text or near-degenerate triangles).  Passing such a `Paths` directly to
+    // `inflate(-d, ...)` produces fragmented, self-intersecting output:
+    // hundreds of tiny "bead" loops per layer that swamp the G-code with
+    // useless retract/travel pairs and visually appear as missing/skipped
+    // perimeters when rendered.  See bug investigation in `examples/diag_arachne.rs`.
+    //
+    // Fix: normalise the input topology with a Clipper2 EvenOdd union before
+    // running Arachne.  EvenOdd is winding-independent and resolves overlaps,
+    // yielding the canonical Clipper2 representation (CCW outer rings, CW
+    // holes).  All subsequent `inflate` calls then behave correctly.
+    let normalised = union(
+        Paths::new(raw_perimeters),
+        Paths::new(vec![]),
+        FillRule::EvenOdd,
+    )
+    .unwrap_or_default();
+    let beads = compute_arachne_beads(&normalised, params);
 
     // Rebuild the layer: Arachne wall beads first, then non-perimeter paths.
     layer.paths = Paths::new(vec![]);
@@ -202,6 +221,30 @@ fn shrink(input: &Paths, depth: f64, tol: f64) -> Paths {
         tol,
         false,
     )
+}
+
+/// Drop bead centerline paths whose enclosed area is below `min_area`.
+///
+/// Slicing a triangulated mesh with sliver/degenerate triangles (common in
+/// hand-modeled assets such as the 3DBenchy `#3DBenchy` engraving on the hull
+/// stern) frequently yields multiple coincident or near-coincident contour
+/// loops at the same XY location.  After Clipper2's negative offset (`shrink`)
+/// these collapse into many tiny "centerline" polygons with sub-mm extent and
+/// effectively zero enclosed area.  Treating each as a real outer-wall bead
+/// produces hundreds of useless retract/travel/extrude pairs per layer in the
+/// G-code, which manifests as missing or fragmented perimeters when the slice
+/// is rendered.
+///
+/// `min_area` is intentionally generous (~0.01 × d²) to drop pure noise while
+/// preserving any legitimate small feature whose centerline still encloses a
+/// printable area.
+fn drop_degenerate_beads(paths: Paths, min_area: f64) -> Paths {
+    let kept: Vec<Path> = paths
+        .iter()
+        .filter(|p| p.signed_area().abs() >= min_area)
+        .cloned()
+        .collect();
+    Paths::new(kept)
 }
 
 /// Cheap collapse probe using Miter join — only checks whether the result is
@@ -269,6 +312,10 @@ pub fn compute_arachne_beads(input: &Paths, params: &ArachneParams) -> Vec<Bead>
     let min_w = params.wall_line_width_min_mm;
     let max_w = params.wall_line_width_max_mm;
     let tol = 1e-4 * d.max(0.01);
+    // Drop bead centerlines whose enclosed area is below ~1% of a bead-square.
+    // See [`drop_degenerate_beads`] — filters mesh-noise contours that survive
+    // the negative offset as zero-area "back-and-forth" line stubs.
+    let min_bead_area = 0.01 * d * d;
 
     // Degenerate / zero-area polygon: bail immediately.
     if collapses_at(input, 1e-6, tol) {
@@ -301,9 +348,13 @@ pub fn compute_arachne_beads(input: &Paths, params: &ArachneParams) -> Vec<Bead>
             first_miss_depth = depth;
             break;
         }
+        // Geometry-collapse detection (`first_miss_depth`) must use the raw
+        // shrink result so that mesh noise is not mistaken for surviving
+        // material; bead emission, in contrast, must skip the noise paths.
         last_fit_depth = depth;
-        bead_path_counts.push(paths.len());
-        for p in paths.iter() {
+        let kept = drop_degenerate_beads(paths, min_bead_area);
+        bead_path_counts.push(kept.len());
+        for p in kept.iter() {
             beads.push(Bead {
                 path: p.clone(),
                 width_mm: d,
@@ -354,7 +405,8 @@ pub fn compute_arachne_beads(input: &Paths, params: &ArachneParams) -> Vec<Bead>
         let t = std::time::Instant::now();
         let paths = shrink(input, center_depth, tol);
         ARACHNE_BEAD_SHRINK_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
-        for p in paths.iter() {
+        let kept = drop_degenerate_beads(paths, min_bead_area);
+        for p in kept.iter() {
             beads.push(Bead {
                 path: p.clone(),
                 width_mm: width,
@@ -396,7 +448,8 @@ pub fn compute_arachne_beads(input: &Paths, params: &ArachneParams) -> Vec<Bead>
             let t = std::time::Instant::now();
             let paths = shrink(input, new_depth, tol);
             ARACHNE_BEAD_SHRINK_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
-            for p in paths.iter() {
+            let kept = drop_degenerate_beads(paths, min_bead_area);
+            for p in kept.iter() {
                 beads.push(Bead {
                     path: p.clone(),
                     width_mm: new_width,
