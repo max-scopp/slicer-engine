@@ -10,16 +10,48 @@ import {
   LineBasicMaterial,
   LineSegments,
   MOUSE,
+  Material,
   Mesh,
   MeshBasicMaterial,
+  Object3D,
   PerspectiveCamera,
+  Plane,
+  Quaternion,
+  Raycaster,
   Scene,
   Sphere,
+  Spherical,
+  TOUCH,
+  Vector2,
   Vector3,
   WebGLRenderer,
 } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { PrintAreaConfig } from '../../services/print-area';
+
+/**
+ * Callbacks invoked by {@link ViewerScene} when the user interacts with a
+ * registered selectable object. The viewer wires these to the application's
+ * selection store (see `PrintAreaService`); the scene itself knows nothing
+ * about the store, only the contract.
+ */
+export interface SceneSelectionHandlers {
+  /** A bare click on a selectable object — `additive` for ctrl/⌘/shift. */
+  select(id: string, additive: boolean): void;
+  /** Click landed on empty space (currently unused — orbit takes over). */
+  clearSelection(): void;
+  /**
+   * Drag is about to begin on the current selection. Return `true` if the
+   * drag should proceed (i.e. there is something to drag), `false` to abort.
+   */
+  beginDragSelected(): boolean;
+  /** Pointer moved by `(dx, dy)` mm in machine space relative to drag start. */
+  dragSelectedBy(dx: number, dy: number): void;
+  /** Drag finished (pointer up). */
+  endDrag(): void;
+  /** Drag cancelled (pointer cancel / interrupted). */
+  cancelDrag(): void;
+}
 
 export type ViewerView = '3D' | 'Top' | 'Front';
 export type ViewerCursorMode = 'orbit' | 'pan' | 'zoom' | 'rotate' | 'pullToSurface';
@@ -50,12 +82,36 @@ const INITIAL_CAMERA_OFFSET = new Vector3(220, -240, 180);
 const INITIAL_CAMERA_UP = new Vector3(0, 0, 1);
 
 /**
- * Fixed near/far plane distances for the camera. Combined with the renderer's
- * `logarithmicDepthBuffer`, this keeps the entire scene visible regardless of
- * how far the user dollies out or which angle they view from.
+ * Hard floor / ceiling on the dynamic near/far range. The renderer no
+ * longer uses `logarithmicDepthBuffer` (it is prohibitively expensive on
+ * iOS / Apple GPUs because it forces `gl_FragDepth` writes and disables
+ * early-Z), so we instead recompute near/far every frame from the current
+ * camera→target distance and a conservative scene radius. These constants
+ * just clamp the result so a degenerate frame can't produce a zero / NaN
+ * frustum.
  */
 const CAMERA_NEAR = 0.1;
 const CAMERA_FAR = 1_000_000;
+
+/**
+ * Maximum device-pixel-ratio actually pushed to the renderer. iPads and
+ * recent iPhones report DPR 2–3, which combined with antialiasing can
+ * quadruple or more the fragment workload for no perceptible quality gain.
+ * Cap at 2× — the visible difference vs. native DPR on a Retina display is
+ * negligible, but the perf / thermal headroom freed up on mobile is large.
+ */
+const MAX_PIXEL_RATIO = 2;
+
+/**
+ * `true` when the platform's effective DPR is high enough that hardware
+ * MSAA gives essentially no perceptible benefit. On those devices we ask
+ * for `antialias: false` so the GPU isn't paying for a multisample
+ * resolve every frame — this is one of the largest single wins for iOS
+ * Safari / iPadOS.
+ */
+function shouldDisableAntialias(): boolean {
+  return typeof window !== 'undefined' && window.devicePixelRatio >= 2;
+}
 
 /**
  * Adaptive build-plate grid configuration. The grid is bounded to the
@@ -91,6 +147,18 @@ const DEFAULT_PRINT_AREA: PrintAreaConfig = {
  */
 const GRID_FADE_HIDE = 0.05;
 const GRID_FADE_FULL = 0.25;
+
+/**
+ * Pixel distance the cursor must travel between pointerdown and pointermove
+ * before a press on a selectable object is interpreted as a drag rather than
+ * a click. Below this threshold the gesture is treated as a selection click
+ * on pointerup.
+ */
+const SELECTION_DRAG_THRESHOLD_PX = 4;
+
+/** Emissive tint applied to selected meshes (warm orange). */
+const SELECTION_EMISSIVE = new Color(0xff8a3d);
+const SELECTION_EMISSIVE_INTENSITY = 0.55;
 
 /**
  * Configuration for the Windows-autoscroll-style middle-mouse zoom: while
@@ -146,11 +214,53 @@ export class ViewerScene {
   private lastFrameTime = 0;
 
   /**
+   * Custom orbit/pan inertia. OrbitControls' built-in `enableDamping` is
+   * unsuitable here: with `dampingFactor < 1` the camera lags behind the
+   * pointer during drag (perceived as "weight"), and with `dampingFactor = 1`
+   * no exit velocity remains on release. Instead we keep damping disabled,
+   * sample the orbit angles and pan target each `change` event during an
+   * active gesture, derive smoothed angular / linear velocities, and on the
+   * controls' `end` event we let those velocities coast in the render loop
+   * with exponential decay until they drop below a small threshold.
+   */
+  private orbitInteracting = false;
+  private orbitLastSampleTime = 0;
+  private orbitLastAzimuth = 0;
+  private orbitLastPolar = 0;
+  private orbitLastTarget = new Vector3();
+  /** Smoothed angular velocity (rad/s) around the controls' azimuth axis. */
+  private orbitVelAzimuth = 0;
+  /** Smoothed angular velocity (rad/s) around the controls' polar axis. */
+  private orbitVelPolar = 0;
+  /** Smoothed pan velocity (world units / s) of the orbit target. */
+  private orbitVelTarget = new Vector3();
+
+  /**
    * Optional sink invoked at the end of every render frame with the live
    * camera direction (target→camera, normalised) and up vector. Used by the
    * viewport-cube gizmo to mirror the main camera's orientation.
    */
   cameraStateSink: ((direction: Vector3, up: Vector3) => void) | null = null;
+
+  /**
+   * Hook for selection / drag interactions. The viewer assigns this once it
+   * has wired up the print-area service. While `null`, raycast hits on
+   * selectable objects are ignored and OrbitControls receives every gesture.
+   */
+  selectionHandlers: SceneSelectionHandlers | null = null;
+
+  // --- Selection / drag state --------------------------------------------
+  private currentCursorMode: ViewerCursorMode = 'orbit';
+  private readonly selectables = new Map<string, Object3D>();
+  private currentSelectedIds: ReadonlySet<string> = new Set();
+  /** Per-mesh original emissive snapshots so highlight is reversible. */
+  private readonly originalEmissive = new Map<Mesh, { color: Color; intensity: number }[]>();
+  private readonly raycaster = new Raycaster();
+  /** Build-plate plane (Z = 0) used to project pointer rays into mm. */
+  private readonly groundPlane = new Plane(new Vector3(0, 0, 1), 0);
+  private readonly ndcScratch = new Vector2();
+  private readonly groundHitScratch = new Vector3();
+  private pressState: SelectionPressState | null = null;
 
   constructor(host: HTMLElement, initialPrintArea?: PrintAreaConfig) {
     this.host = host;
@@ -177,22 +287,48 @@ export class ViewerScene {
     this.camera.lookAt(initialPose.target);
 
     this.renderer = new WebGLRenderer({
-      antialias: true,
+      // Skip MSAA on Retina-class displays — at DPR ≥ 2 the resolve cost
+      // outweighs the visual difference, especially on iOS where the
+      // tile-based GPU is fragment-bound.
+      antialias: !shouldDisableAntialias(),
       alpha: true,
-      // Logarithmic depth buffer keeps depth precision usable across the
-      // very large near→far range we use (so nothing clips when dollying
-      // out or looking up at the build plate from below).
-      logarithmicDepthBuffer: true,
+      // `logarithmicDepthBuffer` is intentionally NOT enabled. It writes
+      // `gl_FragDepth` from every fragment shader, which on iOS / Apple
+      // GPUs disables early-Z and roughly halves fill-rate. We instead
+      // tighten near/far around the current camera distance every frame —
+      // see {@link updateNearFar}.
       powerPreference: 'high-performance',
     });
-    this.renderer.setPixelRatio(window.devicePixelRatio);
+    // Cap pixel ratio to keep iPads / high-DPR phones from rendering at
+    // 4×–9× pixel area for a marginal quality gain.
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, MAX_PIXEL_RATIO));
     this.renderer.setClearColor(0x000000, 0);
-    this.renderer.setSize(clientWidth, clientHeight, false);
+    this.renderer.setSize(clientWidth, clientHeight);
+    // Suppress the browser's default touch gestures (page scroll, pinch-zoom,
+    // double-tap zoom) on the canvas itself. Without this, OrbitControls'
+    // pinch-zoom and one-finger rotate fight the browser's own gesture
+    // recognisers — gestures register intermittently, scroll the page, or
+    // trigger the OS pull-to-refresh, all of which feel "off" on touch.
+    this.renderer.domElement.style.touchAction = 'none';
     host.appendChild(this.renderer.domElement);
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-    this.controls.enableDamping = true;
-    this.controls.dampingFactor = 0.08;
+    // Built-in damping is disabled — see the field comment on
+    // `orbitInteracting` for the rationale. We implement inertia ourselves
+    // by sampling the controls' state during interaction and coasting it on
+    // release.
+    this.controls.enableDamping = false;
+    // Defaults preserve the original desktop feel:
+    //   - zoomToCursor = false   (wheel/dolly along the camera→target axis)
+    //   - screenSpacePanning = true (right-drag pan in screen space)
+    // For touch, both `zoomToCursor` and a recomputed pan basis are
+    // toggled on per-gesture in {@link installTouchOrbitTuning} so that
+    // pinch-zoom converges on the finger and two-finger pan stays
+    // proportional to screen pixels — without disturbing mouse behaviour.
+    this.controls.zoomToCursor = false;
+    this.controls.screenSpacePanning = true;
+    this.installOrbitInertia();
+    this.installTouchOrbitTuning();
     // Anchor the orbit target at the bed centre so dragging rotates around
     // the printable area instead of the machine origin / gizmo.
     this.controls.target.copy(initialPose.target);
@@ -210,6 +346,7 @@ export class ViewerScene {
     this.controls.minDistance = 1;
     this.controls.maxDistance = 100_000;
     this.installAutoscrollZoom();
+    this.installSelectionHandlers();
     this.scene.add(new AmbientLight(0xffffff, 0.55));
     const dir = new DirectionalLight(0xffffff, 0.9);
     dir.position.set(200, 300, 400);
@@ -260,10 +397,115 @@ export class ViewerScene {
 
   /** Remove every child of {@link contentRoot} and dispose its GPU resources. */
   clearContent(): void {
+    // Drop any in-flight selection/drag bookkeeping first — the meshes it
+    // pointed at are about to be disposed.
+    this.cancelActiveDrag();
+    this.clearSelectables();
     for (let i = this.contentRoot.children.length - 1; i >= 0; i--) {
       const child = this.contentRoot.children[i];
       this.contentRoot.remove(child);
       disposeObject(child);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Selection / drag — public API consumed by the viewer component
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Mark `object` as selectable under the given id. The id is also stamped
+   * onto `object.userData.selectableId` so deeply-nested raycast hits can be
+   * resolved back to the registered root via parent walking.
+   */
+  registerSelectable(id: string, object: Object3D): void {
+    object.userData['selectableId'] = id;
+    this.selectables.set(id, object);
+  }
+
+  /** Stop tracking the given id and (if applicable) drop its highlight. */
+  unregisterSelectable(id: string): void {
+    const obj = this.selectables.get(id);
+    if (!obj) {
+      return;
+    }
+    if (this.currentSelectedIds.has(id)) {
+      this.applyHighlight(obj, false);
+    }
+    delete obj.userData['selectableId'];
+    this.selectables.delete(id);
+  }
+
+  /** Drop every registered selectable (called from {@link clearContent}). */
+  clearSelectables(): void {
+    for (const obj of this.selectables.values()) {
+      this.applyHighlight(obj, false);
+      delete obj.userData['selectableId'];
+    }
+    this.selectables.clear();
+    this.currentSelectedIds = new Set();
+    this.originalEmissive.clear();
+  }
+
+  /** Mirror the application's selection state into the scene. */
+  setSelectedIds(ids: ReadonlySet<string>): void {
+    // Diff old vs new so we only touch materials whose state actually flipped.
+    for (const id of this.currentSelectedIds) {
+      if (ids.has(id)) {
+        continue;
+      }
+      const obj = this.selectables.get(id);
+      if (obj) {
+        this.applyHighlight(obj, false);
+      }
+    }
+    for (const id of ids) {
+      if (this.currentSelectedIds.has(id)) {
+        continue;
+      }
+      const obj = this.selectables.get(id);
+      if (obj) {
+        this.applyHighlight(obj, true);
+      }
+    }
+    this.currentSelectedIds = ids;
+  }
+
+  /**
+   * Mirror the registered object's transform onto the underlying Three.js
+   * node. Position is in machine-space mm; rotation is XYZ-Euler radians;
+   * scale is a per-axis multiplier. Each channel is compared before the
+   * write so identical values do not retrigger Three.js's matrix-dirty
+   * flag.
+   */
+  setObjectTransform(
+    id: string,
+    transform: {
+      position: { x: number; y: number; z: number };
+      rotation: { x: number; y: number; z: number };
+      scale: { x: number; y: number; z: number };
+    },
+  ): void {
+    const obj = this.selectables.get(id);
+    if (!obj) {
+      return;
+    }
+    const { position, rotation, scale } = transform;
+    if (
+      obj.position.x !== position.x ||
+      obj.position.y !== position.y ||
+      obj.position.z !== position.z
+    ) {
+      obj.position.set(position.x, position.y, position.z);
+    }
+    if (
+      obj.rotation.x !== rotation.x ||
+      obj.rotation.y !== rotation.y ||
+      obj.rotation.z !== rotation.z
+    ) {
+      obj.rotation.set(rotation.x, rotation.y, rotation.z);
+    }
+    if (obj.scale.x !== scale.x || obj.scale.y !== scale.y || obj.scale.z !== scale.z) {
+      obj.scale.set(scale.x, scale.y, scale.z);
     }
   }
 
@@ -386,6 +628,13 @@ export class ViewerScene {
 
   /** Configure pointer interaction behaviour for the OrbitControls. */
   setCursorMode(mode: ViewerCursorMode): void {
+    if (this.currentCursorMode !== mode) {
+      // A mode change mid-gesture is rare but possible (e.g. a hotkey while
+      // dragging). Cancel any in-flight drag so we don't leave OrbitControls
+      // disabled forever.
+      this.cancelActiveDrag();
+    }
+    this.currentCursorMode = mode;
     const c = this.controls;
     c.enableRotate = true;
     c.enablePan = true;
@@ -398,12 +647,15 @@ export class ViewerScene {
       case 'orbit':
       case 'rotate':
         c.mouseButtons = { LEFT: MOUSE.ROTATE, MIDDLE, RIGHT: MOUSE.PAN };
+        c.touches = { ONE: TOUCH.ROTATE, TWO: TOUCH.DOLLY_PAN };
         break;
       case 'pan':
         c.mouseButtons = { LEFT: MOUSE.PAN, MIDDLE, RIGHT: MOUSE.ROTATE };
+        c.touches = { ONE: TOUCH.PAN, TWO: TOUCH.DOLLY_ROTATE };
         break;
       case 'zoom':
         c.mouseButtons = { LEFT: MOUSE.DOLLY, MIDDLE, RIGHT: MOUSE.PAN };
+        c.touches = { ONE: TOUCH.DOLLY_PAN, TWO: TOUCH.DOLLY_PAN };
         break;
       case 'pullToSurface':
         // Placeholder: surface-pulling is not implemented yet, so we simply
@@ -424,12 +676,268 @@ export class ViewerScene {
     this.resizeObserver.disconnect();
     this.themeObserver.disconnect();
     this.uninstallAutoscrollZoom();
+    this.uninstallSelectionHandlers();
     this.clearContent();
     this.controls.dispose();
     this.renderer.dispose();
     if (this.renderer.domElement.parentElement === this.host) {
       this.host.removeChild(this.renderer.domElement);
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Selection / drag — pointer plumbing
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Install capture-phase pointer listeners so we get a chance to claim the
+   * gesture before OrbitControls (which is registered with default bubbling)
+   * starts a camera rotation. We only consume the event when the pointerdown
+   * actually hits a registered selectable in a mode where left-click would
+   * otherwise rotate (orbit / rotate); empty-space clicks fall through and
+   * OrbitControls behaves as before.
+   */
+  private installSelectionHandlers(): void {
+    const el = this.renderer.domElement;
+    el.addEventListener('pointerdown', this.onSelectionPointerDown, { capture: true });
+    el.addEventListener('pointermove', this.onSelectionPointerMove, { capture: true });
+    el.addEventListener('pointerup', this.onSelectionPointerUp, { capture: true });
+    el.addEventListener('pointercancel', this.onSelectionPointerCancel, { capture: true });
+  }
+
+  private uninstallSelectionHandlers(): void {
+    const el = this.renderer.domElement;
+    el.removeEventListener('pointerdown', this.onSelectionPointerDown, { capture: true });
+    el.removeEventListener('pointermove', this.onSelectionPointerMove, { capture: true });
+    el.removeEventListener('pointerup', this.onSelectionPointerUp, { capture: true });
+    el.removeEventListener('pointercancel', this.onSelectionPointerCancel, { capture: true });
+  }
+
+  private onSelectionPointerDown = (event: PointerEvent): void => {
+    if (event.button !== 0 || !this.selectionHandlers) {
+      return;
+    }
+    if (this.currentCursorMode !== 'orbit' && this.currentCursorMode !== 'rotate') {
+      return;
+    }
+    if (this.selectables.size === 0) {
+      return;
+    }
+    const hitId = this.raycastSelectable(event);
+    if (hitId === null) {
+      // Don't steal empty-bed clicks — let OrbitControls orbit the camera.
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    this.pressState = {
+      pointerId: event.pointerId,
+      downX: event.clientX,
+      downY: event.clientY,
+      hitId,
+      additive: event.ctrlKey || event.metaKey || event.shiftKey,
+      dragStarted: false,
+      startWorld: null,
+    };
+  };
+
+  private onSelectionPointerMove = (event: PointerEvent): void => {
+    const ps = this.pressState;
+    if (!ps || event.pointerId !== ps.pointerId || !this.selectionHandlers) {
+      return;
+    }
+    if (!ps.dragStarted) {
+      const dxPx = event.clientX - ps.downX;
+      const dyPx = event.clientY - ps.downY;
+      if (Math.hypot(dxPx, dyPx) < SELECTION_DRAG_THRESHOLD_PX) {
+        return;
+      }
+      // Promote the press into a drag. If the clicked object isn't already
+      // part of the selection, select it first (respecting the additive
+      // modifier captured at pointerdown) so the drag operates on it.
+      if (!this.currentSelectedIds.has(ps.hitId)) {
+        this.selectionHandlers.select(ps.hitId, ps.additive);
+      }
+      const startWorld = this.intersectGround(event);
+      if (!startWorld) {
+        // Pointer ray is parallel to the bed (extreme grazing angle); abort
+        // the drag and treat the gesture as a click on pointerup.
+        return;
+      }
+      const ok = this.selectionHandlers.beginDragSelected();
+      if (!ok) {
+        return;
+      }
+      ps.startWorld = startWorld.clone();
+      ps.dragStarted = true;
+      this.controls.enabled = false;
+      const el = this.renderer.domElement;
+      try {
+        el.setPointerCapture(event.pointerId);
+      } catch {
+        // Capture can fail if another listener already grabbed it; harmless.
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    const cur = this.intersectGround(event);
+    if (!cur || !ps.startWorld) {
+      return;
+    }
+    const dx = cur.x - ps.startWorld.x;
+    const dy = cur.y - ps.startWorld.y;
+    this.selectionHandlers.dragSelectedBy(dx, dy);
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  private onSelectionPointerUp = (event: PointerEvent): void => {
+    const ps = this.pressState;
+    if (!ps || event.pointerId !== ps.pointerId) {
+      return;
+    }
+    this.pressState = null;
+    const el = this.renderer.domElement;
+    if (el.hasPointerCapture(event.pointerId)) {
+      el.releasePointerCapture(event.pointerId);
+    }
+    if (ps.dragStarted) {
+      this.controls.enabled = true;
+      this.selectionHandlers?.endDrag();
+    } else {
+      // Pure click on a selectable — apply selection now.
+      this.selectionHandlers?.select(ps.hitId, ps.additive);
+    }
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  private onSelectionPointerCancel = (event: PointerEvent): void => {
+    const ps = this.pressState;
+    if (!ps || event.pointerId !== ps.pointerId) {
+      return;
+    }
+    this.cancelActiveDrag();
+  };
+
+  /** Convert pointer to NDC and raycast against every registered selectable. */
+  private raycastSelectable(event: PointerEvent): string | null {
+    const ndc = this.toNdc(event, this.ndcScratch);
+    this.raycaster.setFromCamera(ndc, this.camera);
+    const targets = Array.from(this.selectables.values());
+    if (targets.length === 0) {
+      return null;
+    }
+    const hits = this.raycaster.intersectObjects(targets, true);
+    if (hits.length === 0) {
+      return null;
+    }
+    return this.findSelectableId(hits[0].object);
+  }
+
+  /** Walk parents of a hit object until we find one carrying a selectable id. */
+  private findSelectableId(obj: Object3D | null): string | null {
+    let cur: Object3D | null = obj;
+    while (cur) {
+      const id = cur.userData?.['selectableId'];
+      if (typeof id === 'string') {
+        return id;
+      }
+      cur = cur.parent;
+    }
+    return null;
+  }
+
+  /** Project the pointer's ray onto the bed plane (Z=0) in machine mm. */
+  private intersectGround(event: PointerEvent): Vector3 | null {
+    const ndc = this.toNdc(event, this.ndcScratch);
+    this.raycaster.setFromCamera(ndc, this.camera);
+    const out = this.raycaster.ray.intersectPlane(this.groundPlane, this.groundHitScratch);
+    return out;
+  }
+
+  /** Pointer client coords → normalised device coords for the renderer canvas. */
+  private toNdc(event: PointerEvent, out: Vector2): Vector2 {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const x = ((event.clientX - rect.left) / Math.max(rect.width, 1)) * 2 - 1;
+    const y = -(((event.clientY - rect.top) / Math.max(rect.height, 1)) * 2 - 1);
+    return out.set(x, y);
+  }
+
+  /**
+   * Cancel any drag currently in flight without committing positions. Called
+   * when the underlying selectable goes away (clearContent), the cursor mode
+   * changes, or the OS cancels the pointer (touch interrupt, etc.).
+   */
+  private cancelActiveDrag(): void {
+    const ps = this.pressState;
+    this.pressState = null;
+    if (!ps) {
+      return;
+    }
+    const el = this.renderer.domElement;
+    if (el.hasPointerCapture(ps.pointerId)) {
+      el.releasePointerCapture(ps.pointerId);
+    }
+    if (ps.dragStarted) {
+      this.controls.enabled = true;
+      this.selectionHandlers?.cancelDrag();
+    }
+  }
+
+  /**
+   * Toggle the emissive highlight on every Mesh descendant of `root`. When
+   * `on` is true the original emissive colour + intensity is snapshotted
+   * so the inverse call restores the material exactly. Materials without an
+   * `emissive` channel (e.g. line / basic materials) are silently skipped.
+   */
+  private applyHighlight(root: Object3D, on: boolean): void {
+    root.traverse((node) => {
+      if (!(node instanceof Mesh)) {
+        return;
+      }
+      const materials = Array.isArray(node.material) ? node.material : [node.material];
+      if (on) {
+        const snapshot: { color: Color; intensity: number }[] = [];
+        for (const mat of materials) {
+          const m = mat as Material & { emissive?: Color; emissiveIntensity?: number };
+          if (!m.emissive) {
+            snapshot.push({ color: new Color(0, 0, 0), intensity: 0 });
+            continue;
+          }
+          snapshot.push({
+            color: m.emissive.clone(),
+            intensity: m.emissiveIntensity ?? 1,
+          });
+          m.emissive.copy(SELECTION_EMISSIVE);
+          if ('emissiveIntensity' in m) {
+            m.emissiveIntensity = SELECTION_EMISSIVE_INTENSITY;
+          }
+        }
+        this.originalEmissive.set(node, snapshot);
+      } else {
+        const snapshot = this.originalEmissive.get(node);
+        if (!snapshot) {
+          return;
+        }
+        for (let i = 0; i < materials.length; i++) {
+          const m = materials[i] as Material & {
+            emissive?: Color;
+            emissiveIntensity?: number;
+          };
+          const orig = snapshot[i];
+          if (!m.emissive || !orig) {
+            continue;
+          }
+          m.emissive.copy(orig.color);
+          if ('emissiveIntensity' in m) {
+            m.emissiveIntensity = orig.intensity;
+          }
+        }
+        this.originalEmissive.delete(node);
+      }
+    });
   }
 
   private tick = (): void => {
@@ -447,9 +955,14 @@ export class ViewerScene {
         this.applyAutoscrollZoom(dt);
       }
       this.controls.update();
+      this.applyOrbitInertia(dt);
     }
     this.updateAdaptiveGrid();
     this.updateGridFade();
+    // Recompute near/far against the live camera-target distance so depth
+    // precision stays tight across the full zoom range without needing the
+    // (mobile-hostile) logarithmicDepthBuffer extension.
+    this.updateNearFar();
     this.renderer.render(this.scene, this.camera);
     this.publishCameraState();
   };
@@ -473,7 +986,7 @@ export class ViewerScene {
     }
     this.camera.aspect = clientWidth / clientHeight;
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(clientWidth, clientHeight, false);
+    this.renderer.setSize(clientWidth, clientHeight);
   }
 
   private sizeOf(el: HTMLElement): { clientWidth: number; clientHeight: number } {
@@ -639,6 +1152,169 @@ export class ViewerScene {
         entry.material.visible = opacity > 0.001;
       }
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Orbit / pan inertia (custom — see field comment on `orbitInteracting`)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Toggle `zoomToCursor` on while a touch gesture is active and back off
+   * on release. Touch users want pinch-zoom to converge on the finger
+   * point; mouse users prefer the default dolly-toward-target behaviour
+   * because it matches our autoscroll zoom and keeps wheel zoom stable
+   * regardless of cursor position.
+   */
+  private installTouchOrbitTuning(): void {
+    const el = this.renderer.domElement;
+    const activeTouches = new Set<number>();
+    const onDown = (event: PointerEvent): void => {
+      if (event.pointerType !== 'touch') {
+        return;
+      }
+      activeTouches.add(event.pointerId);
+      this.controls.zoomToCursor = true;
+    };
+    const onEnd = (event: PointerEvent): void => {
+      if (event.pointerType !== 'touch') {
+        return;
+      }
+      activeTouches.delete(event.pointerId);
+      if (activeTouches.size === 0) {
+        this.controls.zoomToCursor = false;
+      }
+    };
+    el.addEventListener('pointerdown', onDown);
+    el.addEventListener('pointerup', onEnd);
+    el.addEventListener('pointercancel', onEnd);
+  }
+
+  /**
+   * Wire up the controls' `start` / `change` / `end` events to track angular
+   * velocity (azimuth, polar) and target-pan velocity during interaction.
+   * The accumulated velocities are consumed on each render frame by
+   * {@link applyOrbitInertia} once the gesture ends.
+   */
+  private installOrbitInertia(): void {
+    this.controls.addEventListener('start', () => {
+      this.orbitInteracting = true;
+      this.orbitLastSampleTime = performance.now();
+      this.orbitLastAzimuth = this.controls.getAzimuthalAngle();
+      this.orbitLastPolar = this.controls.getPolarAngle();
+      this.orbitLastTarget.copy(this.controls.target);
+      // Reset any in-progress coast — the new gesture takes over.
+      this.orbitVelAzimuth = 0;
+      this.orbitVelPolar = 0;
+      this.orbitVelTarget.set(0, 0, 0);
+    });
+    this.controls.addEventListener('change', () => {
+      if (!this.orbitInteracting) {
+        return;
+      }
+      const now = performance.now();
+      const dt = (now - this.orbitLastSampleTime) / 1000;
+      this.orbitLastSampleTime = now;
+      if (dt <= 0 || dt > 0.1) {
+        // First sample of a gesture or a stalled frame — capture state but
+        // don't derive a velocity from a bogus dt.
+        this.orbitLastAzimuth = this.controls.getAzimuthalAngle();
+        this.orbitLastPolar = this.controls.getPolarAngle();
+        this.orbitLastTarget.copy(this.controls.target);
+        return;
+      }
+      const azNow = this.controls.getAzimuthalAngle();
+      const polNow = this.controls.getPolarAngle();
+      // Wrap azimuth delta into (-π, π] so a discontinuity at ±π doesn't
+      // produce a huge spurious velocity spike.
+      let dAz = azNow - this.orbitLastAzimuth;
+      if (dAz > Math.PI) dAz -= 2 * Math.PI;
+      else if (dAz < -Math.PI) dAz += 2 * Math.PI;
+      const dPol = polNow - this.orbitLastPolar;
+      const dTarget = this.controls.target.clone().sub(this.orbitLastTarget);
+      // Exponential moving average so a single noisy frame can't dominate
+      // the released velocity.
+      const smoothing = 0.5;
+      this.orbitVelAzimuth = lerp(this.orbitVelAzimuth, dAz / dt, smoothing);
+      this.orbitVelPolar = lerp(this.orbitVelPolar, dPol / dt, smoothing);
+      this.orbitVelTarget.lerp(dTarget.divideScalar(dt), smoothing);
+      this.orbitLastAzimuth = azNow;
+      this.orbitLastPolar = polNow;
+      this.orbitLastTarget.copy(this.controls.target);
+    });
+    this.controls.addEventListener('end', () => {
+      this.orbitInteracting = false;
+      // If the final frame of the gesture was "still" (mouse paused before
+      // release), zero out the velocity so the camera stops dead instead of
+      // coasting from a stale earlier sample.
+      const sinceLastSample = (performance.now() - this.orbitLastSampleTime) / 1000;
+      if (sinceLastSample > 0.08) {
+        this.orbitVelAzimuth = 0;
+        this.orbitVelPolar = 0;
+        this.orbitVelTarget.set(0, 0, 0);
+        return;
+      }
+      // Scale released velocity down so the coast is a subtle hint of
+      // follow-through, not a noticeable drift.
+      const releaseScale = 0.35;
+      this.orbitVelAzimuth *= releaseScale;
+      this.orbitVelPolar *= releaseScale;
+      this.orbitVelTarget.multiplyScalar(releaseScale);
+    });
+  }
+
+  /**
+   * Coast the camera by the velocities sampled during the last gesture,
+   * decaying exponentially. A no-op while the user is actively interacting
+   * (during which OrbitControls drives the camera 1:1 with the pointer) or
+   * when all velocities have decayed below the visible-motion threshold.
+   */
+  private applyOrbitInertia(dt: number): void {
+    if (this.orbitInteracting || dt <= 0) {
+      return;
+    }
+    const azSpeed = Math.abs(this.orbitVelAzimuth);
+    const polSpeed = Math.abs(this.orbitVelPolar);
+    const panSpeed = this.orbitVelTarget.length();
+    // Visible-motion threshold: ~0.05°/s of orbit, ~0.01 mm/s of pan.
+    if (azSpeed < 1e-3 && polSpeed < 1e-3 && panSpeed < 1e-2) {
+      this.orbitVelAzimuth = 0;
+      this.orbitVelPolar = 0;
+      this.orbitVelTarget.set(0, 0, 0);
+      return;
+    }
+    // Apply orbit rotation around the controls' target using the same
+    // azimuth/polar convention OrbitControls uses internally (Y-up frame
+    // rotated to match `camera.up`).
+    if (azSpeed > 0 || polSpeed > 0) {
+      const offset = this.camera.position.clone().sub(this.controls.target);
+      const yUp = new Vector3(0, 1, 0);
+      const q = new Quaternion().setFromUnitVectors(this.camera.up, yUp);
+      const qInv = q.clone().invert();
+      offset.applyQuaternion(q);
+      const sph = new Spherical().setFromVector3(offset);
+      sph.theta += this.orbitVelAzimuth * dt;
+      sph.phi += this.orbitVelPolar * dt;
+      const eps = 1e-3;
+      sph.phi = Math.max(eps, Math.min(Math.PI - eps, sph.phi));
+      offset.setFromSpherical(sph).applyQuaternion(qInv);
+      this.camera.position.copy(this.controls.target).add(offset);
+    }
+    // Apply pan velocity on the target (and consequently the camera, since
+    // the offset is preserved by adding the same delta to both).
+    if (panSpeed > 0) {
+      const dT = this.orbitVelTarget.clone().multiplyScalar(dt);
+      this.controls.target.add(dT);
+      this.camera.position.add(dT);
+    }
+    this.camera.lookAt(this.controls.target);
+    // Exponential decay — short half-life keeps the coast subtle: just a
+    // hint of follow-through after the pointer is released, settling within
+    // a couple hundred milliseconds rather than visibly drifting.
+    const halfLifeSeconds = 0.05;
+    const decay = Math.pow(0.5, dt / halfLifeSeconds);
+    this.orbitVelAzimuth *= decay;
+    this.orbitVelPolar *= decay;
+    this.orbitVelTarget.multiplyScalar(decay);
   }
 
   // ---------------------------------------------------------------------------
@@ -969,19 +1645,58 @@ export class ViewerScene {
   }
 
   /**
-   * Pin the camera frustum to wide fixed bounds. The renderer is configured
-   * with a logarithmic depth buffer so this huge near→far range still has
-   * usable depth precision — and nothing is ever clipped, regardless of how
-   * far the user dollies out or which angle they look from. The arguments
-   * are accepted for API compatibility with the previous implementation.
+   * Tighten the camera's near / far planes around the current camera→target
+   * distance plus a generous scene-radius margin. Called every frame from
+   * {@link tick} (and on demand from camera animations) so depth precision
+   * stays usable across the full zoom range without needing the very
+   * expensive `logarithmicDepthBuffer` extension. Values are quantised so
+   * we don't trigger a `updateProjectionMatrix` on every micro-change.
    */
-  private updateNearFar(_distance: number, _radius: number): void {
-    if (this.camera.near !== CAMERA_NEAR || this.camera.far !== CAMERA_FAR) {
-      this.camera.near = CAMERA_NEAR;
-      this.camera.far = CAMERA_FAR;
+  private updateNearFar(distance?: number, radius?: number): void {
+    const dist =
+      distance !== undefined && Number.isFinite(distance) && distance > 0
+        ? distance
+        : Math.max(this.camera.position.distanceTo(this.controls.target), 1);
+    // Use the larger of the requested radius and a print-area-derived
+    // baseline so an empty scene still gets a sensible far plane.
+    const { printableAreaWidth, printableAreaHeight } = this.printArea;
+    const bedRadius = Math.max(printableAreaWidth, printableAreaHeight, 200);
+    const sceneRadius = Math.max(radius ?? 0, bedRadius);
+
+    // Symmetric padding around the target distance: near pulls back to half
+    // a scene-radius behind the target, far extends four scene-radii ahead.
+    // The 0.5 / 4 asymmetry biases precision toward the foreground (where
+    // the model sits) rather than the deep background.
+    let near = (dist - sceneRadius) * 0.5;
+    let far = (dist + sceneRadius) * 4;
+    if (!Number.isFinite(near) || near < CAMERA_NEAR) {
+      near = CAMERA_NEAR;
+    }
+    if (!Number.isFinite(far) || far > CAMERA_FAR) {
+      far = CAMERA_FAR;
+    }
+    if (far <= near + 1) {
+      far = near + 1;
+    }
+    // Quantise to ~0.5% so tiny jitter doesn't repeatedly dirty the
+    // projection matrix.
+    near = quantise(near, 0.005);
+    far = quantise(far, 0.005);
+    if (this.camera.near !== near || this.camera.far !== far) {
+      this.camera.near = near;
+      this.camera.far = far;
       this.camera.updateProjectionMatrix();
     }
   }
+}
+
+/** Round `value` to the nearest multiple of `value * step`, preserving sign. */
+function quantise(value: number, step: number): number {
+  if (value === 0) {
+    return 0;
+  }
+  const scale = Math.abs(value) * step;
+  return Math.round(value / scale) * scale;
 }
 
 interface CameraAnimation {
@@ -1003,6 +1718,21 @@ interface AutoscrollState {
   pointerId: number;
   anchorY: number;
   currentY: number;
+}
+
+interface SelectionPressState {
+  pointerId: number;
+  /** Pointer client X at pointerdown (used for the drag-threshold check). */
+  downX: number;
+  downY: number;
+  /** Selectable id under the cursor at pointerdown. */
+  hitId: string;
+  /** Whether ctrl/⌘/shift was held at pointerdown (additive selection). */
+  additive: boolean;
+  /** Set once the drag threshold is exceeded and OrbitControls is parked. */
+  dragStarted: boolean;
+  /** World-space hit point on the bed plane at the moment drag started. */
+  startWorld: Vector3 | null;
 }
 
 interface GridTransition {

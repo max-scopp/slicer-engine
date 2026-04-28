@@ -11,6 +11,7 @@ import {
   signal,
   viewChild,
 } from '@angular/core';
+import { ObjectTrackerService, SceneObject } from '../../services/object-tracker';
 import { PrintAreaService } from '../../services/print-area';
 import { ViewerControl } from '../../services/viewer-control';
 import { ChunkedLineGeometry } from './chunked-line-geometry';
@@ -51,6 +52,7 @@ export type ViewerMode = 'model' | 'gcode';
         height: 100%;
         background: transparent;
         overflow: hidden;
+        user-select: none;
       }
       .viewer-host {
         position: absolute;
@@ -86,6 +88,7 @@ export class ViewerComponent implements OnDestroy {
   private readonly elementRef = inject(ElementRef);
   private readonly viewerControl = inject(ViewerControl);
   private readonly printArea = inject(PrintAreaService);
+  private readonly objectTracker = inject(ObjectTrackerService);
 
   /** Current loading status for the optional overlay. */
   readonly status = signal<'idle' | 'loading' | 'streaming' | 'ready' | 'error'>('idle');
@@ -96,6 +99,8 @@ export class ViewerComponent implements OnDestroy {
   private gcodeGeometry: ChunkedLineGeometry | null = null;
   private currentAbort: AbortController | null = null;
   private loadToken = 0;
+  /** SceneObject ids registered for the currently-loaded source. */
+  private trackedObjectIds: string[] = [];
 
   constructor() {
     afterNextRender(() => this.initScene());
@@ -151,6 +156,29 @@ export class ViewerComponent implements OnDestroy {
       const config = this.printArea.config();
       this.scene?.setPrintArea(config);
     });
+
+    // Mirror the application's selection state into the scene so meshes get
+    // their highlight as soon as the service signal flips (whether the flip
+    // came from a viewer click or from external UI).
+    effect(() => {
+      const ids = this.printArea.selectedIds();
+      this.scene?.setSelectedIds(ids);
+    });
+
+    // Mirror tracked-object transforms onto the corresponding mesh nodes.
+    // Reading every SceneObject's `transform` signal in this effect makes
+    // it depend on each object's position/rotation/scale, so any update
+    // (manual API call, drag, future gizmo) re-runs and pushes through.
+    effect(() => {
+      const objects = this.objectTracker.objects();
+      const scene = this.scene;
+      if (!scene) {
+        return;
+      }
+      for (const obj of objects) {
+        scene.setObjectTransform(obj.id, obj.transform());
+      }
+    });
   }
 
   ngOnDestroy(): void {
@@ -192,6 +220,17 @@ export class ViewerComponent implements OnDestroy {
     };
     // Allow external gizmos (viewport-cube drag) to orbit the main camera.
     this.viewerControl.orbitSink = (azimuth, polar) => this.scene?.orbitBy(azimuth, polar);
+    // Bridge raycast hits / drag gestures from the scene into the
+    // print-area service. The scene owns the geometry; the service owns
+    // the truth about what's selected and where each object sits in mm.
+    this.scene.selectionHandlers = {
+      select: (id, additive) => this.printArea.select(id, { additive }),
+      clearSelection: () => this.printArea.clearSelection(),
+      beginDragSelected: () => this.printArea.beginDragSelected().length > 0,
+      dragSelectedBy: (dx, dy) => this.printArea.dragSelectedBy(dx, dy),
+      endDrag: () => this.printArea.endDrag(),
+      cancelDrag: () => this.printArea.cancelDrag(),
+    };
     // Apply the current toolbar selections so the scene starts in sync with
     // whatever view / cursor mode the user already had selected.
     this.scene.setCursorMode(this.viewerControl.cursorMode());
@@ -212,6 +251,14 @@ export class ViewerComponent implements OnDestroy {
       return;
     }
     this.cancelInFlightLoad();
+    // Drop any tracked SceneObjects we registered for the previous source
+    // so the tracker / selection / drag stores stay a faithful mirror of
+    // what is actually on the bed.
+    for (const id of this.trackedObjectIds) {
+      this.printArea.forgetObject(id);
+      this.objectTracker.remove(id);
+    }
+    this.trackedObjectIds = [];
     scene.clearContent();
     this.gcodeGeometry?.dispose();
     this.gcodeGeometry = null;
@@ -247,6 +294,26 @@ export class ViewerComponent implements OnDestroy {
           return;
         }
         this.scene.contentRoot.add(object);
+        // Register a SceneObject in the tracker — it owns the live
+        // transform; the mesh just mirrors it through the effect above.
+        // Seed the SceneObject's transform from the mesh's current pose so
+        // first-frame rendering doesn't snap.
+        const sceneObj: SceneObject = this.objectTracker.create({
+          name: 'Model',
+          position: {
+            x: object.position.x,
+            y: object.position.y,
+            z: object.position.z,
+          },
+          rotation: {
+            x: object.rotation.x,
+            y: object.rotation.y,
+            z: object.rotation.z,
+          },
+          scale: { x: object.scale.x, y: object.scale.y, z: object.scale.z },
+        });
+        this.trackedObjectIds.push(sceneObj.id);
+        this.scene.registerSelectable(sceneObj.id, object);
         this.scene.fitToContent();
         this.status.set('ready');
         this.loadComplete.emit({ mode: 'model', segments: 0 });

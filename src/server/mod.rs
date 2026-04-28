@@ -33,8 +33,8 @@ pub struct ServeCommand {
     #[arg(long, default_value = "./ui/dist/slicer-ui/browser")]
     pub ui_dir: String,
 
-    /// Host address to bind
-    #[arg(long, default_value = "127.0.0.1")]
+    /// Host address to bind (use 0.0.0.0 to listen on all network interfaces)
+    #[arg(long, default_value = "0.0.0.0")]
     pub host: String,
 
     /// Directory to store temporary session files
@@ -77,8 +77,18 @@ impl ServeCommand {
         let ui_dir = self.ui_dir.clone();
         let work_dir = self.work_dir.clone();
 
-        eprintln!("\nServing Slicer Engine UI at http://{}:{}/", host, port);
-        eprintln!("WebSocket endpoint:        ws://{}:{}/ws", host, port);
+        if host == "0.0.0.0" {
+            eprintln!(
+                "\nServing Slicer Engine UI on all interfaces (port {})",
+                port
+            );
+            eprintln!("  Local:   http://localhost:{}/", port);
+            eprintln!("  Network: http://<your-ip>:{}/", port);
+            eprintln!("WebSocket endpoint: ws://<host>:{}/ws", port);
+        } else {
+            eprintln!("\nServing Slicer Engine UI at http://{}:{}/", host, port);
+            eprintln!("WebSocket endpoint:        ws://{}:{}/ws", host, port);
+        }
         eprintln!("Serving files from: {}", ui_dir);
         eprintln!("Press Ctrl+C to stop.");
 
@@ -120,7 +130,7 @@ async fn run_server(
 
     HttpServer::new(move || {
         let fallback_dir = ui_dir.clone();
-        
+
         // CORS configuration for HTTP API routes only
         // Note: WebSocket connections do not support CORS and bypass this middleware
         let cors = Cors::default()
@@ -146,7 +156,10 @@ async fn run_server(
                 web::scope("/api")
                     .wrap(cors)
                     .route("/upload", web::post().to(handlers::upload_handler))
-                    .route("/download/{request_uuid}", web::get().to(handlers::download_handler))
+                    .route(
+                        "/download/{request_uuid}",
+                        web::get().to(handlers::download_handler),
+                    )
                     .route("/config", web::get().to(handlers::get_config_handler))
                     .route("/config", web::patch().to(handlers::patch_config_handler)),
             )
@@ -182,11 +195,11 @@ mod tests {
         let cmd = ServeCommand {
             port: 5201,
             ui_dir: "./ui/dist/slicer-ui/browser".to_string(),
-            host: "127.0.0.1".to_string(),
+            host: "0.0.0.0".to_string(),
             work_dir: None,
         };
         assert_eq!(cmd.port, 5201);
-        assert_eq!(cmd.host, "127.0.0.1");
+        assert_eq!(cmd.host, "0.0.0.0");
     }
 
     #[test]

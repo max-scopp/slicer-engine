@@ -1,4 +1,4 @@
-import { BufferGeometry, Mesh, MeshStandardMaterial, Object3D } from 'three';
+import { BufferGeometry, Mesh, MeshPhongMaterial, Object3D } from 'three';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 
 /** Input accepted by the model loader. */
@@ -20,10 +20,15 @@ export async function loadModel(source: ModelSource): Promise<Object3D> {
 function buildMesh(geometry: BufferGeometry): Mesh {
   geometry.computeVertexNormals();
   geometry.computeBoundingBox();
-  const material = new MeshStandardMaterial({
+  // Phong (Blinn-Phong) is meaningfully cheaper than MeshStandardMaterial on
+  // tile-based mobile GPUs (iOS / Android), and with `flatShading: true` the
+  // visual result is indistinguishable for our use case (no metalness / IBL
+  // contribution). Keeping a small specular highlight gives the part some
+  // form definition without the full PBR shader cost.
+  const material = new MeshPhongMaterial({
     color: 0xb0b6bb,
-    metalness: 0.05,
-    roughness: 0.65,
+    specular: 0x111111,
+    shininess: 10,
     flatShading: true,
   });
   const mesh = new Mesh(geometry, material);

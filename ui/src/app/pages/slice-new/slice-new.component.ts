@@ -20,10 +20,11 @@ export class SliceNewComponent {
   onFileSelected(event: Event): void {
     const input = event.target as HTMLInputElement;
     const file = input.files?.[0];
-    if (file) {
+    if (file && /\.(stl|obj|3mf)$/i.test(file.name)) {
       this.slicerFile.selectFile(file);
       this.uploadAndNavigate();
     }
+    input.value = '';
   }
 
   private async uploadAndNavigate(): Promise<void> {

@@ -16,6 +16,7 @@ import { InputModalityService } from '../input-modality/input-modality.service';
 import { TooltipComponent } from './tooltip.component';
 
 const MOUSE_DELAY_MS = 600;
+const PEN_HOVER_DELAY_MS = 300;
 
 /**
  * Attaches a positioned tooltip to any host element.
@@ -30,7 +31,11 @@ const MOUSE_DELAY_MS = 600;
  *   keyboard — show immediately on focus; hide on blur.
  *              Mouse enter/leave events are ignored.
  *
- *   touch    — tooltips are suppressed entirely.
+ *   touch    — tooltips are suppressed for finger touches.
+ *              However, stylus hover (Apple Pencil, Surface Pen, etc.) is
+ *              treated like a mouse hover and shows the tooltip after a
+ *              short delay — these devices report `pointerType === 'pen'`
+ *              on `pointerenter` while the tip hovers above the screen.
  *
  * Positioning is handled by the Angular CDK FlexibleConnectedPositionStrategy
  * so the panel stays on-screen even near viewport edges.
@@ -78,12 +83,45 @@ export class TooltipDirective implements OnInit, OnDestroy {
     if (this.inputModality.modality() !== 'mouse') {
       return;
     }
-    this.showTimeout = setTimeout(() => this.show(), MOUSE_DELAY_MS);
+    this.scheduleShow(MOUSE_DELAY_MS);
   }
 
   @HostListener('mouseleave')
   onMouseLeave(): void {
     if (this.inputModality.modality() !== 'mouse') {
+      return;
+    }
+    this.hide();
+  }
+
+  /**
+   * Stylus hover (Apple Pencil, Surface Pen, …) fires pointer events with
+   * `pointerType === 'pen'` while the tip hovers a few millimeters above the
+   * screen, before any contact occurs. We treat that exactly like a mouse
+   * hover so users with a pencil on a touch device still get tooltips.
+   *
+   * Finger touches (`pointerType === 'touch'`) and mouse moves are ignored
+   * here — they're handled by the modality-aware mouse listeners above.
+   */
+  @HostListener('pointerenter', ['$event'])
+  onPointerEnter(event: PointerEvent): void {
+    if (event.pointerType !== 'pen') {
+      return;
+    }
+    this.scheduleShow(PEN_HOVER_DELAY_MS);
+  }
+
+  @HostListener('pointerleave', ['$event'])
+  onPointerLeave(event: PointerEvent): void {
+    if (event.pointerType !== 'pen') {
+      return;
+    }
+    this.hide();
+  }
+
+  @HostListener('pointercancel', ['$event'])
+  onPointerCancel(event: PointerEvent): void {
+    if (event.pointerType !== 'pen') {
       return;
     }
     this.hide();
@@ -100,11 +138,17 @@ export class TooltipDirective implements OnInit, OnDestroy {
     this.focusMonitor.stopMonitoring(this.elementRef);
   }
 
+  private scheduleShow(delayMs: number): void {
+    if (this.showTimeout !== null) {
+      clearTimeout(this.showTimeout);
+    }
+    this.showTimeout = setTimeout(() => this.show(), delayMs);
+  }
+
   private show(): void {
     if (this.overlayRef) {
       return;
     }
-
     const positionStrategy = this.overlay
       .position()
       .flexibleConnectedTo(this.elementRef)

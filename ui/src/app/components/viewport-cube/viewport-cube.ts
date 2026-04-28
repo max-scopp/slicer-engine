@@ -1,24 +1,24 @@
 import {
-    AfterViewInit,
-    ChangeDetectionStrategy,
-    Component,
-    ElementRef,
-    OnDestroy,
-    inject,
-    viewChild,
+  AfterViewInit,
+  ChangeDetectionStrategy,
+  Component,
+  ElementRef,
+  OnDestroy,
+  inject,
+  viewChild,
 } from '@angular/core';
 import {
-    BoxGeometry,
-    CanvasTexture,
-    LinearFilter,
-    Mesh,
-    MeshBasicMaterial,
-    OrthographicCamera,
-    Raycaster,
-    Scene,
-    Vector2,
-    Vector3,
-    WebGLRenderer,
+  BoxGeometry,
+  CanvasTexture,
+  LinearFilter,
+  Mesh,
+  MeshBasicMaterial,
+  OrthographicCamera,
+  Raycaster,
+  Scene,
+  Vector2,
+  Vector3,
+  WebGLRenderer,
 } from 'three';
 import { ViewerControl } from '../../services/viewer-control';
 
@@ -110,6 +110,17 @@ export class ViewportCube implements AfterViewInit, OnDestroy {
   private resizeObserver: ResizeObserver | null = null;
   private themeObserver: MutationObserver | null = null;
 
+  /**
+   * Dirty flag for on-demand rendering. The cube is a static helper — most
+   * frames it does not need to redraw at all. We render only when the
+   * mirrored camera state changes, the hover state changes, the canvas
+   * resizes, or the theme repaints the textures. This keeps an idle iPad
+   * from burning a second WebGL pipeline at 60 fps for nothing.
+   */
+  private needsRender = true;
+  private readonly lastRenderedDirection = new Vector3(NaN, NaN, NaN);
+  private readonly lastRenderedUp = new Vector3(NaN, NaN, NaN);
+
   private dragging = false;
   private pointerId: number | null = null;
   private dragStart = new Vector2();
@@ -138,8 +149,19 @@ export class ViewportCube implements AfterViewInit, OnDestroy {
   private init(): void {
     const canvas = this.canvasRef().nativeElement;
 
-    this.renderer = new WebGLRenderer({ canvas, alpha: true, antialias: true });
-    this.renderer.setPixelRatio(window.devicePixelRatio);
+    this.renderer = new WebGLRenderer({
+      canvas,
+      alpha: true,
+      // At Retina DPR (≥2) MSAA cost is non-trivial on iOS for a UI gizmo
+      // this small — the labels are antialiased through the canvas-2D path
+      // already.
+      antialias: window.devicePixelRatio < 2,
+      powerPreference: 'high-performance',
+    });
+    // Cap DPR for the same reason as the main viewer: iPads / phones at
+    // DPR 3 quadruple the fragment cost for no perceptible benefit on a
+    // 96×96 CSS-pixel widget.
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setClearColor(0x000000, 0);
 
     this.scene = new Scene();
@@ -206,6 +228,7 @@ export class ViewportCube implements AfterViewInit, OnDestroy {
       materials[i].map = makeFaceTexture(FACE_SPECS[i].label, i === this.hoveredFace, palette);
       materials[i].needsUpdate = true;
     }
+    this.needsRender = true;
   }
 
   private resize(): void {
@@ -233,6 +256,7 @@ export class ViewportCube implements AfterViewInit, OnDestroy {
       this.camera.bottom = -halfExtent / aspect;
     }
     this.camera.updateProjectionMatrix();
+    this.needsRender = true;
   }
 
   private tick = (): void => {
@@ -242,12 +266,28 @@ export class ViewportCube implements AfterViewInit, OnDestroy {
     }
     // Mirror the main viewer's camera orientation: place our fixed-distance
     // camera along the same direction (target → camera) the main camera is
-    // viewing from, with a matching up vector.
+    // viewing from, with a matching up vector. Detect changes vs. the last
+    // rendered state so we can skip the (otherwise per-frame) render call
+    // when the user is doing nothing — a major battery / thermal win on
+    // iPads where this would otherwise run a second WebGL pipeline at the
+    // display refresh rate.
     const state = this.viewerControl.cameraState;
+    if (
+      !this.lastRenderedDirection.equals(state.direction) ||
+      !this.lastRenderedUp.equals(state.up)
+    ) {
+      this.lastRenderedDirection.copy(state.direction);
+      this.lastRenderedUp.copy(state.up);
+      this.needsRender = true;
+    }
+    if (!this.needsRender) {
+      return;
+    }
     this.camera.position.copy(state.direction).multiplyScalar(CUBE_DISTANCE);
     this.camera.up.copy(state.up);
     this.camera.lookAt(0, 0, 0);
     this.renderer.render(this.scene, this.camera);
+    this.needsRender = false;
   };
 
   private onPointerDown = (event: PointerEvent): void => {
@@ -338,6 +378,7 @@ export class ViewportCube implements AfterViewInit, OnDestroy {
       next.needsUpdate = true;
     }
     this.hoveredFace = face;
+    this.needsRender = true;
   }
 
   private pickFace(event: PointerEvent): number {
