@@ -115,6 +115,7 @@ async fn run_server(
                 http::Method::GET,
                 http::Method::POST,
                 http::Method::PUT,
+                http::Method::PATCH,
                 http::Method::DELETE,
                 http::Method::OPTIONS,
             ])
@@ -131,7 +132,9 @@ async fn run_server(
                 web::scope("/api")
                     .wrap(cors)
                     .route("/upload", web::post().to(handlers::upload_handler))
-                    .route("/download/{request_uuid}", web::get().to(handlers::download_handler)),
+                    .route("/download/{request_uuid}", web::get().to(handlers::download_handler))
+                    .route("/config", web::get().to(handlers::get_config_handler))
+                    .route("/config", web::patch().to(handlers::patch_config_handler)),
             )
             // WebSocket endpoint
             .route("/ws", web::get().to(ws_session::ws_handler))

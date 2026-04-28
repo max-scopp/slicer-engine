@@ -3,7 +3,8 @@
 //! These types are defined with `#[derive(JsonSchema)]` from the `schemars` crate,
 //! which automatically generates JSON schemas that match the actual Rust types.
 
-use crate::ws_protocol::{ClientMessage, ServerMessage, WsSlicingParams};
+use crate::settings::SlicingParams;
+use crate::ws_protocol::{ClientMessage, ServerMessage};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -73,26 +74,12 @@ pub struct SettingsDiffSchema {
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 pub struct DiffResultSchema(pub Vec<SettingsDiffSchema>);
 
-/// Display of all global settings
+/// Global slicing settings snapshot.
+///
+/// Returned by `settings show` (CLI) and `GetSettings` (WebSocket).
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
-pub struct ShowResultSchema {
-    pub params: SlicingParamsSchema,
-}
-
-/// Slicing parameters
-#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
-pub struct SlicingParamsSchema {
-    pub layer_height: f64,
-    pub wall_count: usize,
-    pub wall_line_width_min: f64,
-    pub wall_line_width_max: f64,
-    pub wall_transition_threshold: f64,
-    pub wall_transition_length: f64,
-    pub wall_distribution_count: usize,
-    pub infill_density: f64,
-    pub print_speed: f64,
-    pub nozzle_temp: f64,
-    pub bed_temp: f64,
+pub struct GlobalSettingsSchema {
+    pub params: SlicingParams,
 }
 
 /// Get a single setting value
@@ -156,9 +143,9 @@ pub fn all_schemas() -> Vec<SchemaDefinition> {
                 .expect("failed to serialize DiffResultSchema"),
         },
         SchemaDefinition {
-            schema_id: "slicer-engine/settings-show-result-v1",
-            schema: serde_json::to_value(schemars::schema_for!(ShowResultSchema))
-                .expect("failed to serialize ShowResultSchema"),
+            schema_id: "slicer-engine/global-settings-v1",
+            schema: serde_json::to_value(schemars::schema_for!(GlobalSettingsSchema))
+                .expect("failed to serialize GlobalSettingsSchema"),
         },
         SchemaDefinition {
             schema_id: "slicer-engine/settings-get-result-v1",
@@ -169,11 +156,6 @@ pub fn all_schemas() -> Vec<SchemaDefinition> {
             schema_id: "slicer-engine/settings-set-result-v1",
             schema: serde_json::to_value(schemars::schema_for!(SetResultSchema))
                 .expect("failed to serialize SetResultSchema"),
-        },
-        SchemaDefinition {
-            schema_id: "slicer-engine/ws/slicing-params-v1",
-            schema: serde_json::to_value(schemars::schema_for!(WsSlicingParams))
-                .expect("failed to serialize WsSlicingParams"),
         },
         SchemaDefinition {
             schema_id: "slicer-engine/ws/client-message-v1",
@@ -195,7 +177,7 @@ mod tests {
     #[test]
     fn test_all_schemas_generates_definitions() {
         let schemas = all_schemas();
-        assert_eq!(schemas.len(), 13);
+        assert_eq!(schemas.len(), 12);
     }
 
     #[test]

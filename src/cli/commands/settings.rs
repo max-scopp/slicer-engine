@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use crate::cli::emit::Emitter;
 use crate::cli::error::CliError;
 use crate::cli::output::{EmitPayload, OutputFormat};
+use crate::config::{config_file, load_config, save_config};
 use crate::settings::diff::compare_settings;
 use crate::settings::params::{GlobalSettings, ObjectSettings};
 use crate::settings::validator::SettingValidator;
@@ -312,10 +313,13 @@ fn execute_set(args: &SetArgs) -> Result<(), Box<dyn std::error::Error>> {
     let parsed_value: Value =
         serde_json::from_str(&args.value).unwrap_or_else(|_| Value::String(args.value.clone()));
 
-    // Load current settings, apply the change, and save
+    // Load current settings, apply the change, save to JSON settings file
     let mut settings = load_settings()?;
     set_setting_value(&mut settings, &args.key, &parsed_value)?;
     save_settings(&settings)?;
+
+    // Also persist the change to the TOML config file
+    persist_setting_to_toml(&args.key, &parsed_value)?;
 
     emitter.emit(&SetResult {
         key: &args.key,
@@ -467,7 +471,7 @@ struct ShowResult<'a> {
 
 impl EmitPayload for ShowResult<'_> {
     fn schema(&self) -> &'static str {
-        "slicer-engine/settings-show-result-v1"
+        "slicer-engine/global-settings-v1"
     }
 
     fn display_human(&self) -> String {
@@ -569,6 +573,110 @@ impl EmitPayload for SetResult<'_> {
             "message": "Setting updated successfully",
         })
     }
+}
+
+/// Write a single setting change back to the global TOML config file.
+///
+/// The `key` uses the same flat/dotted alias rules as [`resolve_key_path`].
+/// Keys under `params.*` map to `[slicing]` in the TOML file.
+/// The `gcode_flavor` key maps to `slicing.gcode_flavor`.
+/// Unknown keys are silently ignored (the JSON settings file is the canonical
+/// store; TOML is best-effort for human-readable persistence).
+fn persist_setting_to_toml(
+    key: &str,
+    value: &Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let toml_path = config_file();
+    let mut app_config = load_config(&toml_path)?;
+
+    // Normalise: strip "params." prefix if present
+    let bare_key = key.strip_prefix("params.").unwrap_or(key);
+
+    macro_rules! set_slicing_field {
+        ($field:ident, $ty:ty) => {
+            if bare_key == stringify!($field) {
+                if let Some(v) = value.as_f64() {
+                    app_config.slicing.$field = Some(v as $ty);
+                    save_config(&app_config, &toml_path)?;
+                }
+                return Ok(());
+            }
+        };
+    }
+
+    macro_rules! set_slicing_bool {
+        ($field:ident) => {
+            if bare_key == stringify!($field) {
+                if let Some(v) = value.as_bool() {
+                    app_config.slicing.$field = Some(v);
+                    save_config(&app_config, &toml_path)?;
+                }
+                return Ok(());
+            }
+        };
+    }
+
+    macro_rules! set_slicing_usize {
+        ($field:ident) => {
+            if bare_key == stringify!($field) {
+                if let Some(v) = value.as_u64() {
+                    app_config.slicing.$field = Some(v as usize);
+                    save_config(&app_config, &toml_path)?;
+                }
+                return Ok(());
+            }
+        };
+    }
+
+    macro_rules! set_slicing_string {
+        ($field:ident) => {
+            if bare_key == stringify!($field) {
+                if let Some(s) = value.as_str() {
+                    app_config.slicing.$field = Some(s.to_string());
+                    save_config(&app_config, &toml_path)?;
+                }
+                return Ok(());
+            }
+        };
+    }
+
+    set_slicing_field!(layer_height, f64);
+    set_slicing_field!(wall_line_width_min, f64);
+    set_slicing_field!(wall_line_width_max, f64);
+    set_slicing_field!(wall_transition_threshold, f64);
+    set_slicing_field!(wall_transition_length, f64);
+    set_slicing_field!(infill_density, f64);
+    set_slicing_field!(infill_base_angle, f64);
+    set_slicing_field!(print_speed, f64);
+    set_slicing_field!(nozzle_temp, f64);
+    set_slicing_field!(bed_temp, f64);
+    set_slicing_field!(surface_infill_angle, f64);
+    set_slicing_field!(filament_diameter_mm, f64);
+    set_slicing_field!(nozzle_diameter_mm, f64);
+    set_slicing_field!(travel_speed_mm_min, f64);
+    set_slicing_field!(z_hop_mm, f64);
+    set_slicing_field!(retract_mm, f64);
+    set_slicing_field!(support_threshold_angle, f64);
+    set_slicing_field!(infill_overlap_percent, f64);
+    set_slicing_field!(path_tolerance, f64);
+    set_slicing_usize!(wall_count);
+    set_slicing_usize!(wall_distribution_count);
+    set_slicing_usize!(top_layers);
+    set_slicing_usize!(bottom_layers);
+    set_slicing_bool!(only_one_wall_top);
+    set_slicing_bool!(only_one_wall_first_layer);
+    set_slicing_string!(infill_pattern);
+    set_slicing_string!(gcode_flavor);
+
+    // gcode_flavor lives at the top level of GlobalSettings, not under params
+    if bare_key == "gcode_flavor" {
+        if let Some(s) = value.as_str() {
+            app_config.slicing.gcode_flavor = Some(s.to_string());
+            save_config(&app_config, &toml_path)?;
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -689,7 +797,7 @@ mod tests {
         let r = ShowResult {
             settings: &settings,
         };
-        assert_eq!(r.schema(), "slicer-engine/settings-show-result-v1");
+        assert_eq!(r.schema(), "slicer-engine/global-settings-v1");
     }
 
     #[test]

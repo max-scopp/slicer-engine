@@ -1,5 +1,6 @@
 //! Slicing parameters: per-print and per-object settings.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -7,126 +8,196 @@ use std::collections::HashMap;
 ///
 /// All dimensional values are in millimeters; speeds in mm/s;
 /// temperatures in °C; infill density as a fraction 0.0–1.0.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SlicingParams {
-    /// Layer height in mm (e.g. 0.2).
+    #[schemars(description = "Layer height in mm.
+
+Smaller values produce finer detail but increase print time.
+**Typical:** 0.05–0.35 mm.")]
     pub layer_height: f64,
-    /// Maximum number of perimeter (wall) beads per layer.
-    ///
-    /// Arachne will place up to this many concentric wall paths around each
-    /// shell polygon.  The innermost bead may have a variable extrusion width
-    /// when the remaining space is thinner than the nozzle diameter.
+
+    #[schemars(description = "Number of perimeter (wall) beads per layer.
+
+Arachne places up to this many concentric wall paths around each shell polygon.
+The innermost bead may have variable width when narrow space remains.
+**Typical:** 2–4.")]
     #[serde(default = "SlicingParams::default_wall_count")]
     pub wall_count: usize,
-    /// Minimum allowed bead width as a fraction of the nozzle diameter.
-    ///
-    /// Beads narrower than `wall_line_width_min × nozzle_diameter_mm` are
-    /// skipped entirely.  Typical range: 0.5–1.0.
+
+    #[schemars(description = "Minimum allowed bead width as a fraction of nozzle diameter.
+
+Beads narrower than `wall_line_width_min × nozzle_diameter_mm` are skipped entirely.
+**Range:** 0.5–1.0.")]
     #[serde(default = "SlicingParams::default_wall_line_width_min")]
     pub wall_line_width_min: f64,
-    /// Maximum allowed bead width as a fraction of the nozzle diameter.
-    ///
-    /// Variable-width beads are capped at `wall_line_width_max × nozzle_diameter_mm`
-    /// to avoid excessive over-extrusion at corners.  Typical range: 1.0–2.0.
+
+    #[schemars(description = "Maximum allowed bead width as a fraction of nozzle diameter.
+
+Variable-width beads are capped at this multiple to avoid excessive over-extrusion at corners.
+**Range:** 1.0–2.0.")]
     #[serde(default = "SlicingParams::default_wall_line_width_max")]
     pub wall_line_width_max: f64,
-    /// Minimum wall thickness (as a fraction of nozzle diameter) before the
-    /// bead count transitions down by one.
-    ///
-    /// When the remaining space is narrower than
-    /// `wall_transition_threshold × nozzle_diameter_mm`, the algorithm avoids
-    /// adding another bead and instead widens the existing innermost bead.
+
+    #[schemars(description = "Minimum wall space (fraction of nozzle diameter) before bead count decreases.
+
+When remaining space is narrower than `wall_transition_threshold × nozzle_diameter_mm`,
+the algorithm widens the existing innermost bead instead of adding a new one.
+**Typical:** 0.4–0.8.")]
     #[serde(default = "SlicingParams::default_wall_transition_threshold")]
     pub wall_transition_threshold: f64,
-    /// Length over which a bead-count transition is smoothed (mm).
-    ///
-    /// Larger values produce a longer gradual width ramp at bead-count changes;
-    /// smaller values produce abrupt transitions.
+
+    #[schemars(description = "Length (mm) over which a bead-count transition is smoothed.
+
+Larger values produce a gradual width ramp at transitions; smaller values create abrupt changes.
+**Typical:** 0.5–2.0 mm.")]
     #[serde(default = "SlicingParams::default_wall_transition_length")]
     pub wall_transition_length: f64,
-    /// Number of inner walls that absorb width variation.
-    ///
-    /// When the remaining inner space is too narrow for a separate bead,
-    /// up to `wall_distribution_count` of the innermost beads are widened
-    /// proportionally to fill the gap.
+
+    #[schemars(description = "Number of inner wall beads that absorb width variation.
+
+When space is too narrow for a separate bead, up to this many innermost beads
+are widened proportionally to fill the gap.
+**Typical:** 1–2.")]
     #[serde(default = "SlicingParams::default_wall_distribution_count")]
     pub wall_distribution_count: usize,
-    /// Infill density as a fraction (0.0 = hollow, 1.0 = solid).
+
+    #[schemars(description = "Infill density as a fraction (0.0–1.0).
+
+- `0.0` = completely hollow
+- `0.15`–`0.3` = typical range for good strength/speed balance
+- `1.0` = fully solid")]
     pub infill_density: f64,
-    /// Infill pattern type (rectilinear, grid, honeycomb, gyroid).
-    /// Defaults to "rectilinear" if not specified.
+
+    #[schemars(description = "Infill pattern geometry.
+
+Supported values:
+- `rectilinear` — alternating straight lines (fastest)
+- `grid` — crossed lines forming a grid
+- `honeycomb` — hexagonal cells (good strength-to-weight ratio)
+- `gyroid` — smooth triply-periodic surface (excellent isotropy)")]
     #[serde(default = "SlicingParams::default_infill_pattern")]
     pub infill_pattern: String,
-    /// Base angle in degrees for sparse infill lines (default 45°).
-    /// Alternating layers rotate +90° on top of this base angle.
+
+    #[schemars(description = "Base angle in degrees for sparse infill lines.
+
+Alternating layers rotate by +90° on top of this base angle to create a crossing pattern.
+**Default:** 45°.")]
     #[serde(default = "SlicingParams::default_infill_base_angle")]
     pub infill_base_angle: f64,
-    /// Print speed in mm/s.
+
+    #[schemars(description = "Print speed in mm/s.
+
+Slower speeds improve layer adhesion and surface quality; faster speeds reduce print time.
+**Typical:** 40–100 mm/s.")]
     pub print_speed: f64,
-    /// Nozzle temperature in °C.
+
+    #[schemars(description = "Nozzle temperature in °C.
+
+Material guidelines:
+- **PLA:** 200–210 °C
+- **PETG:** 230–250 °C
+- **ABS:** 240–260 °C")]
     pub nozzle_temp: f64,
-    /// Heated bed temperature in °C.
+
+    #[schemars(description = "Heated bed temperature in °C.
+
+Material guidelines:
+- **PLA:** 60–80 °C
+- **PETG:** 80–100 °C
+- **ABS:** 100–120 °C
+
+Set to `0` for an unheated bed.")]
     pub bed_temp: f64,
-    /// Number of solid top layers (horizontal surfaces facing up).
+
+    #[schemars(description = "Number of solid top layers (horizontal surfaces facing up).
+
+More layers improve surface quality and reduce infill show-through.
+**Typical:** 4–6 layers at 0.2 mm layer height.")]
     #[serde(default = "SlicingParams::default_top_layers")]
     pub top_layers: usize,
-    /// Number of solid bottom layers (horizontal surfaces facing down).
+
+    #[schemars(description = "Number of solid bottom layers (horizontal surfaces facing down).
+
+More layers improve bottom surface finish and bed adhesion strength.
+**Typical:** 3–4 layers.")]
     #[serde(default = "SlicingParams::default_bottom_layers")]
     pub bottom_layers: usize,
-    /// Angle in degrees for top/bottom surface infill lines (e.g. 45 for diagonal).
+
+    #[schemars(description = "Angle in degrees for top/bottom solid surface infill lines.
+
+Changing from the default can improve finish on curved or organic models.
+**Default:** 45°.")]
     #[serde(default = "SlicingParams::default_surface_infill_angle")]
     pub surface_infill_angle: f64,
-    /// Filament diameter in mm (e.g. 1.75 for standard PLA/PETG).
+
+    #[schemars(description = "Filament diameter in mm.
+
+Used to calculate extrusion volume from feed distance. Standard sizes:
+- `1.75 mm` — most common
+- `2.85 mm` — some older or larger-format printers")]
     #[serde(default = "SlicingParams::default_filament_diameter_mm")]
     pub filament_diameter_mm: f64,
-    /// Nozzle diameter in mm (e.g. 0.4 for a standard 0.4 mm nozzle).
+
+    #[schemars(description = "Nozzle orifice diameter in mm.
+
+Affects minimum feature resolution and all line-width calculations.
+**Standard:** 0.4 mm. Other common sizes: 0.2, 0.6, 0.8 mm.")]
     #[serde(default = "SlicingParams::default_nozzle_diameter_mm")]
     pub nozzle_diameter_mm: f64,
-    /// Non-print (travel) speed in mm/min (e.g. 9000 = 150 mm/s).
+
+    #[schemars(description = "Non-print (travel) move speed in **mm/min**.
+
+Convert from mm/s by multiplying by 60. Fast travel reduces print time without affecting print quality.
+**Example:** 9000 mm/min = 150 mm/s.")]
     #[serde(default = "SlicingParams::default_travel_speed_mm_min")]
     pub travel_speed_mm_min: f64,
-    /// Z-hop height in mm applied during travel moves to avoid stringing.
+
+    #[schemars(description = "Z-hop lift height in mm during travel moves.
+
+Lifts the nozzle before travelling to reduce stringing and nozzle drag across the print.
+**Typical:** 0.2–0.5 mm. Set to `0` to disable.")]
     #[serde(default = "SlicingParams::default_z_hop_mm")]
     pub z_hop_mm: f64,
-    /// Retraction distance in mm on travel moves.
+
+    #[schemars(description = "Retraction distance in mm on travel moves.
+
+Pulls filament back into the nozzle to reduce oozing and stringing.
+**Typical:** 0.5–2 mm (direct drive) or 3–7 mm (Bowden).")]
     #[serde(default = "SlicingParams::default_retract_mm")]
     pub retract_mm: f64,
-    /// Use only outer wall on the last layer of top surfaces.
-    ///
-    /// When true, the final layer of top surface regions will only print the
-    /// outermost perimeter, creating a cleaner top finish with less chance of
-    /// pillowing or visible infill patterns showing through.
+
+    #[schemars(description = "Use a single outer wall on the topmost layer of top surfaces.
+
+Reduces the chance of pillowing and prevents infill patterns from showing through the top surface.
+**Recommended:** enabled.")]
     #[serde(default = "SlicingParams::default_only_one_wall_top")]
     pub only_one_wall_top: bool,
-    /// Use only outer wall on the first layer (bottom surface or general first layer).
-    ///
-    /// When true, the first layer uses only the outermost perimeter for better
-    /// bed adhesion and to avoid potential issues with multiple perimeters on
-    /// the first layer.
+
+    #[schemars(description = "Use a single outer wall on the first layer.
+
+Improves bed adhesion and avoids potential issues with multiple perimeters pressing against the bed simultaneously.
+**Recommended:** enabled.")]
     #[serde(default = "SlicingParams::default_only_one_wall_first_layer")]
     pub only_one_wall_first_layer: bool,
-    /// Overhang angle threshold in degrees (0-90) for skipping surface generation.
-    ///
-    /// When the angle between adjacent layers suggests a shallow overhang
-    /// (angle < threshold), skip generating solid top/bottom surfaces since
-    /// perimeters alone may suffice. Default 0° means always generate surfaces;
-    /// higher values (e.g., 45°) skip surfaces on gentle slopes.
-    ///
-    /// This is a foundation for future overhang support without implementing
-    /// full overhang detection yet.
+
+    #[schemars(description = "Overhang angle threshold in degrees (0–90) for skipping solid surface generation.
+
+Surfaces are skipped when the overhang angle is below this threshold, since shallow overhangs may not need solid fill.
+**Default:** 45°. Set to `0` to always generate surfaces.")]
     #[serde(default = "SlicingParams::default_support_threshold_angle")]
     pub support_threshold_angle: f64,
-    /// How much solid surfaces overlap into perimeter walls for bonding (0.0-1.0).
-    ///
-    /// A small overlap (e.g., 0.25 = 25%) ensures surfaces bond well to walls
-    /// without gaps, while keeping walls as the dominant structure. Default 0.25.
+
+    #[schemars(description = "Overlap of solid surfaces into perimeter walls for bonding (0.0–1.0).
+
+Ensures surfaces bond to walls without leaving gaps at the perimeter boundary.
+**Typical:** 0.25 (25% of a bead width).")]
     #[serde(default = "SlicingParams::default_infill_overlap_percent")]
     pub infill_overlap_percent: f64,
-    /// Maximum allowed perpendicular deviation (mm) when simplifying output
-    /// paths with the Ramer-Douglas-Peucker algorithm.
-    ///
-    /// Set to `0.0` to disable simplification entirely.
-    /// Typical values: `0.01`–`0.1` mm; default `0.05` mm.
+
+    #[schemars(description = "Maximum perpendicular deviation (mm) for path simplification (Ramer–Douglas–Peucker).
+
+Reduces the number of G-code points without visibly affecting print quality.
+**Typical:** 0.01–0.1 mm. Set to `0.0` to disable.")]
     #[serde(default = "SlicingParams::default_path_tolerance")]
     pub path_tolerance: f64,
 }

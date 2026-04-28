@@ -3,6 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::config;
 use crate::settings::params::GlobalSettings;
 use dirs;
 use serde_json::Value;
@@ -124,7 +125,23 @@ pub fn load_and_merge_settings(
     let defaults = GlobalSettings::default();
     let mut merged: Value = serde_json::to_value(&defaults)?;
 
-    // Layer 2: user config
+    // Layer 2: TOML config (global user config → project config)
+    let toml_config = config::load_and_merge_config(project_config_path)?;
+    let toml_overlay = toml_slicing_to_json(&toml_config.slicing);
+    if !toml_overlay.is_null() {
+        merged = merge_json_configs(merged, toml_overlay);
+    }
+    // Apply gcode_flavor from TOML if set
+    if let Some(ref flavor) = toml_config.slicing.gcode_flavor {
+        if let Some(obj) = merged.as_object_mut() {
+            obj.insert(
+                "gcode_flavor".to_string(),
+                Value::String(flavor.clone()),
+            );
+        }
+    }
+
+    // Layer 3: legacy JSON user config (settings.json) takes priority over TOML
     let user_path = settings_file();
     if user_path.exists() {
         let content = fs::read_to_string(&user_path)?;
@@ -132,13 +149,13 @@ pub fn load_and_merge_settings(
         merged = merge_json_configs(merged, user_val);
     }
 
-    // Layer 3: project config (auto-discover or explicit path)
-    let project_path: Option<PathBuf> = project_config_path
-        .filter(|p| p.exists())
+    // Layer 4: legacy project JSON config (slicer.json) — kept for back-compat
+    let project_json_path: Option<PathBuf> = project_config_path
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json") && p.exists())
         .map(|p| p.to_path_buf())
         .or_else(find_project_config);
 
-    if let Some(ref p) = project_path {
+    if let Some(ref p) = project_json_path {
         let project_val = load_project_config(p)?;
         merged = merge_json_configs(merged, project_val);
     }
@@ -146,6 +163,58 @@ pub fn load_and_merge_settings(
     let settings: GlobalSettings = serde_json::from_value(merged)
         .map_err(|e| format!("Merged settings are invalid: {}", e))?;
     Ok(settings)
+}
+
+/// Convert a `SlicingConfig` (all-optional) into a JSON overlay for `params`.
+///
+/// Only fields that are `Some` are included so they can be merged without
+/// overwriting defaults for unset fields.
+fn toml_slicing_to_json(slicing: &config::SlicingConfig) -> Value {
+    let mut params = serde_json::Map::new();
+
+    macro_rules! insert_if_some {
+        ($field:ident) => {
+            if let Some(ref v) = slicing.$field {
+                params.insert(
+                    stringify!($field).to_string(),
+                    serde_json::to_value(v).unwrap_or(Value::Null),
+                );
+            }
+        };
+    }
+
+    insert_if_some!(layer_height);
+    insert_if_some!(wall_count);
+    insert_if_some!(wall_line_width_min);
+    insert_if_some!(wall_line_width_max);
+    insert_if_some!(wall_transition_threshold);
+    insert_if_some!(wall_transition_length);
+    insert_if_some!(wall_distribution_count);
+    insert_if_some!(infill_density);
+    insert_if_some!(infill_pattern);
+    insert_if_some!(infill_base_angle);
+    insert_if_some!(print_speed);
+    insert_if_some!(nozzle_temp);
+    insert_if_some!(bed_temp);
+    insert_if_some!(top_layers);
+    insert_if_some!(bottom_layers);
+    insert_if_some!(surface_infill_angle);
+    insert_if_some!(filament_diameter_mm);
+    insert_if_some!(nozzle_diameter_mm);
+    insert_if_some!(travel_speed_mm_min);
+    insert_if_some!(z_hop_mm);
+    insert_if_some!(retract_mm);
+    insert_if_some!(only_one_wall_top);
+    insert_if_some!(only_one_wall_first_layer);
+    insert_if_some!(support_threshold_angle);
+    insert_if_some!(infill_overlap_percent);
+    insert_if_some!(path_tolerance);
+
+    if params.is_empty() {
+        return Value::Null;
+    }
+
+    serde_json::json!({ "params": Value::Object(params) })
 }
 
 #[cfg(test)]
