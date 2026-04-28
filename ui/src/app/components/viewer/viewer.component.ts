@@ -13,6 +13,7 @@ import {
 } from '@angular/core';
 import { PrintAreaService } from '../../services/print-area';
 import { ViewerControl } from '../../services/viewer-control';
+import { PrintAreaService } from '../../services/print-area';
 import { ChunkedLineGeometry } from './chunked-line-geometry';
 import { GcodeSource, loadGcode } from './gcode-loader';
 import { ModelSource, loadModel } from './model-loader';
