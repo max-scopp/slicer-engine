@@ -12,6 +12,37 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
+    <style>
+      /* Prevent flashbang: paint correct theme background before app boots */
+      html,
+      body {
+        margin: 0;
+        background-color: #f4f5f8;
+        color: #111214;
+      }
+      html.dark,
+      html.dark body {
+        background-color: #111214;
+        color: #e8e9ee;
+      }
+    </style>
+    <script>
+      // Set the theme class synchronously before first paint to avoid a
+      // light->dark flash. Mirrors the logic in AppTheme.getInitialTheme().
+      (function () {
+        try {
+          var stored = localStorage.getItem('theme');
+          var isDark = stored
+            ? stored === 'dark'
+            : window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+          if (isDark) {
+            document.documentElement.classList.add('dark');
+          }
+        } catch (_) {
+          /* localStorage unavailable — fall through */
+        }
+      })();
+    </script>
   </head>
   <body>
     <nexus-root></nexus-root>

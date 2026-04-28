@@ -27,3 +27,12 @@
 
   z-index: 100;
 }
+
+.viewport-cube {
+  position: absolute;
+  // Slot just below the 60px-tall toolbar.
+  top: calc(60px + var(--spacing-sm, 8px));
+  right: var(--spacing-lg, 24px);
+  z-index: 90;
+  pointer-events: auto;
+}

@@ -133,6 +133,15 @@ export class ViewerComponent implements OnDestroy {
       }
       this.scene?.resetView();
     });
+
+    // React to direction-look requests (e.g. from the viewport-cube gizmo).
+    effect(() => {
+      const req = this.viewerControl.lookRequest();
+      if (!req) {
+        return;
+      }
+      this.scene?.animateToDirection(req.direction, req.up);
+    });
   }
 
   ngOnDestroy(): void {
@@ -141,6 +150,7 @@ export class ViewerComponent implements OnDestroy {
     this.gcodeGeometry = null;
     this.scene?.dispose();
     this.scene = null;
+    this.viewerControl.orbitSink = null;
   }
 
   statusLabel(): string {
@@ -163,6 +173,16 @@ export class ViewerComponent implements OnDestroy {
   private initScene(): void {
     const host = this.hostRef().nativeElement;
     this.scene = new ViewerScene(host);
+    // Mirror the live camera direction/up into ViewerControl so external
+    // overlays (the viewport-cube gizmo) can read it without going through
+    // Angular's change-detection.
+    const state = this.viewerControl.cameraState;
+    this.scene.cameraStateSink = (dir, up) => {
+      state.direction.copy(dir);
+      state.up.copy(up);
+    };
+    // Allow external gizmos (viewport-cube drag) to orbit the main camera.
+    this.viewerControl.orbitSink = (azimuth, polar) => this.scene?.orbitBy(azimuth, polar);
     // Apply the current toolbar selections so the scene starts in sync with
     // whatever view / cursor mode the user already had selected.
     this.scene.setCursorMode(this.viewerControl.cursorMode());

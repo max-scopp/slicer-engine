@@ -2,9 +2,11 @@ import {
   AmbientLight,
   Box3,
   BoxGeometry,
+  Color,
   DirectionalLight,
   GridHelper,
   Group,
+  LineBasicMaterial,
   MOUSE,
   Mesh,
   MeshBasicMaterial,
@@ -49,6 +51,55 @@ const CAMERA_NEAR = 0.1;
 const CAMERA_FAR = 1_000_000;
 
 /**
+ * Adaptive build-plate grid configuration. The grid uses two stacked
+ * `GridHelper`s — a faint "minor" grid at the chosen spacing and a brighter
+ * "major" grid every {@link MAJOR_EVERY} minor cells. The minor spacing snaps
+ * to a power of 10 in millimetres, clamped between 1 mm and 1 m, picked so
+ * one minor cell occupies roughly {@link TARGET_MINOR_PIXELS} screen pixels.
+ */
+const GRID_MIN_SPACING_MM = 1;
+const GRID_MAX_SPACING_MM = 1000;
+const GRID_MINOR_CELLS = 200;
+const MAJOR_EVERY = 10;
+const TARGET_MINOR_PIXELS = 14;
+const MINOR_OPACITY = 0.25;
+const MAJOR_OPACITY = 0.6;
+
+/**
+ * Below this `|cos(angle)|` between the view direction and the grid normal
+ * (world +Z), the grid is fully invisible. Above {@link GRID_FADE_FULL}, it
+ * is fully opaque. In between, opacity ramps smoothly. This makes the grid
+ * disappear when the camera is grazing the build-plate plane (looking
+ * “inside” it edge-on) and reappear as the user tilts up or down.
+ */
+const GRID_FADE_HIDE = 0.05;
+const GRID_FADE_FULL = 0.25;
+
+/**
+ * Configuration for the Windows-autoscroll-style middle-mouse zoom: while
+ * the middle button is held, the camera continuously dollies toward or
+ * away from the orbit target with a speed proportional to how far the
+ * cursor has been moved (vertically) from the press anchor. Within
+ * {@link AUTOSCROLL_DEAD_ZONE_PX} of the anchor the camera does not move,
+ * giving users a clean "neutral" position before they commit to a direction.
+ */
+const AUTOSCROLL_DEAD_ZONE_PX = 6;
+/** Linear world-distance multiplier per pixel of cursor offset, per second. */
+const AUTOSCROLL_SPEED_PER_PX = 0.012;
+/**
+ * Superlinear acceleration: the effective rate is multiplied by
+ * `(|offsetPx| / AUTOSCROLL_ACCEL_REF_PX) ^ AUTOSCROLL_ACCEL_EXPONENT`, so
+ * pushing the cursor further from the anchor accelerates the zoom much more
+ * aggressively than a flat linear mapping. Reference distance is 100 px,
+ * meaning the speed roughly doubles every additional ~70 px of movement at
+ * the default exponent.
+ */
+const AUTOSCROLL_ACCEL_REF_PX = 100;
+const AUTOSCROLL_ACCEL_EXPONENT = 1.6;
+/** Hard cap on the per-frame dolly factor so flicks can't blow up. */
+const AUTOSCROLL_MAX_FACTOR_PER_FRAME = 4;
+
+/**
  * Owns the Three.js scene, camera, renderer, controls and render loop.
  *
  * Mode-specific content (mesh / gcode lines) is added to {@link contentRoot}.
@@ -65,11 +116,22 @@ export class ViewerScene {
   private readonly host: HTMLElement;
   private readonly resizeObserver: ResizeObserver;
   private readonly themeObserver: MutationObserver;
-  private grid: GridHelper;
+  private grid: Group;
+  private gridMaterials: { material: LineBasicMaterial; baseOpacity: number }[] = [];
+  private currentGridSpacingMm = 0;
   private rafHandle = 0;
   private disposed = false;
   private currentView: ViewerView = '3D';
   private animation: CameraAnimation | null = null;
+  private autoscroll: AutoscrollState | null = null;
+  private lastFrameTime = 0;
+
+  /**
+   * Optional sink invoked at the end of every render frame with the live
+   * camera direction (target→camera, normalised) and up vector. Used by the
+   * viewport-cube gizmo to mirror the main camera's orientation.
+   */
+  cameraStateSink: ((direction: Vector3, up: Vector3) => void) | null = null;
 
   constructor(host: HTMLElement) {
     this.host = host;
@@ -107,13 +169,17 @@ export class ViewerScene {
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
-
+    // Punch up the wheel/middle-button dolly speed so a single scroll tick
+    // covers noticeably more distance \u2014 the default (1.0) feels sluggish
+    // given the very large camera range we expose.
+    this.controls.zoomSpeed = 2.5;
+    this.installAutoscrollZoom();
     this.scene.add(new AmbientLight(0xffffff, 0.55));
     const dir = new DirectionalLight(0xffffff, 0.9);
     dir.position.set(200, 300, 400);
     this.scene.add(dir);
 
-    this.grid = this.createGrid();
+    this.grid = this.createGrid(10);
     this.scene.add(this.grid);
 
     // Thick RGB axes at the build-plate origin. Built from thin BoxGeometry
@@ -186,22 +252,86 @@ export class ViewerScene {
     });
   }
 
+  /**
+   * Animate the camera to a specific look direction (unit vector from the
+   * controls target toward the camera) while preserving the current target
+   * and camera distance. Used by the viewport-cube gizmo.
+   */
+  animateToDirection(direction: Vector3, up: Vector3): void {
+    const target = this.controls.target.clone();
+    const distance = Math.max(this.camera.position.distanceTo(target), 1);
+    const dir = direction.clone().normalize();
+    this.animateToPose({
+      position: target.clone().addScaledVector(dir, distance),
+      target,
+      up: up.clone().normalize(),
+      fov: this.camera.fov,
+    });
+  }
+
+  /**
+   * Apply an incremental orbit (in radians) around the controls target,
+   *
+   * The rotation is screen-relative: `azimuth` rotates around the camera's
+   * current up axis and `polar` rotates around the camera's right axis.
+   * This is what the user intuitively expects ("drag right ⇒ scene rotates
+   * right on screen") regardless of which preset (Top / Front / 3D) the
+   * camera was last in. Any in-flight animation is cancelled.
+   */
+  orbitBy(azimuth: number, polar: number): void {
+    this.animation = null;
+    this.controls.enabled = true;
+    const target = this.controls.target;
+    const offset = this.camera.position.clone().sub(target);
+    const up = this.camera.up.clone().normalize();
+
+    // Right axis = (target → camera) × up. If they happen to be parallel
+    // (degenerate), fall back to world-X so the polar rotation still kicks
+    // the camera off the pole.
+    let right = new Vector3().crossVectors(offset, up);
+    if (right.lengthSq() < 1e-6) {
+      right.set(1, 0, 0);
+    } else {
+      right.normalize();
+    }
+
+    if (azimuth !== 0) {
+      offset.applyAxisAngle(up, -azimuth);
+      right.applyAxisAngle(up, -azimuth).normalize();
+    }
+    if (polar !== 0) {
+      const rotatedOffset = offset.clone().applyAxisAngle(right, -polar);
+      const rotatedUp = up.clone().applyAxisAngle(right, -polar);
+      offset.copy(rotatedOffset);
+      up.copy(rotatedUp);
+    }
+
+    this.camera.position.copy(target).add(offset);
+    this.camera.up.copy(up).normalize();
+    this.camera.lookAt(target);
+    this.controls.update();
+  }
+
   /** Configure pointer interaction behaviour for the OrbitControls. */
   setCursorMode(mode: ViewerCursorMode): void {
     const c = this.controls;
     c.enableRotate = true;
     c.enablePan = true;
     c.enableZoom = true;
+    // The middle mouse button is reserved for our custom Windows-style
+    // autoscroll zoom (see installAutoscrollZoom). Disabling it on
+    // OrbitControls prevents drag-to-dolly from fighting the autoscroll.
+    const MIDDLE = null as unknown as MOUSE;
     switch (mode) {
       case 'orbit':
       case 'rotate':
-        c.mouseButtons = { LEFT: MOUSE.ROTATE, MIDDLE: MOUSE.DOLLY, RIGHT: MOUSE.PAN };
+        c.mouseButtons = { LEFT: MOUSE.ROTATE, MIDDLE, RIGHT: MOUSE.PAN };
         break;
       case 'pan':
-        c.mouseButtons = { LEFT: MOUSE.PAN, MIDDLE: MOUSE.DOLLY, RIGHT: MOUSE.ROTATE };
+        c.mouseButtons = { LEFT: MOUSE.PAN, MIDDLE, RIGHT: MOUSE.ROTATE };
         break;
       case 'zoom':
-        c.mouseButtons = { LEFT: MOUSE.DOLLY, MIDDLE: MOUSE.DOLLY, RIGHT: MOUSE.PAN };
+        c.mouseButtons = { LEFT: MOUSE.DOLLY, MIDDLE, RIGHT: MOUSE.PAN };
         break;
       case 'pullToSurface':
         // Placeholder: surface-pulling is not implemented yet, so we simply
@@ -221,6 +351,7 @@ export class ViewerScene {
     cancelAnimationFrame(this.rafHandle);
     this.resizeObserver.disconnect();
     this.themeObserver.disconnect();
+    this.uninstallAutoscrollZoom();
     this.clearContent();
     this.controls.dispose();
     this.renderer.dispose();
@@ -234,13 +365,34 @@ export class ViewerScene {
       return;
     }
     this.rafHandle = requestAnimationFrame(this.tick);
+    const now = performance.now();
+    const dt = this.lastFrameTime === 0 ? 0 : Math.min(0.1, (now - this.lastFrameTime) / 1000);
+    this.lastFrameTime = now;
     if (this.animation) {
       this.advanceAnimation();
     } else {
+      if (this.autoscroll) {
+        this.applyAutoscrollZoom(dt);
+      }
       this.controls.update();
     }
+    this.updateAdaptiveGrid();
+    this.updateGridFade();
     this.renderer.render(this.scene, this.camera);
+    this.publishCameraState();
   };
+
+  /** Push the camera's live direction/up to the optional sink. */
+  private publishCameraState(): void {
+    if (!this.cameraStateSink) {
+      return;
+    }
+    const offset = this.camera.position.clone().sub(this.controls.target);
+    if (offset.lengthSq() < 1e-6) {
+      offset.copy(DEFAULT_VIEW_DIR);
+    }
+    this.cameraStateSink(offset.normalize(), this.camera.up.clone().normalize());
+  }
 
   private handleResize(): void {
     const { clientWidth, clientHeight } = this.sizeOf(this.host);
@@ -259,13 +411,34 @@ export class ViewerScene {
     };
   }
 
-  /** Build the build-plate grid using the current themed border colour. */
-  private createGrid(): GridHelper {
+  /**
+   * Build a two-tier build-plate grid (minor + major lines) at the given
+   * minor-cell spacing in millimetres. Both helpers use the themed border
+   * colour, with the major grid drawn brighter and on top.
+   */
+  private createGrid(spacingMm: number): Group {
     const color = readBorderColor();
-    const grid = new GridHelper(400, 40, color, color);
-    grid.rotation.x = Math.PI / 2; // GridHelper is XZ by default; rotate to XY ground plane
-    grid.renderOrder = 0;
-    return grid;
+    const group = new Group();
+    group.rotation.x = Math.PI / 2; // align XZ helpers with the XY build plate
+    group.renderOrder = 0;
+
+    const materials: { material: LineBasicMaterial; baseOpacity: number }[] = [];
+
+    const minorSize = spacingMm * GRID_MINOR_CELLS;
+    const minor = new GridHelper(minorSize, GRID_MINOR_CELLS, color, color);
+    applyGridMaterial(minor, MINOR_OPACITY, materials);
+
+    const majorDivisions = GRID_MINOR_CELLS / MAJOR_EVERY;
+    const major = new GridHelper(minorSize, majorDivisions, color, color);
+    applyGridMaterial(major, MAJOR_OPACITY, materials);
+    // Render major lines slightly later so they overdraw the minor grid.
+    major.renderOrder = 1;
+
+    group.add(minor);
+    group.add(major);
+    this.currentGridSpacingMm = spacingMm;
+    this.gridMaterials = materials;
+    return group;
   }
 
   /** Re-read `--color-border` and rebuild the grid so it tracks theme changes. */
@@ -273,11 +446,202 @@ export class ViewerScene {
     // GridHelper bakes its two colours into per-vertex colour attributes on
     // its geometry, so a live `material.color.set(...)` has no effect.
     // Cheapest correct fix: swap the helper for a freshly-built one.
-    const replacement = this.createGrid();
+    const replacement = this.createGrid(this.currentGridSpacingMm || 10);
     this.scene.remove(this.grid);
     disposeObject(this.grid);
     this.scene.add(replacement);
     this.grid = replacement;
+  }
+
+  /**
+   * Pick a minor-cell spacing such that one cell projects to roughly
+   * {@link TARGET_MINOR_PIXELS} on screen, snap it to the nearest power of
+   * 10 in [{@link GRID_MIN_SPACING_MM}, {@link GRID_MAX_SPACING_MM}], and
+   * rebuild the grid only when the snapped level actually changes.
+   */
+  private updateAdaptiveGrid(): void {
+    const distance = this.camera.position.distanceTo(this.controls.target);
+    if (!Number.isFinite(distance) || distance <= 0) {
+      return;
+    }
+    const viewportHeight = Math.max(this.renderer.domElement.clientHeight, 1);
+    const fovRad = (this.camera.fov * Math.PI) / 180;
+    // World units per screen pixel at the controls target.
+    const worldPerPixel = (2 * Math.tan(fovRad / 2) * distance) / viewportHeight;
+    const desiredSpacing = worldPerPixel * TARGET_MINOR_PIXELS;
+    const snapped = snapToPowerOfTen(desiredSpacing, GRID_MIN_SPACING_MM, GRID_MAX_SPACING_MM);
+    if (snapped === this.currentGridSpacingMm) {
+      return;
+    }
+    const replacement = this.createGrid(snapped);
+    this.scene.remove(this.grid);
+    disposeObject(this.grid);
+    this.scene.add(replacement);
+    this.grid = replacement;
+  }
+
+  /**
+   * Fade the build-plate grid based on the viewing angle. When the camera
+   * is grazing the XY plane (i.e. looking edge-on “into” it), the grid
+   * collapses visually to a single hard line which is distracting; fading
+   * it out below {@link GRID_FADE_HIDE} entirely removes that artefact.
+   */
+  private updateGridFade(): void {
+    if (this.gridMaterials.length === 0) {
+      return;
+    }
+    const viewDir = this.camera.position.clone().sub(this.controls.target);
+    const len = viewDir.length();
+    if (len < 1e-6) {
+      return;
+    }
+    viewDir.divideScalar(len);
+    // Grid lies in the XY plane; its normal is world +Z. |cosθ| is the
+    // absolute Z component of the unit view direction.
+    const cosAngle = Math.abs(viewDir.z);
+    const t = clamp01((cosAngle - GRID_FADE_HIDE) / (GRID_FADE_FULL - GRID_FADE_HIDE));
+    // Smoothstep for a softer ramp at both ends of the fade window.
+    const fade = t * t * (3 - 2 * t);
+    for (const entry of this.gridMaterials) {
+      const target = entry.baseOpacity * fade;
+      if (entry.material.opacity !== target) {
+        entry.material.opacity = target;
+        entry.material.visible = target > 0.001;
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Autoscroll-style middle-button zoom
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Install the Windows-autoscroll-style middle-button zoom on the
+   * renderer's canvas. While the middle button is held, vertical cursor
+   * offset from the press anchor accelerates a continuous dolly toward
+   * (cursor up) or away from (cursor down) the orbit target. Releasing
+   * the button \u2014 or any other mouse button being pressed \u2014 ends the gesture.
+   */
+  private installAutoscrollZoom(): void {
+    const el = this.renderer.domElement;
+    el.addEventListener('pointerdown', this.onAutoscrollPointerDown);
+    el.addEventListener('pointermove', this.onAutoscrollPointerMove);
+    el.addEventListener('pointerup', this.onAutoscrollPointerUp);
+    el.addEventListener('pointercancel', this.onAutoscrollPointerUp);
+    el.addEventListener('contextmenu', this.onAutoscrollContextMenu);
+    el.addEventListener('auxclick', this.onAutoscrollAuxClick);
+  }
+
+  private uninstallAutoscrollZoom(): void {
+    const el = this.renderer.domElement;
+    el.removeEventListener('pointerdown', this.onAutoscrollPointerDown);
+    el.removeEventListener('pointermove', this.onAutoscrollPointerMove);
+    el.removeEventListener('pointerup', this.onAutoscrollPointerUp);
+    el.removeEventListener('pointercancel', this.onAutoscrollPointerUp);
+    el.removeEventListener('contextmenu', this.onAutoscrollContextMenu);
+    el.removeEventListener('auxclick', this.onAutoscrollAuxClick);
+  }
+
+  private onAutoscrollPointerDown = (event: PointerEvent): void => {
+    if (event.button !== 1) {
+      return;
+    }
+    // Stop OrbitControls (or anything else) from also reacting to this press.
+    event.preventDefault();
+    event.stopPropagation();
+    const el = this.renderer.domElement;
+    el.setPointerCapture(event.pointerId);
+    el.style.cursor = 'ns-resize';
+    this.autoscroll = {
+      pointerId: event.pointerId,
+      anchorY: event.clientY,
+      currentY: event.clientY,
+    };
+  };
+
+  private onAutoscrollPointerMove = (event: PointerEvent): void => {
+    if (!this.autoscroll || event.pointerId !== this.autoscroll.pointerId) {
+      return;
+    }
+    this.autoscroll.currentY = event.clientY;
+  };
+
+  private onAutoscrollPointerUp = (event: PointerEvent): void => {
+    if (!this.autoscroll || event.pointerId !== this.autoscroll.pointerId) {
+      return;
+    }
+    const el = this.renderer.domElement;
+    if (el.hasPointerCapture(event.pointerId)) {
+      el.releasePointerCapture(event.pointerId);
+    }
+    el.style.cursor = '';
+    this.autoscroll = null;
+  };
+
+  private onAutoscrollContextMenu = (event: Event): void => {
+    // Some browsers fire contextmenu on middle-click depending on settings;
+    // suppress it while we own the gesture so it doesn't steal focus.
+    if (this.autoscroll) {
+      event.preventDefault();
+    }
+  };
+
+  private onAutoscrollAuxClick = (event: MouseEvent): void => {
+    if (event.button === 1) {
+      // Middle-button auxclick fires on release; we already handle release
+      // via pointerup, so just suppress the default browser behaviour
+      // (which on many sites would trigger autoscroll mode itself).
+      event.preventDefault();
+    }
+  };
+
+  /**
+   * Apply the per-frame dolly while the middle button is held. The cursor's
+   * vertical offset from the press anchor maps to an exponential dolly
+   * factor so movement feels uniform on a log scale (a sensible match for
+   * camera distance, which we already pick on a power-of-10 grid).
+   */
+  private applyAutoscrollZoom(dt: number): void {
+    const state = this.autoscroll;
+    if (!state || dt <= 0) {
+      return;
+    }
+    const offsetPx = state.anchorY - state.currentY; // up = positive => zoom in
+    const beyondDeadzone =
+      Math.sign(offsetPx) * Math.max(0, Math.abs(offsetPx) - AUTOSCROLL_DEAD_ZONE_PX);
+    if (beyondDeadzone === 0) {
+      return;
+    }
+    // Exponential dolly: scale = exp(-rate * dt). Negative offset (cursor
+    // below anchor) yields scale > 1 (camera retreats); positive offset
+    // yields scale < 1 (camera approaches the target). The rate grows
+    // super-linearly with cursor distance so the further you push the
+    // pointer from the anchor, the faster the camera accelerates.
+    const accel = Math.pow(
+      Math.abs(beyondDeadzone) / AUTOSCROLL_ACCEL_REF_PX,
+      AUTOSCROLL_ACCEL_EXPONENT - 1,
+    );
+    const rate = beyondDeadzone * AUTOSCROLL_SPEED_PER_PX * accel;
+    let scale = Math.exp(-rate * dt);
+    // Clamp to sane per-frame bounds so a sudden tab-switch hiccup or huge
+    // dt can't teleport the camera through the model.
+    scale = Math.min(
+      AUTOSCROLL_MAX_FACTOR_PER_FRAME,
+      Math.max(1 / AUTOSCROLL_MAX_FACTOR_PER_FRAME, scale),
+    );
+    const target = this.controls.target;
+    const offset = this.camera.position.clone().sub(target);
+    offset.multiplyScalar(scale);
+    // Respect OrbitControls' configured min/max distance bounds.
+    const len = offset.length();
+    const minD = (this.controls as unknown as { minDistance?: number }).minDistance ?? 0;
+    const maxD = (this.controls as unknown as { maxDistance?: number }).maxDistance ?? Infinity;
+    if (len < minD && len > 0) {
+      offset.multiplyScalar(minD / len);
+    } else if (len > maxD) {
+      offset.multiplyScalar(maxD / len);
+    }
+    this.camera.position.copy(target).add(offset);
   }
 
   // ---------------------------------------------------------------------------
@@ -500,12 +864,80 @@ interface CameraAnimation {
   toDistance: number;
 }
 
+interface AutoscrollState {
+  pointerId: number;
+  anchorY: number;
+  currentY: number;
+}
+
 function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
+}
+
+/**
+ * Configure a {@link GridHelper}'s line material for transparent overlay
+ * rendering at the given opacity. The material is shared across all line
+ * segments of the helper, so a single mutation is enough. Each material is
+ * also recorded into `sink` so the caller can later modulate its opacity
+ * (e.g. to fade the grid based on viewing angle) without rebuilding.
+ */
+function applyGridMaterial(
+  grid: GridHelper,
+  opacity: number,
+  sink: { material: LineBasicMaterial; baseOpacity: number }[],
+): void {
+  const mat = grid.material as LineBasicMaterial | LineBasicMaterial[];
+  const apply = (m: LineBasicMaterial) => {
+    m.transparent = true;
+    m.opacity = opacity;
+    m.depthWrite = false;
+    // Keep the material's vertex colours (per-line colour baked by GridHelper)
+    // but force a single tint so opacity blending stays uniform.
+    m.color = new Color(m.color.getHex());
+    m.needsUpdate = true;
+    sink.push({ material: m, baseOpacity: opacity });
+  };
+  if (Array.isArray(mat)) {
+    for (const m of mat) {
+      apply(m);
+    }
+  } else {
+    apply(mat);
+  }
+}
+
+function clamp01(v: number): number {
+  if (v < 0) {
+    return 0;
+  }
+  if (v > 1) {
+    return 1;
+  }
+  return v;
+}
+
+/**
+ * Snap `value` to the nearest power of 10 within `[min, max]`. Used to lock
+ * the adaptive grid's minor-cell spacing to clean millimetre/centimetre/...
+ * intervals so the user always sees round numbers.
+ */
+function snapToPowerOfTen(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    return min;
+  }
+  const exponent = Math.round(Math.log10(value));
+  const snapped = Math.pow(10, exponent);
+  if (snapped < min) {
+    return min;
+  }
+  if (snapped > max) {
+    return max;
+  }
+  return snapped;
 }
 
 function disposeObject(obj: unknown): void {

@@ -1,4 +1,5 @@
 import { Injectable, signal } from '@angular/core';
+import { Vector3 } from 'three';
 
 export type ViewerView = '3D' | 'Top' | 'Front';
 export type ViewerCursorMode = 'orbit' | 'pan' | 'zoom' | 'rotate' | 'pullToSurface';
@@ -25,9 +26,51 @@ export class ViewerControl {
    */
   readonly resetTick = signal(0);
 
+  /**
+   * Live camera orientation, updated by the viewer every frame. Read by the
+   * viewport-cube gizmo (which mirrors the main camera in its own scene)
+   * without going through Angular's change-detection pipeline.
+   */
+  readonly cameraState = {
+    /** Unit vector from the controls target toward the camera. */
+    direction: new Vector3(1, -1, 0.8).normalize(),
+    /** Camera up vector. */
+    up: new Vector3(0, 0, 1),
+  };
+
+  /**
+   * Pending request for the viewer to animate to a specific look direction
+   * (e.g. when the user clicks a face of the viewport-cube). Cleared after
+   * the viewer consumes it; the `tick` field disambiguates repeated requests
+   * for the same direction.
+   */
+  readonly lookRequest = signal<{ direction: Vector3; up: Vector3; tick: number } | null>(null);
+  private lookTick = 0;
+
+  /**
+   * Direct callback for high-frequency incremental orbit deltas (radians).
+   * Set by the viewer; invoked by the viewport-cube gizmo while the user
+   * drags it. Bypasses signal/effect overhead.
+   */
+  orbitSink: ((azimuth: number, polar: number) => void) | null = null;
+
   /** Request the viewer to fully reset its camera framing. */
   reset(): void {
     this.view.set('3D');
     this.resetTick.update((v) => v + 1);
+  }
+
+  /**
+   * Ask the viewer to animate to a specific camera direction (unit vector
+   * from the controls target toward the camera) with the given up vector.
+   * The current target and distance are preserved.
+   */
+  lookFrom(direction: Vector3, up: Vector3): void {
+    this.lookTick += 1;
+    this.lookRequest.set({
+      direction: direction.clone().normalize(),
+      up: up.clone().normalize(),
+      tick: this.lookTick,
+    });
   }
 }
