@@ -4,6 +4,7 @@ import {
   ElementRef,
   OnDestroy,
   afterNextRender,
+  computed,
   effect,
   inject,
   input,
@@ -11,12 +12,14 @@ import {
   signal,
   viewChild,
 } from '@angular/core';
-import { ObjectTracker, SceneObject } from '../../services/object-tracker';
+import { BufferAttribute, BufferGeometry, Matrix4, Mesh, MeshPhongMaterial } from 'three';
+import { ObjectTracker } from '../../services/object-tracker';
 import { PrintArea } from '../../services/print-area';
+import { SceneEngineService } from '../../services/scene-engine.service';
 import { ViewerControl } from '../../services/viewer-control';
 import { ChunkedLineGeometry } from './chunked-line-geometry';
 import { GcodeSource, loadGcode } from './gcode-loader';
-import { ModelSource, loadModel } from './model-loader';
+import { ModelSource } from './model-loader';
 import { ViewerScene } from './scene';
 
 export type ViewerMode = 'model' | 'gcode';
@@ -41,7 +44,22 @@ export type ViewerMode = 'model' | 'gcode';
     <div class="viewer-host" #host></div>
     <div class="viewer-bottom-left">
       @if (fps() > 0) {
-        <div class="viewer-fps">{{ fps() }} FPS &middot; {{ frameDelayMs() }} ms</div>
+        <div class="viewer-fps">{{ fps() }} FPS</div>
+      }
+      @if (wasmRoundtripMs() !== null) {
+        <div class="viewer-fps">
+          WASM ↻ {{ wasmRoundtripMs()!.toFixed(1) }} ms
+          <span class="viewer-fps-aux"
+            >(parse {{ wasmParseMs()!.toFixed(1) }} + render-buf
+            {{ wasmRenderBufMs()!.toFixed(1) }} ms)</span
+          >
+          @if (opStats(); as s) {
+            <span class="viewer-fps-aux"
+              >· {{ s.label }} {{ s.lastMs.toFixed(2) }} ms (avg {{ s.avgMs.toFixed(2) }} ms /
+              {{ s.count }})</span
+            >
+          }
+        </div>
       }
       @if (status() !== 'idle') {
         <div class="viewer-status">{{ statusLabel() }}</div>
@@ -82,6 +100,10 @@ export type ViewerMode = 'model' | 'gcode';
           monospace;
         border-radius: 4px;
       }
+      .viewer-fps-aux {
+        color: #9aa4b2;
+        margin-left: 6px;
+      }
     `,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -100,6 +122,7 @@ export class ViewerComponent implements OnDestroy {
   private readonly viewerControl = inject(ViewerControl);
   private readonly printArea = inject(PrintArea);
   private readonly objectTracker = inject(ObjectTracker);
+  private readonly sceneEngine = inject(SceneEngineService);
 
   /** Current loading status for the optional overlay. */
   readonly status = signal<'idle' | 'loading' | 'streaming' | 'ready' | 'error'>('idle');
@@ -107,6 +130,19 @@ export class ViewerComponent implements OnDestroy {
   readonly fps = signal(0);
   /** Smoothed average frame delay in milliseconds. */
   readonly frameDelayMs = signal(0);
+  /**
+   * End-to-end wall time of the last WASM mesh round-trip, measured from
+   * the moment the bytes are handed to `addMesh` to the moment the
+   * `RenderBuffer` is fully copied out of WASM memory. `null` until the
+   * first model has been loaded through the engine.
+   */
+  readonly wasmRoundtripMs = signal<number | null>(null);
+  /** WASM-side parse time (`addMesh`) of the last model load. */
+  readonly wasmParseMs = signal<number | null>(null);
+  /** WASM-side render-buffer extraction time (`getRenderBuffer`) of the last load. */
+  readonly wasmRenderBufMs = signal<number | null>(null);
+  /** Last-op rolling stats from the scene engine, surfaced in the overlay. */
+  readonly opStats = computed(() => this.sceneEngine.opStats());
   private readonly progressSegments = signal(0);
   private readonly errorMessage = signal<string>('');
 
@@ -116,6 +152,21 @@ export class ViewerComponent implements OnDestroy {
   private loadToken = 0;
   /** SceneObject ids registered for the currently-loaded source. */
   private trackedObjectIds: string[] = [];
+  /** Live mapping from WASM scene id to the Three.js mesh that mirrors it. */
+  private readonly wasmMeshes = new Map<bigint, Mesh>();
+  private readonly tmpMatrix = new Matrix4();
+  /**
+   * Currently selected WASM object ids (as bigint), kept in sync with the
+   * legacy scene's string-id selection set so highlight + drag work.
+   */
+  private selectedWasmIds: bigint[] = [];
+  /**
+   * Per-axis displacement (mm) already pushed to the engine for the
+   * in-flight drag, indexed by WASM id. Used to convert the cumulative
+   * `(dx, dy)` reported by the scene into per-frame deltas suitable for
+   * `SceneOp::Translate`.
+   */
+  private dragApplied = new Map<bigint, { dx: number; dy: number }>();
 
   constructor() {
     afterNextRender(() => this.initScene());
@@ -184,16 +235,112 @@ export class ViewerComponent implements OnDestroy {
     // Reading every SceneObject's `transform` signal in this effect makes
     // it depend on each object's position/rotation/scale, so any update
     // (manual API call, drag, future gizmo) re-runs and pushes through.
+    //
+    // DISABLED during migration to the WASM scene engine. Object transforms
+    // now flow through `wasmMeshes` (see effect below); the legacy tracker
+    // path is kept dormant for the eventual selection / gizmo work.
+    // effect(() => {
+    //   const objects = this.objectTracker.objects();
+    //   const scene = this.scene;
+    //   if (!scene) {
+    //     return;
+    //   }
+    //   for (const obj of objects) {
+    //     scene.setObjectTransform(obj.id, obj.transform());
+    //   }
+    // });
+
+    // Push the WASM scene-engine transform onto each mirrored Three.js mesh
+    // every time the snapshot changes. This is the equivalent of the legacy
+    // ObjectTracker mirror above — only the source of truth has moved into
+    // Rust. Matrices are read column-major (matches glam) and applied with
+    // `matrixAutoUpdate = false` so Three.js does not overwrite them.
     effect(() => {
-      const objects = this.objectTracker.objects();
-      const scene = this.scene;
-      if (!scene) {
+      const objects = this.sceneEngine.objects();
+      if (this.wasmMeshes.size === 0) {
         return;
       }
       for (const obj of objects) {
-        scene.setObjectTransform(obj.id, obj.transform());
+        const mesh = this.wasmMeshes.get(obj.id);
+        if (!mesh) {
+          continue;
+        }
+        const m = this.sceneEngine.getMatrix(obj.id);
+        this.tmpMatrix.fromArray(m);
+        mesh.matrix.copy(this.tmpMatrix);
+        mesh.matrixWorldNeedsUpdate = true;
       }
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Selection / drag handlers — XY-only translate via the WASM scene engine.
+  //
+  // The legacy `ViewerScene` raycast / pointer plumbing already calls these
+  // four hooks, identifying objects by their string id (which we set to
+  // `String(wasmId)` in `loadModelViaSceneEngine`). All we have to do here
+  // is round-trip selection state and dispatch `Translate` ops with the
+  // delta-since-last-move on the bed plane (Z fixed at 0).
+  // ---------------------------------------------------------------------------
+
+  private handleSelect(stringId: string, additive: boolean): void {
+    const id = parseWasmId(stringId);
+    if (id === null) {
+      return;
+    }
+    if (additive) {
+      if (!this.selectedWasmIds.includes(id)) {
+        this.selectedWasmIds = [...this.selectedWasmIds, id];
+      }
+    } else {
+      this.selectedWasmIds = [id];
+    }
+    this.scene?.setSelectedIds(new Set(this.selectedWasmIds.map(String)));
+  }
+
+  private handleClearSelection(): void {
+    this.selectedWasmIds = [];
+    this.scene?.setSelectedIds(new Set());
+  }
+
+  private handleBeginDrag(): boolean {
+    if (this.selectedWasmIds.length === 0) {
+      return false;
+    }
+    this.dragApplied.clear();
+    for (const id of this.selectedWasmIds) {
+      this.dragApplied.set(id, { dx: 0, dy: 0 });
+    }
+    return true;
+  }
+
+  /**
+   * `dx`/`dy` are the **cumulative** displacement in mm (bed plane) since
+   * drag start. Translate by the per-step delta so the engine state mirrors
+   * exactly what the user has dragged.
+   */
+  private handleDragBy(dx: number, dy: number): void {
+    for (const id of this.selectedWasmIds) {
+      const applied = this.dragApplied.get(id);
+      if (!applied) {
+        continue;
+      }
+      const stepX = dx - applied.dx;
+      const stepY = dy - applied.dy;
+      if (stepX === 0 && stepY === 0) {
+        continue;
+      }
+      this.sceneEngine.apply({
+        op: 'translate',
+        args: { id, delta: [stepX, stepY, 0] },
+      });
+      applied.dx = dx;
+      applied.dy = dy;
+    }
+  }
+
+  private handleEndDrag(): void {
+    this.dragApplied.clear();
   }
 
   ngOnDestroy(): void {
@@ -240,16 +387,16 @@ export class ViewerComponent implements OnDestroy {
     };
     // Allow external gizmos (viewport-cube drag) to orbit the main camera.
     this.viewerControl.orbitSink = (azimuth, polar) => this.scene?.orbitBy(azimuth, polar);
-    // Bridge raycast hits / drag gestures from the scene into the
-    // print-area service. The scene owns the geometry; the service owns
-    // the truth about what's selected and where each object sits in mm.
+    // Bridge raycast hits / drag gestures from the scene into the WASM
+    // scene engine. Selection is stored locally (no PrintArea / tracker yet)
+    // and drag deltas are pushed as `Translate` ops constrained to XY.
     this.scene.selectionHandlers = {
-      select: (id, additive) => this.printArea.select(id, { additive }),
-      clearSelection: () => this.printArea.clearSelection(),
-      beginDragSelected: () => this.printArea.beginDragSelected().length > 0,
-      dragSelectedBy: (dx, dy) => this.printArea.dragSelectedBy(dx, dy),
-      endDrag: () => this.printArea.endDrag(),
-      cancelDrag: () => this.printArea.cancelDrag(),
+      select: (id, additive) => this.handleSelect(id, additive),
+      clearSelection: () => this.handleClearSelection(),
+      beginDragSelected: () => this.handleBeginDrag(),
+      dragSelectedBy: (dx, dy) => this.handleDragBy(dx, dy),
+      endDrag: () => this.handleEndDrag(),
+      cancelDrag: () => this.handleEndDrag(),
     };
     // Apply the current toolbar selections so the scene starts in sync with
     // whatever view / cursor mode the user already had selected.
@@ -279,6 +426,20 @@ export class ViewerComponent implements OnDestroy {
       this.objectTracker.remove(id);
     }
     this.trackedObjectIds = [];
+    // Drop any WASM-scene meshes from the previous source. The scene engine
+    // is the source of truth, so we also fire `Remove` ops to free the
+    // backing Rust state — otherwise ids would accumulate across reloads.
+    for (const id of this.wasmMeshes.keys()) {
+      this.scene?.unregisterSelectable(String(id));
+      try {
+        this.sceneEngine.apply({ op: 'remove', args: { id } });
+      } catch {
+        // Object may already be gone if the engine reset; safe to ignore.
+      }
+    }
+    this.wasmMeshes.clear();
+    this.selectedWasmIds = [];
+    this.dragApplied.clear();
     scene.clearContent();
     this.gcodeGeometry?.dispose();
     this.gcodeGeometry = null;
@@ -308,44 +469,68 @@ export class ViewerComponent implements OnDestroy {
     const token = ++this.loadToken;
     this.status.set('loading');
 
-    loadModel(source)
-      .then((object) => {
-        if (token !== this.loadToken || !this.scene) {
-          return;
-        }
-        this.scene.contentRoot.add(object);
-        // Register a SceneObject in the tracker — it owns the live
-        // transform; the mesh just mirrors it through the effect above.
-        // Seed the SceneObject's transform from the mesh's current pose so
-        // first-frame rendering doesn't snap.
-        const sceneObj: SceneObject = this.objectTracker.create({
-          name: 'Model',
-          position: {
-            x: object.position.x,
-            y: object.position.y,
-            z: object.position.z,
-          },
-          rotation: {
-            x: object.rotation.x,
-            y: object.rotation.y,
-            z: object.rotation.z,
-          },
-          scale: { x: object.scale.x, y: object.scale.y, z: object.scale.z },
-        });
-        this.trackedObjectIds.push(sceneObj.id);
-        this.scene.registerSelectable(sceneObj.id, object);
-        this.scene.fitToContent();
-        this.status.set('ready');
-        this.loadComplete.emit({ mode: 'model', segments: 0 });
-      })
-      .catch((error: unknown) => {
-        if (token !== this.loadToken) {
-          return;
-        }
-        this.errorMessage.set(messageOf(error));
-        this.status.set('error');
-        this.loadError.emit({ mode: 'model', error });
-      });
+    // New WASM-scene-engine path: fetch raw bytes, parse them inside
+    // Rust, then build a BufferGeometry from the WASM-emitted render
+    // buffer. The scene-engine owns the mesh data and the transform; the
+    // Three.js node is a thin display mirror with `matrixAutoUpdate = false`.
+    void this.loadModelViaSceneEngine(source, token).catch((error: unknown) => {
+      if (token !== this.loadToken) {
+        return;
+      }
+      this.errorMessage.set(messageOf(error));
+      this.status.set('error');
+      this.loadError.emit({ mode: 'model', error });
+    });
+  }
+
+  private async loadModelViaSceneEngine(source: ModelSource, token: number): Promise<void> {
+    await this.sceneEngine.ready();
+    if (token !== this.loadToken || !this.scene) {
+      return;
+    }
+    const { bytes, format, name } = await readModelBytes(source);
+    if (token !== this.loadToken || !this.scene) {
+      return;
+    }
+    // Time each phase of the WASM round-trip independently so the overlay
+    // can break down where wall time is spent (parse vs. render-buffer
+    // copy). `performance.now()` returns a high-resolution monotonic clock.
+    const tParseStart = performance.now();
+    const id = this.sceneEngine.addMesh(name, format, bytes);
+    const tParseEnd = performance.now();
+    const buf = this.sceneEngine.getRenderBuffer(id);
+    const tRenderBufEnd = performance.now();
+    this.wasmParseMs.set(tParseEnd - tParseStart);
+    this.wasmRenderBufMs.set(tRenderBufEnd - tParseEnd);
+    this.wasmRoundtripMs.set(tRenderBufEnd - tParseStart);
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', new BufferAttribute(buf.positions, 3));
+    geometry.setAttribute('normal', new BufferAttribute(buf.normals, 3));
+    geometry.setIndex(new BufferAttribute(buf.indices, 1));
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+    const material = new MeshPhongMaterial({
+      color: 0xa9b4c2,
+      flatShading: true,
+      shininess: 16,
+    });
+    const mesh = new Mesh(geometry, material);
+    mesh.name = name;
+    mesh.matrixAutoUpdate = false;
+    // Seed initial matrix so first frame renders correctly even before any
+    // op fires the snapshot effect.
+    this.tmpMatrix.fromArray(this.sceneEngine.getMatrix(id));
+    mesh.matrix.copy(this.tmpMatrix);
+    mesh.matrixWorldNeedsUpdate = true;
+    this.scene.contentRoot.add(mesh);
+    this.wasmMeshes.set(id, mesh);
+    // Stamp the same id (stringified) on the legacy scene's selectable
+    // registry so the existing raycast / drag pointer plumbing recognises
+    // it. The drag handlers translate it back to a bigint.
+    this.scene.registerSelectable(String(id), mesh);
+    this.scene.fitToContent();
+    this.status.set('ready');
+    this.loadComplete.emit({ mode: 'model', segments: 0 });
   }
 
   private startGcodeLoad(source: GcodeSource): void {
@@ -429,4 +614,51 @@ function messageOf(error: unknown): string {
     return error;
   }
   return '';
+}
+
+/**
+ * Coerce a {@link ModelSource} into the `{ bytes, format, name }` triple
+ * expected by `SceneEngineService.addMesh`. The format is detected from the
+ * source's filename / URL extension; raw `ArrayBuffer`/`Blob` inputs without
+ * a name fall back to STL (the most common payload).
+ */
+async function readModelBytes(
+  source: ModelSource,
+): Promise<{ bytes: Uint8Array; format: 'stl' | 'obj' | '3mf'; name: string }> {
+  let buffer: ArrayBuffer;
+  let name = 'model';
+  if (typeof source === 'string') {
+    name = source.split(/[\\/]/).pop() ?? 'model';
+    const res = await fetch(source);
+    buffer = await res.arrayBuffer();
+  } else if (source instanceof URL) {
+    name = source.pathname.split('/').pop() ?? 'model';
+    const res = await fetch(source);
+    buffer = await res.arrayBuffer();
+  } else if (source instanceof File) {
+    name = source.name;
+    buffer = await source.arrayBuffer();
+  } else if (source instanceof Blob) {
+    buffer = await source.arrayBuffer();
+  } else {
+    buffer = source;
+  }
+  const ext = name.split('.').pop()?.toLowerCase();
+  const format: 'stl' | 'obj' | '3mf' =
+    ext === 'obj' || ext === '3mf' || ext === 'stl' ? ext : 'stl';
+  return { bytes: new Uint8Array(buffer), format, name };
+}
+
+/**
+ * Parse the string id stored on the legacy scene's selectable registry back
+ * into the WASM `bigint` id used by the scene engine. Returns `null` if the
+ * string isn't a valid integer (defensive — should never happen since we
+ * stamp the id ourselves at registration time).
+ */
+function parseWasmId(stringId: string): bigint | null {
+  try {
+    return BigInt(stringId);
+  } catch {
+    return null;
+  }
 }

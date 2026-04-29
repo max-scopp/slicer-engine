@@ -6,8 +6,8 @@
 //! Based on CuraEngine's gyroid implementation:
 //! https://github.com/Ultimaker/CuraEngine/blob/main/src/infill/GyroidInfill.cpp
 
-use clipper2::*;
 use super::utils::calculate_bounds;
+use clipper2::*;
 use std::f64::consts::PI;
 
 /// Generate gyroid infill pattern.
@@ -54,14 +54,14 @@ pub fn generate_gyroid(region: &Paths, density: f64, z_height: f64) -> Paths {
     let pitch_f = line_distance * 2.41;
     let num_steps: i32 = 16;
     let step_f = pitch_f / num_steps as f64;
-    
+
     // Convert Z height to radians based on pitch
     let z_rads = 2.0 * PI * z_height / pitch_f;
     let cos_z = z_rads.cos();
     let sin_z = z_rads.sin();
-    
+
     let mut result = Paths::default();
-    
+
     // Choose between vertical or horizontal lines based on which gives better results
     if sin_z.abs() <= cos_z.abs() {
         // Generate "vertical" lines (lines that vary more in X than Y)
@@ -86,7 +86,7 @@ pub fn generate_gyroid(region: &Paths, density: f64, z_height: f64) -> Paths {
             &mut result,
         );
     }
-    
+
     result
 }
 
@@ -101,23 +101,23 @@ fn generate_vertical_lines(
     result: &mut Paths,
 ) {
     let (min_x, min_y, max_x, max_y) = bounds;
-    
+
     let phase_offset = if cos_z < 0.0 { PI } else { 0.0 } + PI;
-    
+
     // Calculate X coordinates for odd and even columns
     let mut odd_line_coords = Vec::new();
     let mut even_line_coords = Vec::new();
-    
+
     for i in 0..num_steps {
         let y = i as f64 * step;
         let y_rads = 2.0 * PI * y / pitch;
-        
+
         let a = cos_z;
         let b = (y_rads + phase_offset).sin();
         let odd_c = sin_z * (y_rads + phase_offset).cos();
         let even_c = sin_z * (y_rads + phase_offset + PI).cos();
         let h = (a * a + b * b).sqrt();
-        
+
         // Clamp asin arguments to [-1, 1] to prevent NaN from float precision
         // errors. Without this, slight overshoots produce NaN coordinates which
         // appear as weird straight lines in the output.
@@ -126,38 +126,39 @@ fn generate_vertical_lines(
         } else {
             0.0
         } - PI / 2.0;
-        
+
         let even_x_rads = if h > f64::EPSILON {
             (even_c / h).clamp(-1.0, 1.0).asin() + (b / h).clamp(-1.0, 1.0).asin()
         } else {
             0.0
         } - PI / 2.0;
-        
+
         odd_line_coords.push(odd_x_rads / PI * pitch);
         even_line_coords.push(even_x_rads / PI * pitch);
     }
-    
+
     // Generate columns
     let mut num_columns = 0;
     let mut x = ((min_x / pitch).floor() - 2.25) * pitch;
-    
+
     while x <= max_x + pitch / 2.0 {
         let mut line_points = Vec::new();
         let mut y = ((min_y / pitch).floor() - 1.0) * pitch;
-        
+
         while y <= max_y + pitch {
             for i in 0..num_steps as usize {
                 let x_offset = if num_columns & 1 == 1 {
                     odd_line_coords[i]
                 } else {
                     even_line_coords[i]
-                } / 2.0 + pitch;
-                
+                } / 2.0
+                    + pitch;
+
                 line_points.push((x + x_offset, y + (i as f64 * step)));
             }
             y += pitch;
         }
-        
+
         if line_points.len() >= 2 {
             // Filter out any NaN/infinite points that may have slipped through;
             // these would create the "weird straight lines at strange angles".
@@ -170,7 +171,7 @@ fn generate_vertical_lines(
                 result.push(path);
             }
         }
-        
+
         num_columns += 1;
         x += pitch / 2.0;
     }
@@ -187,23 +188,23 @@ fn generate_horizontal_lines(
     result: &mut Paths,
 ) {
     let (min_x, min_y, max_x, max_y) = bounds;
-    
+
     let phase_offset = if sin_z < 0.0 { PI } else { 0.0 };
-    
+
     // Calculate Y coordinates for odd and even rows
     let mut odd_line_coords = Vec::new();
     let mut even_line_coords = Vec::new();
-    
+
     for i in 0..num_steps {
         let x = i as f64 * step;
         let x_rads = 2.0 * PI * x / pitch;
-        
+
         let a = sin_z;
         let b = (x_rads + phase_offset).cos();
         let odd_c = cos_z * (x_rads + phase_offset + PI).sin();
         let even_c = cos_z * (x_rads + phase_offset).sin();
         let h = (a * a + b * b).sqrt();
-        
+
         // Clamp asin arguments to [-1, 1] to prevent NaN from float precision
         // errors. Without this, slight overshoots produce NaN coordinates which
         // appear as weird straight lines in the output.
@@ -212,25 +213,25 @@ fn generate_horizontal_lines(
         } else {
             0.0
         } + PI / 2.0;
-        
+
         let even_y_rads = if h > f64::EPSILON {
             (even_c / h).clamp(-1.0, 1.0).asin() + (b / h).clamp(-1.0, 1.0).asin()
         } else {
             0.0
         } + PI / 2.0;
-        
+
         odd_line_coords.push(odd_y_rads / PI * pitch);
         even_line_coords.push(even_y_rads / PI * pitch);
     }
-    
+
     // Generate rows
     let mut num_rows = 0;
     let mut y = ((min_y / pitch).floor() - 1.0) * pitch;
-    
+
     while y <= max_y + pitch / 2.0 {
         let mut line_points = Vec::new();
         let mut x = ((min_x / pitch).floor() - 1.0) * pitch;
-        
+
         while x <= max_x + pitch {
             for i in 0..num_steps as usize {
                 let y_offset = if num_rows & 1 == 1 {
@@ -238,12 +239,12 @@ fn generate_horizontal_lines(
                 } else {
                     even_line_coords[i]
                 } / 2.0;
-                
+
                 line_points.push((x + (i as f64 * step), y + y_offset));
             }
             x += pitch;
         }
-        
+
         if line_points.len() >= 2 {
             // Filter out any NaN/infinite points that may have slipped through;
             // these would create the "weird straight lines at strange angles".
@@ -256,7 +257,7 @@ fn generate_horizontal_lines(
                 result.push(path);
             }
         }
-        
+
         num_rows += 1;
         y += pitch / 2.0;
     }
@@ -278,7 +279,7 @@ mod tests {
         let mut region = Paths::default();
         let square: Path = vec![(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)].into();
         region.push(square);
-        
+
         let result = generate_gyroid(&region, 0.0, 0.2);
         assert!(result.is_empty());
     }
@@ -288,10 +289,10 @@ mod tests {
         let mut region = Paths::default();
         let square: Path = vec![(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)].into();
         region.push(square);
-        
+
         let result = generate_gyroid(&region, 0.2, 0.2);
         assert!(!result.is_empty(), "Should generate gyroid pattern");
-        
+
         // Verify lines have multiple points (wavy lines, not straight)
         for path in result.iter() {
             assert!(path.len() >= 2, "Each path should have at least 2 points");
@@ -303,24 +304,27 @@ mod tests {
         let mut region = Paths::default();
         let square: Path = vec![(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)].into();
         region.push(square);
-        
+
         let result1 = generate_gyroid(&region, 0.2, 0.2);
         let result2 = generate_gyroid(&region, 0.2, 0.4);
-        
+
         // Different Z heights should produce different patterns
         assert!(!result1.is_empty());
         assert!(!result2.is_empty());
-        
+
         // The patterns should be different (different number of paths or different geometry)
         // This is a simple check - in practice the patterns will differ significantly
-        let has_difference = result1.len() != result2.len() ||
-            result1.iter().zip(result2.iter()).any(|(p1, p2)| {
-                p1.len() != p2.len() || 
-                p1.iter().zip(p2.iter()).any(|(pt1, pt2)| {
-                    (pt1.x() - pt2.x()).abs() > 0.01 || (pt1.y() - pt2.y()).abs() > 0.01
-                })
+        let has_difference = result1.len() != result2.len()
+            || result1.iter().zip(result2.iter()).any(|(p1, p2)| {
+                p1.len() != p2.len()
+                    || p1.iter().zip(p2.iter()).any(|(pt1, pt2)| {
+                        (pt1.x() - pt2.x()).abs() > 0.01 || (pt1.y() - pt2.y()).abs() > 0.01
+                    })
             });
-        
-        assert!(has_difference, "Patterns at different Z heights should differ");
+
+        assert!(
+            has_difference,
+            "Patterns at different Z heights should differ"
+        );
     }
 }

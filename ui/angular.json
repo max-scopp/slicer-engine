@@ -35,6 +35,11 @@
                 "input": "public"
               },
               {
+                "glob": "scene_engine_bg.wasm",
+                "input": "src/generated/scene-wasm",
+                "output": "/"
+              },
+              {
                 "glob": "**/*.svg",
                 "input": "node_modules/iconoir/icons/regular",
                 "output": "/assets/icons"

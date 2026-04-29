@@ -21,6 +21,7 @@ wasm-pack build --target web                   # WebAssembly
 ```
 
 Or use **Makefile targets** (Linux/macOS):
+
 ```bash
 make build-release build-windows build-macos build-wasm test lint fmt
 ```
@@ -29,18 +30,19 @@ make build-release build-windows build-macos build-wasm test lint fmt
 
 ### Core Components
 
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| **SliceLayer / ExtrusionRole** | [src/core/types.rs](src/core/types.rs) | Core data structures for a single layer |
-| **Mesh Slicer** | [src/core/slicer.rs](src/core/slicer.rs) | Triangle→layer contour extraction (`slice_mesh`) |
-| **Surface Generation** | [src/core/surfaces.rs](src/core/surfaces.rs) | Top/bottom solid surface detection and infill |
-| **Wall Restrictions** | [src/core/walls.rs](src/core/walls.rs) | Single-wall first/top-layer constraints |
-| **Infill Boundary** | [src/core/infill.rs](src/core/infill.rs) | Interior region calculation and sparse infill |
-| **Pipeline** | [src/core/pipeline.rs](src/core/pipeline.rs) | `process_mesh` — orchestrates the full slicing pipeline |
-| **Clipper2 Integration** | [src/core/](src/core/) | Geometric polygon clipping operations throughout |
-| **Library Interface** | [src/lib.rs](src/lib.rs) | Public API exposing core functionality |
-| **CLI Layer** | [src/cli/](src/cli/) | User-friendly command-line interface bridging library API to commands |
-| **Build Configuration** | [build.rs](build.rs) | Platform detection and environment setup |
+| Component                      | Location                                     | Purpose                                                                                       |
+| ------------------------------ | -------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| **SliceLayer / ExtrusionRole** | [src/core/types.rs](src/core/types.rs)       | Core data structures for a single layer                                                       |
+| **Mesh Slicer**                | [src/core/slicer.rs](src/core/slicer.rs)     | Triangle→layer contour extraction (`slice_mesh`)                                              |
+| **Surface Generation**         | [src/core/surfaces.rs](src/core/surfaces.rs) | Top/bottom solid surface detection and infill                                                 |
+| **Wall Restrictions**          | [src/core/walls.rs](src/core/walls.rs)       | Single-wall first/top-layer constraints                                                       |
+| **Infill Boundary**            | [src/core/infill.rs](src/core/infill.rs)     | Interior region calculation and sparse infill                                                 |
+| **Pipeline**                   | [src/core/pipeline.rs](src/core/pipeline.rs) | `process_mesh` — orchestrates the full slicing pipeline                                       |
+| **Scene Engine**               | [src/scene/](src/scene/)                     | Single source of truth for object placement (CLI / WS / WASM all consume `SceneState::apply`) |
+| **Clipper2 Integration**       | [src/core/](src/core/)                       | Geometric polygon clipping operations throughout                                              |
+| **Library Interface**          | [src/lib.rs](src/lib.rs)                     | Public API exposing core functionality                                                        |
+| **CLI Layer**                  | [src/cli/](src/cli/)                         | User-friendly command-line interface bridging library API to commands                         |
+| **Build Configuration**        | [build.rs](build.rs)                         | Platform detection and environment setup                                                      |
 
 ### Module Organization
 
@@ -66,6 +68,14 @@ src/
 │   ├── walls.rs           # apply_single_wall_restrictions (per-island), compute_per_island_strip_masks
 │   ├── infill.rs          # calculate_interior_region, add_infill_to_layers
 │   └── pipeline.rs        # process_mesh (full pipeline orchestrator)
+├── scene/                 # Unified scene engine (issue #51 — SSOT for object placement)
+│   ├── mod.rs             # Re-exports public API
+│   ├── transform.rs       # Transform { translation, rotation: Quat, scale }; apply_transform; Euler-XYZ deg helpers
+│   ├── bed.rs             # BedConfig (width/depth/height/origin offsets); From<&MachineConfig>
+│   ├── loader.rs          # MeshFormat enum + load_bytes / load_path
+│   ├── state.rs           # SceneState, SceneObject, ObjectId
+│   ├── ops.rs             # SceneOp (Add/Remove/Translate/Rotate/Scale/SetTransform/Center/Drop/AlignFace) + apply()
+│   └── wasm.rs            # SceneHandle wasm-bindgen exports (cfg(target_arch="wasm32"))
 ├── lib.rs                 # Public library root
 └── main.rs                # Application entry point (uses CLI)
 ```
@@ -78,6 +88,7 @@ src/
 ### Cross-Platform Strategy
 
 The build script ([build.rs](build.rs)) detects target platform and sets environment variables:
+
 - **Windows**: x86_64-pc-windows-msvc
 - **macOS**: x86_64-apple-darwin (Intel), aarch64-apple-darwin (Silicon)
 - **WebAssembly**: wasm32-unknown-unknown with wasm-pack
@@ -95,6 +106,7 @@ The CLI layer uses the **adapter pattern** to bridge the library API to user-fri
 - **Backward Compatibility**: Library API remains unchanged; CLI is purely additive
 
 Example CLI Usage:
+
 ```bash
 # Slice a model with 0.2mm layer height
 slicer-engine slice --input model.stl --layer-height 0.2 --output result.gcode
@@ -107,12 +119,14 @@ slicer-engine slice --help
 ```
 
 ### Code Style
+
 - Follow [Rust Edition 2021 conventions](https://doc.rust-lang.org/edition-guide/rust-2021/index.html)
 - Use `cargo fmt` for formatting (enforced by CI)
 - Run `cargo clippy -- -D warnings` before committing
 - Write inline tests with `#[cfg(test)]` in the same module
 
 ### Performance Priorities
+
 - **Development builds prioritized locally**: Use `cargo build` (debug/opt-level 1) for fast iteration (~5-10s)
   - Release builds with LTO/opt-level 3/codegen-units 1 are reserved for CI/distribution only
   - Profile edge cases with `cargo flamegraph` if performance regressions suspected
@@ -121,22 +135,48 @@ slicer-engine slice --help
 - Consider compile-time vs runtime tradeoffs for polygon operations
 
 ### Documentation
+
 - Use doc comments (`///`) for public types and functions
 - Include usage examples in doc comments for core APIs
 - Update [README.md](README.md) for user-facing changes
 
+#### Module READMEs — house style
+
+Long-form module docs (`src/<module>/README.md`) follow the
+[Diátaxis](https://diataxis.fr/) **Explanation** quadrant — they discuss what
+something is and *why* it is that way, not how to call every function (that's
+what `///` doc comments are for). Reference [src/scene/README.md](src/scene/README.md)
+as the canonical example. Conventions:
+
+- **Open with a one-sentence answer to "what does this module exist for?"**
+  followed by the single rule or invariant the rest of the doc defends.
+- **Lead with motivation, then contract, then anatomy.** Why → rules → shapes
+  → catalog → role in the wider system → lifecycle → non-goals.
+- **Sprinkle small Mermaid diagrams** where a picture saves a paragraph. Prefer
+  several focused diagrams (one `flowchart`, one `classDiagram`, one
+  `sequenceDiagram`) over one monster graph. Keep node labels short.
+- **Compact tables for catalogs** (ops, variants, flags) — three or four columns
+  max; one-line cells.
+- **State the non-goals explicitly.** A "what this module deliberately does
+  *not* do" section prevents future drift back into anti-patterns.
+- **Plain language over jargon.** Assume a contributor who knows Rust but is
+  new to *this* subsystem. Define a term the first time it appears.
+- **End with a "See also" pointing at the source files**, the relevant AGENTS.md
+  section, and the originating issue/PR.
+
 ### Testing
+
 - Write tests inline with `#[cfg(test)]` modules
 - Use `cargo test` to verify release build compatibility
 - Test all three platforms: native, WASM, and cross-compilation
 
 ## Project Dependencies
 
-| Crate | Version | Usage |
-|-------|---------|-------|
-| **clipper2** | 0.5 | Polygon clipping, geometric operations |
+| Crate        | Version | Usage                                  |
+| ------------ | ------- | -------------------------------------- |
+| **clipper2** | 0.5     | Polygon clipping, geometric operations |
 
-*Note: Keep clipper2 dependency current for bug fixes and performance improvements.*
+_Note: Keep clipper2 dependency current for bug fixes and performance improvements._
 
 ## Common Tasks
 
@@ -152,6 +192,7 @@ slicer-engine slice --help
 See [architecture-cli-layer-1.md](plan/architecture-cli-layer-1.md) for detailed implementation phases.
 
 ### Adding a New Data Structure
+
 1. Create in appropriate module (usually core.rs)
 2. Implement `Debug` and `Clone` traits for inspection and flexibility
 3. Add inline tests within `#[cfg(test)]` block
@@ -159,6 +200,7 @@ See [architecture-cli-layer-1.md](plan/architecture-cli-layer-1.md) for detailed
 5. Re-export from lib.rs if part of public API
 
 ### Implementing Geometric Operations
+
 1. Leverage Clipper2 API for polygon clipping (avoid reimplementing)
 2. Define clear input/output types using SliceLayer or similar structures
 3. Write tests covering edge cases (empty paths, degenerate polygons, etc.)
@@ -166,6 +208,7 @@ See [architecture-cli-layer-1.md](plan/architecture-cli-layer-1.md) for detailed
 5. Document assumptions about coordinate precision
 
 ### Cross-Platform Testing
+
 1. Use conditional compilation (`#[cfg(...)]`) for platform-specific code
 2. Test locally: `cargo test --release`
 3. Test WASM builds with `wasm-pack test --headless --firefox`
@@ -174,6 +217,7 @@ See [architecture-cli-layer-1.md](plan/architecture-cli-layer-1.md) for detailed
 ## CI/CD Pipeline
 
 GitHub Actions ([.github/workflows/build.yml](.github/workflows/build.yml)) automatically:
+
 - Runs on push and pull requests
 - Builds all three platform targets
 - Runs linting (clippy) and formatting checks (fmt)
@@ -189,12 +233,27 @@ GitHub Actions ([.github/workflows/build.yml](.github/workflows/build.yml)) auto
 - **File I/O in WASM**: CLI file operations require JavaScript bindings; not all features available in WASM target.
 - **LTO Compilation**: Release builds are slower due to LTO. Use debug builds during iterative development.
 - **Cross-compilation**: Requires appropriate target toolchains installed. CI verifies these work.
-- **`apply_single_wall_restrictions` is per-island**: Inner walls are stripped only from the specific island whose top-surface run ends on that layer; other islands on the same layer are untouched.  The `pre_strip_infill_regions` snapshot is still taken before this step to guard against future regressions — keep that order.
+- **`apply_single_wall_restrictions` is per-island**: Inner walls are stripped only from the specific island whose top-surface run ends on that layer; other islands on the same layer are untouched. The `pre_strip_infill_regions` snapshot is still taken before this step to guard against future regressions — keep that order.
+
+## Scene Engine — SSOT Contract
+
+[src/scene/](src/scene/) is the **single source of truth** for object placement, orientation, and transforms. Issue #51 introduced it; CLI, WS server, and the Angular UI (via WASM) all consume the same `SceneState::apply()` code path. Every CLI flag and every UI gesture must translate to a `SceneOp`.
+
+- **Math**: `glam::{Vec3, Quat, Mat4}`. Quaternions internally; **Euler-XYZ degrees only at protocol/CLI boundaries** (see `Transform::from_euler_xyz_deg` / `to_euler_xyz_deg`).
+- **Ops** (`SceneOp`): `Add`, `Remove`, `Translate`, `SetTransform`, `Rotate`, `Scale`, `CenterOnBed`, `DropToFloor`, `AlignFaceToFloor`. Each `apply` returns an `OpReceipt { inverse }` — sets up undo without implementing it.
+- **AlignFaceToFloor**: picks face by index, computes `Quat::from_rotation_arc(world_normal, -Z)`, then drops to floor.
+- **Bake at the slicer boundary only**: `apply_transform(&Mesh, &Transform) -> Mesh` is called once before the slicing pipeline runs. Never bake mid-pipeline.
+- **Object IDs**: `ObjectId(u64)` is monotonically allocated and **never reused**. UUIDs are reserved for the WS protocol's upload tokens, not for scene objects.
+- **Server scenes are ephemeral per WS connection** (no DB persistence). UI uploads bytes via the file-upload endpoint, then dispatches `Scene { ops: [Add { file_id }, …] }`.
+- **WASM** (`src/scene/wasm.rs`, `cfg(target_arch="wasm32")`): exposes `SceneHandle` with `addMesh`, `applyOp`, `getRenderBuffer`, `getMatrix`, `snapshot`. JS bindings build via `make build-wasm` → `ui/src/generated/scene-wasm/`.
+- **Wasm vs native deps**: `clipper2`, `zip`, `uuid`, `rayon`, `tobj`, `actix-*`, `tokio`, `rusqlite` are gated `cfg(not(target_arch="wasm32"))`. The wasm build only ships `mesh`, `scene`, `logging`, plus wasm-only `wasm-bindgen`/`js-sys`/`serde-wasm-bindgen`. Module-level `#[cfg]`s in `lib.rs` enforce this.
+- **Deprecated CLI flags**: `--center` / `--drop-to-floor` are kept as aliases that log a deprecation warning and dispatch the equivalent `SceneOp`. Do not add new flags that bypass the scene engine.
+- **Don't add a parallel mesh placement path**. The temptation to "just translate this mesh real quick" in `mesh::transforms` is exactly what issue #51 set out to eliminate.
 
 ## Slicing Pipeline — Deep Knowledge
 
 This section records hard-won understanding of how the slicing pipeline works and
-why specific design decisions were made.  Read this before touching anything in
+why specific design decisions were made. Read this before touching anything in
 [src/core/](src/core/) or [src/arachne/mod.rs](src/arachne/mod.rs).
 
 ### Pipeline Execution Order
@@ -209,44 +268,44 @@ generate_top_bottom_surfaces_with_interior()  — top/bottom solid infill within
 add_infill_to_layers()               — sparse infill using pre-strip regions minus solid regions
 ```
 
-Order matters critically.  Surfaces are computed **after** Arachne walls so that
-`calculate_interior_region` sees the correct bead geometry.  Infill is computed
+Order matters critically. Surfaces are computed **after** Arachne walls so that
+`calculate_interior_region` sees the correct bead geometry. Infill is computed
 **after** surfaces so it can subtract `solid_regions`.
 
 **`pre_strip_infill_regions` must be computed before `apply_single_wall_restrictions`.**
 `apply_single_wall_restrictions` now operates **per island**: an outer-wall path P at
 layer i has its associated inner walls stripped only when P's footprint has an exposed
-top surface AND P does not appear in layer i+1 (the island ends here).  The large body
-island on the same layer is unaffected.  The `pre_strip_infill_regions` snapshot is
+top surface AND P does not appear in layer i+1 (the island ends here). The large body
+island on the same layer is unaffected. The `pre_strip_infill_regions` snapshot is
 still taken before this step as a defensive measure — the snapshot preserves the correct
 `walls_per_island` count for every island in case future changes ever re-introduce a
 layer-wide strip.
 
 ### Arachne Wall Paths — What They Are and Are Not
 
-Arachne emits **centerline paths**, not filled polygons.  Each path is a closed
-polygon whose vertices are the *center* of the extrusion bead, not its edge.
+Arachne emits **centerline paths**, not filled polygons. Each path is a closed
+polygon whose vertices are the _center_ of the extrusion bead, not its edge.
 
 - `OuterWall` paths sit at inward depth `d/2` from the raw mesh contour.
 - `InnerWall` paths sit at `3d/2`, `5d/2`, … from the outer contour.
 - `path_widths[i]` carries the actual extrusion width for variable-width beads.
 - For a mesh with holes (donut, hollow cylinder) the **hole boundary** also gets
   an `OuterWall` tag (`is_outer = true` in Arachne, because it is the outermost
-  bead of that contour's shrink sequence).  There is no separate "hole wall" tag.
+  bead of that contour's shrink sequence). There is no separate "hole wall" tag.
 
 Consequence: you **cannot** tell an outer solid contour from a hole contour by
-role alone.  Use signed area (`path.signed_area()`): CCW (positive) = solid
+role alone. Use signed area (`path.signed_area()`): CCW (positive) = solid
 island, CW (negative) = hole.
 
 ### Clipper2 Fill Rules — When to Use Which
 
-| Operation | Fill rule | Why |
-|-----------|-----------|-----|
-| Surface detection (intersect/difference of layer perimeters) | `EvenOdd` | Mesh slicer does not guarantee consistent winding; EvenOdd is winding-independent |
+| Operation                                                                 | Fill rule  | Why                                                                                                                                    |
+| ------------------------------------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Surface detection (intersect/difference of layer perimeters)              | `EvenOdd`  | Mesh slicer does not guarantee consistent winding; EvenOdd is winding-independent                                                      |
 | Infill interior subtraction (`difference` of infill area − solid regions) | `Positive` | Infill area from `calculate_interior_region` uses consistent Clipper2 winding; Positive is more predictable for non-overlapping inputs |
-| Arachne bead union (old approach, now removed) | `NonZero` | Would require all CCW; don't use unless winding is normalised first |
+| Arachne bead union (old approach, now removed)                            | `NonZero`  | Would require all CCW; don't use unless winding is normalised first                                                                    |
 
-**Do not union Arachne bead paths with `EvenOdd`.**  Tightly nested concentric
+**Do not union Arachne bead paths with `EvenOdd`.** Tightly nested concentric
 closed paths under EvenOdd produce alternating in/out bands instead of a single
 solid region.
 
@@ -256,32 +315,32 @@ solid region.
 layers also have `InnerWall` paths.
 
 **Why**: Surface detection compares adjacent layer geometries with Clipper2
-`intersect`/`difference` using `EvenOdd`.  If `InnerWall` beads are included,
-each bead boundary toggles EvenOdd inside/outside.  With e.g. 3 inner walls, the
+`intersect`/`difference` using `EvenOdd`. If `InnerWall` beads are included,
+each bead boundary toggles EvenOdd inside/outside. With e.g. 3 inner walls, the
 inter-bead gaps register as alternating "exposed" strips → spurious `BottomSurface`
 or `TopSurface` paths appear between the wall beads, indistinguishable from real
-surfaces.  The `OuterWall` paths alone faithfully represent the solid cross-section
+surfaces. The `OuterWall` paths alone faithfully represent the solid cross-section
 of each island.
 
 ### `calculate_interior_region` — How the Infill/Surface Boundary Is Computed
 
 Uses `OuterWall` paths directly as the gross outline of each island (winding
-preserved — **do not normalise to CCW**).  Deflates inward by:
+preserved — **do not normalise to CCW**). Deflates inward by:
 
 ```
 total_inward = (walls_per_island - 0.5) × nozzle_diameter - overlap_distance
 ```
 
 The `−0.5 × d` term accounts for the fact that `OuterWall` centerlines are
-already inset `d/2` from the model surface.  Without this correction the interior
+already inset `d/2` from the model surface. Without this correction the interior
 region is over-shrunk by half a bead width.
 
 `walls_per_island = ceil(total_wall_bead_count / outer_contour_count)` gives the
-number of wall shells per island.  This works because Arachne places the same
+number of wall shells per island. This works because Arachne places the same
 number of beads on every island (parameters are global, not per-island).
 
-**Do not normalise all wall paths to CCW before the inflate.**  Hole boundary
-beads have CW winding.  Flipping them to CCW makes Clipper2 treat holes as solid
+**Do not normalise all wall paths to CCW before the inflate.** Hole boundary
+beads have CW winding. Flipping them to CCW makes Clipper2 treat holes as solid
 material → infill is generated inside the hole (through the void).
 
 ### Infill Boundary vs. Surface Region
@@ -296,12 +355,12 @@ material → infill is generated inside the hole (through the void).
 before generating solid infill lines.
 
 Both use `calculate_interior_region` — but with different `overlap_percent`
-values.  Keep them consistent if the signature changes.
+values. Keep them consistent if the signature changes.
 
 ### `generate_rectilinear_infill` — Scanline Even-Odd Fill
 
 The scanline fills cells using an even-odd intersection count (pairs of sorted
-X crossings per scan line).  This is correct for both simple polygons and for
+X crossings per scan line). This is correct for both simple polygons and for
 Clipper2-output `Paths` whose hole sub-paths have CW winding, because the CW
 hole adds an extra edge crossing that naturally toggles the parity.
 
@@ -313,17 +372,16 @@ solids, CW holes).
 
 For a layer that contains a hole (e.g. a hollow box cross-section), the
 `calculate_interior_region` output is a Clipper2 `Paths` with:
+
 - One or more CCW sub-paths (solid ring interior)
 - One or more CW sub-paths (the hole voids)
 
 The `inflate` call with a negative delta correctly shrinks the solid ring inward
-while simultaneously *growing* the CW hole outward (toward the ring), preserving
-the annular region where infill should go.  The scanline in
+while simultaneously _growing_ the CW hole outward (toward the ring), preserving
+the annular region where infill should go. The scanline in
 `generate_rectilinear_infill` then correctly generates lines only inside the
 annulus because the hole sub-path's edges produce crossing events that close the
 infill within the ring.
-
-
 
 ## Related Documentation
 

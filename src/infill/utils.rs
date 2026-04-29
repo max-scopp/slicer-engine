@@ -78,61 +78,64 @@ const MIN_SEGMENT_LENGTH_SQ: f64 = 1e-12;
 /// and chains together consecutive segments that remain inside the region.
 fn clip_polyline_to_region(pts: &[(f64, f64)], region: &Paths, result: &mut Paths) {
     let mut current_path: Vec<(f64, f64)> = Vec::new();
-    
+
     for i in 0..pts.len() - 1 {
         let (x0, y0) = pts[i];
         let (x1, y1) = pts[i + 1];
-        
+
         // Collect all t values where this segment intersects a polygon edge
         let mut t_values: Vec<f64> = vec![0.0, 1.0];
-        
+
         for poly in region.iter() {
             let poly_pts: Vec<(f64, f64)> = poly.iter().map(|p| (p.x(), p.y())).collect();
             let n = poly_pts.len();
             if n < 2 {
                 continue;
             }
-            
+
             for k in 0..n {
-                if let Some(t) = segment_edge_t(x0, y0, x1, y1, (poly_pts[k], poly_pts[(k + 1) % n])) {
+                if let Some(t) =
+                    segment_edge_t(x0, y0, x1, y1, (poly_pts[k], poly_pts[(k + 1) % n]))
+                {
                     if t > T_VALUE_EPSILON && t < 1.0 - T_VALUE_EPSILON {
                         t_values.push(t);
                     }
                 }
             }
         }
-        
+
         t_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         t_values.dedup_by(|a, b| (*a - *b).abs() < T_VALUE_EPSILON);
-        
+
         // Process each sub-segment
         for window in t_values.windows(2) {
             let ta = window[0];
             let tb = window[1];
             let t_mid = (ta + tb) * 0.5;
-            
+
             let mx = x0 + t_mid * (x1 - x0);
             let my = y0 + t_mid * (y1 - y0);
-            
+
             if point_in_region_even_odd(mx, my, region) {
                 let seg_start = (x0 + ta * (x1 - x0), y0 + ta * (y1 - y0));
                 let seg_end = (x0 + tb * (x1 - x0), y0 + tb * (y1 - y0));
-                
+
                 // Check if segment is long enough
                 let dx = seg_end.0 - seg_start.0;
                 let dy = seg_end.1 - seg_start.1;
                 if dx * dx + dy * dy <= MIN_SEGMENT_LENGTH_SQ {
                     continue;
                 }
-                
+
                 // If current_path is empty or the new segment connects, add to current path
                 if current_path.is_empty() {
                     current_path.push(seg_start);
                     current_path.push(seg_end);
                 } else {
                     let last_pt = *current_path.last().unwrap();
-                    let dist_sq = (seg_start.0 - last_pt.0).powi(2) + (seg_start.1 - last_pt.1).powi(2);
-                    
+                    let dist_sq =
+                        (seg_start.0 - last_pt.0).powi(2) + (seg_start.1 - last_pt.1).powi(2);
+
                     // If segments connect (within tolerance), continue current path
                     if dist_sq < MIN_SEGMENT_LENGTH_SQ * 100.0 {
                         current_path.push(seg_end);
@@ -157,7 +160,7 @@ fn clip_polyline_to_region(pts: &[(f64, f64)], region: &Paths, result: &mut Path
             }
         }
     }
-    
+
     // Flush any remaining path
     if current_path.len() >= 2 {
         let path: Path = current_path.into();
@@ -218,7 +221,9 @@ pub fn clip_lines_to_region(lines: &Paths, region: &Paths) -> Paths {
             }
 
             for k in 0..n {
-                if let Some(t) = segment_edge_t(x0, y0, x1, y1, (poly_pts[k], poly_pts[(k + 1) % n])) {
+                if let Some(t) =
+                    segment_edge_t(x0, y0, x1, y1, (poly_pts[k], poly_pts[(k + 1) % n]))
+                {
                     // Only keep t values strictly inside [0, 1] (not at
                     // endpoints) to avoid duplicate splits at shared vertices.
                     if t > T_VALUE_EPSILON && t < 1.0 - T_VALUE_EPSILON {
@@ -266,7 +271,13 @@ pub fn clip_lines_to_region(lines: &Paths, region: &Paths) -> Paths {
 ///
 /// Returns `None` if the segments are parallel or the intersection falls
 /// outside the edge's parameter range `[0, 1]`.
-fn segment_edge_t(lx0: f64, ly0: f64, lx1: f64, ly1: f64, edge: ((f64, f64), (f64, f64))) -> Option<f64> {
+fn segment_edge_t(
+    lx0: f64,
+    ly0: f64,
+    lx1: f64,
+    ly1: f64,
+    edge: ((f64, f64), (f64, f64)),
+) -> Option<f64> {
     let (ex0, ey0) = edge.0;
     let (ex1, ey1) = edge.1;
 
@@ -396,7 +407,11 @@ mod tests {
         region.push(square);
 
         let result = clip_lines_to_region(&lines, &region);
-        assert_eq!(result.len(), 1, "Fully inside line should be kept as one segment");
+        assert_eq!(
+            result.len(),
+            1,
+            "Fully inside line should be kept as one segment"
+        );
     }
 
     #[test]
@@ -427,7 +442,11 @@ mod tests {
         region.push(square);
 
         let result = clip_lines_to_region(&lines, &region);
-        assert_eq!(result.len(), 1, "Should produce exactly one clipped segment");
+        assert_eq!(
+            result.len(),
+            1,
+            "Should produce exactly one clipped segment"
+        );
 
         let clipped: Vec<(f64, f64)> = result
             .iter()
@@ -442,4 +461,3 @@ mod tests {
         assert!((clipped[1].0 - 10.0).abs() < 1e-6, "End x should be ~10");
     }
 }
-

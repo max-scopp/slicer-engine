@@ -126,7 +126,11 @@ impl EmitPayload for PathResult {
     }
 
     fn display_human(&self) -> String {
-        let status = if self.exists { "(exists)" } else { "(not found)" };
+        let status = if self.exists {
+            "(exists)"
+        } else {
+            "(not found)"
+        };
         format!("{} {}", self.path.display(), status)
     }
 
@@ -267,9 +271,7 @@ fn apply_server_field(
                 .to_string();
         }
         "port" => {
-            server.port = value
-                .as_u64()
-                .ok_or("'server.port' must be a number")? as u16;
+            server.port = value.as_u64().ok_or("'server.port' must be a number")? as u16;
         }
         "ui_dir" => {
             server.ui_dir = value
@@ -334,8 +336,12 @@ mod tests {
     #[test]
     fn test_apply_slicing_layer_height() {
         let mut config = AppConfig::default();
-        apply_config_field(&mut config, "slicing.layer_height", &serde_json::json!(0.12))
-            .unwrap();
+        apply_config_field(
+            &mut config,
+            "slicing.layer_height",
+            &serde_json::json!(0.12),
+        )
+        .unwrap();
         assert_eq!(config.slicing.unwrap().layer_height, 0.12);
     }
 

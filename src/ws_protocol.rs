@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::gcode::GcodeFlavor;
 use crate::infill::InfillPattern;
+use crate::scene::MeshFormat;
 
 /// Slicing parameters sent from the browser with a `slice` request.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -60,6 +61,71 @@ pub struct SessionSummary {
     pub download_url: String,
 }
 
+/// Wire-format scene operation. Mirrors [`crate::scene::SceneOp`] but uses
+/// Euler-XYZ degrees and a `file_id` reference for `Add` so payloads stay
+/// human-readable JSON.
+///
+/// `file_id` is the upload `request_uuid` returned by `POST /api/upload`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "op", content = "args", rename_all = "snake_case")]
+pub enum SceneOpDto {
+    /// Add a mesh by reference to a previously-uploaded file.
+    Add {
+        name: String,
+        format: MeshFormat,
+        file_id: String,
+    },
+    /// Remove an object by id.
+    Remove { id: u64 },
+    /// Translate by `[x, y, z]` mm.
+    Translate { id: u64, delta: [f64; 3] },
+    /// Replace the full transform: translation (mm), Euler-XYZ degrees, scale.
+    SetTransform {
+        id: u64,
+        translation: [f32; 3],
+        euler_xyz_deg: [f32; 3],
+        scale: [f32; 3],
+    },
+    /// Rotate around `axis` by `degrees`, composed with the existing rotation.
+    Rotate {
+        id: u64,
+        axis: [f32; 3],
+        degrees: f32,
+    },
+    /// Multiply per-axis scale by `factors`.
+    Scale { id: u64, factors: [f32; 3] },
+    /// Center the object on the bed in XY (preserves Z).
+    CenterOnBed { id: u64 },
+    /// Drop the object so its lowest Z vertex sits on Z=0.
+    DropToFloor { id: u64 },
+    /// Rotate so the chosen face's normal points down, then drop to floor.
+    AlignFaceToFloor { id: u64, face_index: usize },
+}
+
+/// Snapshot of a scene object sent to the client (no mesh data).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SceneObjectDto {
+    pub id: u64,
+    pub name: String,
+    pub translation: [f32; 3],
+    pub euler_xyz_deg: [f32; 3],
+    pub scale: [f32; 3],
+    /// Number of triangle faces in the mesh.
+    pub triangle_count: usize,
+    /// World-space AABB after applying the current transform: `[min, max]`.
+    pub world_aabb: [[f64; 3]; 2],
+}
+
+/// Snapshot of the bed configuration sent to the client.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct BedConfigDto {
+    pub width: f64,
+    pub depth: f64,
+    pub height: f64,
+    pub origin_offset_x: f64,
+    pub origin_offset_y: f64,
+}
+
 /// Messages sent **from the browser to the server**.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
@@ -75,6 +141,12 @@ pub enum ClientMessage {
     ListSessions,
     /// Abort / reset the current state.
     Reset,
+    /// Apply one or more scene operations in order. Server replies with
+    /// [`ServerMessage::SceneState`] on success.
+    Scene { ops: Vec<SceneOpDto> },
+    /// Request the current scene snapshot. Server replies with
+    /// [`ServerMessage::SceneState`].
+    SceneSnapshot,
 }
 
 /// Messages sent **from the server to the browser**.
@@ -111,6 +183,11 @@ pub enum ServerMessage {
     },
     /// List of previously completed slicing sessions.
     SessionsList { sessions: Vec<SessionSummary> },
+    /// Snapshot of the per-session scene state.
+    SceneState {
+        objects: Vec<SceneObjectDto>,
+        bed: BedConfigDto,
+    },
     /// A fatal error occurred during processing.
     Error { message: String },
 }

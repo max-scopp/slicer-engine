@@ -30,7 +30,7 @@ build-macos:
 	cargo build --release --target aarch64-apple-darwin --verbose
 
 build-wasm:
-	wasm-pack build --target web --release
+	wasm-pack build --target web --release --out-dir ui/src/generated/scene-wasm --out-name scene_engine
 
 test:
 	cargo test --verbose
