@@ -123,12 +123,10 @@ export class Sidebar implements OnDestroy {
     }
     event.preventDefault();
     event.stopPropagation();
-    this.isDragging.set(true);
-    this.dragStartX = event.clientX;
-    this.dragStartWidth = this.el.nativeElement.offsetWidth;
+    this.startResize(event.clientX);
 
     let rafId: number | null = null;
-    let latestX = this.dragStartX;
+    let latestX = event.clientX;
 
     const onMove = (e: MouseEvent): void => {
       latestX = e.clientX;
@@ -156,10 +154,63 @@ export class Sidebar implements OnDestroy {
 
     this.document.addEventListener('mousemove', onMove);
     this.document.addEventListener('mouseup', onUp);
-    this.dragCleanup = [
+    this.dragCleanup.push(
       () => this.document.removeEventListener('mousemove', onMove),
       () => this.document.removeEventListener('mouseup', onUp),
-    ];
+    );
+  }
+
+  protected onResizeTouchStart(event: TouchEvent): void {
+    if (this.collapsed()) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const touch = event.touches[0];
+    this.startResize(touch.clientX);
+
+    let rafId: number | null = null;
+    let latestX = touch.clientX;
+
+    const onMove = (e: TouchEvent): void => {
+      latestX = e.touches[0].clientX;
+      if (rafId !== null) {
+        return;
+      }
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        const delta = latestX - this.dragStartX;
+        const width = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, this.dragStartWidth + delta));
+        this.applyCssWidth(width);
+      });
+    };
+
+    const onEnd = (): void => {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+      this.document.removeEventListener('touchmove', onMove);
+      this.document.removeEventListener('touchend', onEnd);
+      this.document.removeEventListener('touchcancel', onEnd);
+      this.isDragging.set(false);
+      this.saveWidth(this.el.nativeElement.offsetWidth);
+    };
+
+    this.document.addEventListener('touchmove', onMove, { passive: false });
+    this.document.addEventListener('touchend', onEnd);
+    this.document.addEventListener('touchcancel', onEnd);
+    this.dragCleanup.push(
+      () => this.document.removeEventListener('touchmove', onMove),
+      () => this.document.removeEventListener('touchend', onEnd),
+      () => this.document.removeEventListener('touchcancel', onEnd),
+    );
+  }
+
+  private startResize(clientX: number): void {
+    this.isDragging.set(true);
+    this.dragStartX = clientX;
+    this.dragStartWidth = this.el.nativeElement.offsetWidth;
   }
 
   private applyCssWidth(width: number): void {

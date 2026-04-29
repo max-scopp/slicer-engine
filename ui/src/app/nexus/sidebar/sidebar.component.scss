@@ -101,6 +101,17 @@ $transition-easing: ease;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+
+  // Hide the scrollbar on touch devices — momentum scrolling still works,
+  // and the scrollbar chrome looks out of place on mobile/tablet.
+  @media (pointer: coarse) {
+    scrollbar-width: none;
+
+    &::-webkit-scrollbar {
+      display: none;
+    }
+  }
 }
 
 .sidebar-footer {
@@ -169,18 +180,27 @@ $transition-easing: ease;
   // text wrapping doesn't reflow while the host width is animating.
   min-width: var(--sidebar-w, 280px);
 
-  animation: sidebar-expand $transition-duration $transition-easing both;
   transform-origin: top left;
-}
+  transition:
+    opacity $transition-duration $transition-easing,
+    transform $transition-duration $transition-easing,
+    visibility 0s linear 0s;
 
-@keyframes sidebar-expand {
-  from {
+  opacity: 1;
+  transform: scale(1) translateX(0);
+  visibility: visible;
+
+  // Keep the DOM alive when collapsed to preserve scroll position,
+  // but fade out and make non-interactive.
+  :host.is-collapsed:not(.is-expanded) & {
     opacity: 0;
     transform: scale(0.96) translateX(-6px);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1) translateX(0);
+    visibility: hidden;
+    pointer-events: none;
+    transition:
+      opacity $transition-duration $transition-easing,
+      transform $transition-duration $transition-easing,
+      visibility 0s linear $transition-duration;
   }
 }
 
@@ -194,6 +214,12 @@ $transition-easing: ease;
   width: 4px;
   cursor: col-resize;
   z-index: 200;
+
+  // Expand the tap target on touch devices without affecting the visual width.
+  @media (pointer: coarse) {
+    width: 20px;
+    right: -8px;
+  }
 
   background: transparent;
   transition: background 120ms ease;

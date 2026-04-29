@@ -9,11 +9,9 @@
 </div>
 
 <div class="sidebar-content">
-  @if (isExpanded()) {
-    <div class="sidebar-content-inner">
-      <ng-content />
-    </div>
-  }
+  <div class="sidebar-content-inner">
+    <ng-content />
+  </div>
 </div>
 
 <div class="sidebar-footer">
@@ -46,4 +44,4 @@
   </button>
 </div>
 
-<div class="resize-handle" aria-hidden="true" (mousedown)="onResizeStart($event)"></div>
+<div class="resize-handle" aria-hidden="true" (mousedown)="onResizeStart($event)" (touchstart)="onResizeTouchStart($event)"></div>

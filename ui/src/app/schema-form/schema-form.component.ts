@@ -9,8 +9,8 @@ import {
   signal,
 } from '@angular/core';
 import { BrowserStorage } from '../services/browser-storage';
-import { UserInputModality } from '../shared/input-modality/input-modality';
 import { Icon } from '../shared/icon/icon';
+import { UserInputModality } from '../shared/input-modality/input-modality';
 import { FieldHostComponent } from './field-host/field-host.component';
 import { SchemaGroup } from './models/field-def';
 import { parseSchema } from './models/schema-parser';
