@@ -1,9 +1,12 @@
 <div class="home-dashboard">
   <div class="dashboard-container">
     <h1>Dashboard</h1>
-    <p>Recent slices and file selection coming soon...</p>
-  </div>
 
-  <button routerLink="/slice">New Slice</button>
-  <button (click)="_theme.toggleTheme()">Change Theme</button>
+    <div class="dashboard-actions">
+      <button routerLink="/slice">New Slice</button>
+      <button (click)="_theme.toggleTheme()">Change Theme</button>
+    </div>
+
+    <nexus-list-history />
+  </div>
 </div>

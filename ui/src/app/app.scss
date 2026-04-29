@@ -1,3 +1,10 @@
 :host {
   display: contents;
 }
+
+.app-status-bar {
+  position: fixed;
+  bottom: 1rem;
+  right: 1rem;
+  z-index: 1000;
+}

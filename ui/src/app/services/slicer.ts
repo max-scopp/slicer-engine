@@ -5,18 +5,11 @@ import { environment } from '../../environments/environment';
 import { WsSlicingParams } from '../../generated/slicer-engine-ws-client-message-v1';
 import { ServerMessage } from '../../generated/slicer-engine-ws-server-message-v1';
 import { DEFAULT_SETTINGS } from '../models/slice-settings.model';
+import { History } from './history';
 import { SlicerConnection } from './slicer-connection';
 import { SlicerFile } from './slicer-file';
 
 export type SlicerStatus = 'idle' | 'ready' | 'uploading' | 'slicing' | 'done' | 'error';
-
-export interface PreviousSession {
-  request_uuid: string;
-  original_filename?: string | null;
-  layer_count?: number | null;
-  created_at: string;
-  download_url: string;
-}
 
 export interface PhaseTimingData {
   phase: string;
@@ -30,6 +23,7 @@ export class Slicer {
   private readonly ws = inject(SlicerConnection);
   private readonly http = inject(HttpClient);
   private readonly slicerFile = inject(SlicerFile);
+  private readonly history = inject(History);
 
   /**
    * Currently-selected file. Sourced from {@link SlicerFile} so the upload
@@ -39,7 +33,6 @@ export class Slicer {
   readonly settings = signal<WsSlicingParams>(DEFAULT_SETTINGS);
   readonly status = signal<SlicerStatus>('idle');
   readonly outputLog = signal<string[]>([]);
-  readonly previousSessions = signal<PreviousSession[]>([]);
   readonly phaseTimings = signal<PhaseTimingData[]>([]);
 
   constructor() {
@@ -87,19 +80,6 @@ export class Slicer {
           'Downloading G-code…',
         ]);
         this.downloadGcode(msg.download_url);
-        // Refresh history to show the newly completed session
-        this.loadPreviousSessions();
-        break;
-      case 'SessionsList':
-        this.previousSessions.set(
-          msg.sessions.map((s) => ({
-            request_uuid: s.request_uuid,
-            original_filename: s.original_filename,
-            layer_count: s.layer_count,
-            created_at: s.created_at,
-            download_url: s.download_url,
-          })),
-        );
         break;
       case 'Error':
         this.status.set('error');
@@ -225,14 +205,10 @@ export class Slicer {
   }
 
   loadPreviousSessions(): void {
-    this.ws.send({ type: 'ListSessions' });
+    this.history.refresh();
   }
 
-  downloadFromHistory(session: PreviousSession): void {
-    const filename = session.original_filename?.replace(/\.stl$/i, '.gcode') ?? 'output.gcode';
-    const link = document.createElement('a');
-    link.href = session.download_url;
-    link.download = filename;
-    link.click();
+  downloadFromHistory(session: { download_url: string; original_filename?: string | null }): void {
+    this.history.download(session as import('./history').SessionSummary);
   }
 }
