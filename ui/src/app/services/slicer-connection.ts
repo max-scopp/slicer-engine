@@ -38,6 +38,17 @@ export class SlicerConnection {
     shared$.subscribe();
 
     this.#reconnect$.next();
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && !this.isConnected()) {
+        this.retry();
+      }
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    this.#destroyRef.onDestroy(() => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    });
   }
 
   send(msg: ClientMessage): void {
@@ -45,7 +56,8 @@ export class SlicerConnection {
   }
 
   retry(): void {
-    if (this.status() !== 'failed') {
+    const current = this.status();
+    if (current !== 'failed' && current !== 'disconnected') {
       return;
     }
 
