@@ -4,8 +4,8 @@ import { ActivatedRoute } from '@angular/router';
 import { map } from 'rxjs';
 import { environment } from '../../../environments/environment';
 import { ViewerComponent, ViewerMode } from '../../components/viewer';
+import { Slicer } from '../../services/slicer';
 import { SlicerFile } from '../../services/slicer-file';
-import { SlicerService } from '../../services/slicer.service';
 
 @Component({
   selector: 'nexus-slice-viewer',
@@ -17,7 +17,7 @@ import { SlicerService } from '../../services/slicer.service';
 })
 export class SliceViewerComponent {
   readonly #activatedRoute = inject(ActivatedRoute);
-  readonly #slicer = inject(SlicerService);
+  readonly #slicer = inject(Slicer);
   readonly #slicerFile = inject(SlicerFile);
 
   readonly requestUuid = toSignal(

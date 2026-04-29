@@ -1,20 +1,20 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 
-import { ObjectTrackerService, SceneObject } from '../object-tracker';
+import { ObjectTracker, SceneObject } from '../object-tracker';
 import { DragStore } from './drag-store';
 import { sanitisePrintAreaConfig } from './sanitise';
 import { SelectionStore } from './selection-store';
 import {
-    DEFAULT_PRINT_AREA_CONFIG,
-    PrintAreaBounds,
-    PrintAreaConfig,
-    SelectOptions,
+  DEFAULT_PRINT_AREA_CONFIG,
+  PrintAreaBounds,
+  PrintAreaConfig,
+  SelectOptions,
 } from './types';
 
 /**
  * Build-volume orchestrator. Owns the print-area configuration and routes
  * pointer-driven selection / drag gestures from the viewer into the
- * {@link ObjectTrackerService}.
+ * {@link ObjectTracker}.
  *
  * Responsibilities are kept narrow on purpose:
  * - **Configuration** — bed dimensions and the bed offset within machine
@@ -25,13 +25,13 @@ import {
  *   drag, plus the per-frame translation it produces ({@link DragStore}).
  *
  * Everything related to *what* objects exist and *what their transforms
- * are* lives in {@link ObjectTrackerService}; this service merely consumes
+ * are* lives in {@link ObjectTracker}; this service merely consumes
  * the tracker through Angular DI and exposes its `objects` signal as a
  * convenience re-export.
  */
 @Injectable({ providedIn: 'root' })
-export class PrintAreaService {
-  private readonly tracker = inject(ObjectTrackerService);
+export class PrintArea {
+  private readonly tracker = inject(ObjectTracker);
 
   // ---------------------------------------------------------------------------
   // Configuration

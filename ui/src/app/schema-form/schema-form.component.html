@@ -1,16 +1,41 @@
-@for (group of groups(); track group.name) {
-  <section class="schema-form-group">
-    <h3 class="schema-form-group-title">{{ group.name }}</h3>
-    <div class="schema-form-group-fields">
-      @for (f of group.fields; track f.key) {
-        <div class="schema-form-field">
-          <se-field-host
-            [field]="f"
-            [value]="value()[f.key]"
-            (fieldChange)="onFieldChange(f.key, $event)"
-          />
+<div ngAccordionGroup [multiExpandable]="true" class="schema-form-accordion">
+  @for (group of groups(); track group.name; let groupIndex = $index) {
+    @let expandedSig = getExpandedSignal(group.name);
+    <div class="schema-form-group">
+      <h3 class="schema-form-group-heading" role="heading" aria-level="3">
+        <button
+          ngAccordionTrigger
+          [panel]="panel"
+          [(expanded)]="expandedSig"
+          (expandedChange)="onExpandedChange(group.name)"
+          class="schema-form-group-trigger"
+          type="button"
+        >
+          <span class="schema-form-group-title">{{ group.name }}</span>
+          <span class="schema-form-group-chevron" aria-hidden="true"></span>
+        </button>
+      </h3>
+
+      <div
+        ngAccordionPanel
+        #panel="ngAccordionPanel"
+        class="schema-form-group-panel"
+        [attr.data-expanded]="expandedSig()"
+      >
+        <div class="schema-form-group-fields">
+          <div class="schema-form-group-fields-inner">
+            @for (f of group.fields; track f.key) {
+              <div class="schema-form-field">
+                <se-field-host
+                  [field]="f"
+                  [value]="value()[f.key]"
+                  (fieldChange)="onFieldChange(f.key, $event)"
+                />
+              </div>
+            }
+          </div>
         </div>
-      }
+      </div>
     </div>
-  </section>
-}
+  }
+</div>

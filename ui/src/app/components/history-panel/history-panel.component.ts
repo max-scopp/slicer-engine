@@ -1,6 +1,6 @@
-import { Component, inject, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { SlicerService, PreviousSession } from '../../services/slicer.service';
+import { Component, inject, OnInit } from '@angular/core';
+import { PreviousSession, Slicer } from '../../services/slicer';
 
 @Component({
   selector: 'nexus-history-panel',
@@ -10,7 +10,7 @@ import { SlicerService, PreviousSession } from '../../services/slicer.service';
   styleUrl: './history-panel.component.scss',
 })
 export class HistoryPanelComponent implements OnInit {
-  private readonly slicerService = inject(SlicerService);
+  private readonly slicerService = inject(Slicer);
 
   readonly previousSessions = this.slicerService.previousSessions;
 

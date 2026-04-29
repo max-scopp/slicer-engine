@@ -10,7 +10,7 @@ import { EulerRotation, IDENTITY_TRANSFORM, SceneObjectInit, Transform, Vec3 } f
  * placement-list UI, etc.) can subscribe to exactly the slice they care
  * about without re-rendering on unrelated changes.
  *
- * `SceneObject`s are created and owned by `ObjectTrackerService`; that
+ * `SceneObject`s are created and owned by `ObjectTracker`; that
  * service is the only thing that should `new` them so the tracker can keep
  * its `objects` signal authoritative.
  */

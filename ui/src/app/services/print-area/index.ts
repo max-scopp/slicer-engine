@@ -5,15 +5,14 @@
  * internal layout stays free to change.
  *
  * Object identity / position / rotation / scale live with
- * {@link ../object-tracker `ObjectTrackerService`} — this service is
+ * {@link ../object-tracker `ObjectTracker`} — this service is
  * focused on the build volume, selection state, and drag gestures.
  */
-export { PrintAreaService } from './print-area.service';
+export { PrintArea } from './print-area';
 export {
-    DEFAULT_PRINT_AREA_CONFIG,
-    type DragAnchor,
-    type PrintAreaBounds,
-    type PrintAreaConfig,
-    type SelectOptions
+  DEFAULT_PRINT_AREA_CONFIG,
+  type DragAnchor,
+  type PrintAreaBounds,
+  type PrintAreaConfig,
+  type SelectOptions,
 } from './types';
-

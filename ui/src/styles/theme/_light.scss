@@ -14,8 +14,8 @@ html {
 
   // Text Colors
   --color-text-primary: #111214;
-  --color-text-secondary: #686a73;
-  --color-text-tertiary: #8e909a;
+  --color-text-secondary: #3e4048;
+  --color-text-tertiary: #757880;
 
   // Borders
   --color-border: #e0e0e0;
@@ -62,6 +62,14 @@ html {
   --transition-fast: 0.15s ease;
   --transition-normal: 0.2s ease;
   --transition-slow: 0.3s ease;
+
+  // Easing curves & durations
+  --duration-fast: 0.12s;
+  --duration-normal: 0.18s;
+  --duration-slow: 0.28s;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-decelerate: cubic-bezier(0, 0, 0.2, 1);
+  --ease-accelerate: cubic-bezier(0.4, 0, 1, 1);
 
   // Shadows
   --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.14);

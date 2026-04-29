@@ -5,12 +5,12 @@ import { SelectOptions } from './types';
 
 /**
  * Owns the "currently selected ids" signal and every operation that mutates
- * it. Lives as a plain class (not an `@Injectable`) so `PrintAreaService`
+ * it. Lives as a plain class (not an `@Injectable`) so `PrintArea`
  * can compose it without polluting Angular's DI graph.
  *
  * The store is decoupled from the source of objects: it asks for the live
  * list through the `objects` accessor passed to the constructor, so the
- * `ObjectTrackerService` can keep ownership of the {@link SceneObject}
+ * `ObjectTracker` can keep ownership of the {@link SceneObject}
  * instances while we just react to whatever it currently holds.
  */
 export class SelectionStore {

@@ -2,10 +2,16 @@
   padding: 0 var(--spacing-lg);
 
   display: flex;
-  place-items: center;
+  align-items: center;
   justify-content: space-between;
 
   height: 60px;
+}
+
+.view-group {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm, 8px);
 }
 
 .button-radio-group {
@@ -26,12 +32,6 @@
       --icon-size: 16px;
     }
   }
-}
-
-.view-group {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-sm, 8px);
 }
 
 .reset-view-button {

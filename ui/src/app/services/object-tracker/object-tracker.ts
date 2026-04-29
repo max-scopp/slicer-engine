@@ -15,7 +15,7 @@ import { SceneObjectInit } from './types';
  * now and what is each object's transform?".
  */
 @Injectable({ providedIn: 'root' })
-export class ObjectTrackerService {
+export class ObjectTracker {
   private readonly _objects = signal<readonly SceneObject[]>([]);
   /** Monotonic counter used when the caller doesn't supply an id. */
   private idSeq = 0;
@@ -31,7 +31,7 @@ export class ObjectTrackerService {
   create(init: SceneObjectInit = {}): SceneObject {
     const id = init.id ?? this.nextId();
     if (this._objects().some((o) => o.id === id)) {
-      throw new Error(`ObjectTrackerService: duplicate object id "${id}"`);
+      throw new Error(`ObjectTracker: duplicate object id "${id}"`);
     }
     const obj = new SceneObject(id, init);
     this._objects.set([...this._objects(), obj]);

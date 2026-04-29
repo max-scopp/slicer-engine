@@ -11,8 +11,8 @@ import {
   signal,
   viewChild,
 } from '@angular/core';
-import { ObjectTrackerService, SceneObject } from '../../services/object-tracker';
-import { PrintAreaService } from '../../services/print-area';
+import { ObjectTracker, SceneObject } from '../../services/object-tracker';
+import { PrintArea } from '../../services/print-area';
 import { ViewerControl } from '../../services/viewer-control';
 import { ChunkedLineGeometry } from './chunked-line-geometry';
 import { GcodeSource, loadGcode } from './gcode-loader';
@@ -39,9 +39,14 @@ export type ViewerMode = 'model' | 'gcode';
   standalone: true,
   template: `
     <div class="viewer-host" #host></div>
-    @if (status() !== 'idle') {
-      <div class="viewer-status">{{ statusLabel() }}</div>
-    }
+    <div class="viewer-bottom-left">
+      @if (fps() > 0) {
+        <div class="viewer-fps">{{ fps() }} FPS &middot; {{ frameDelayMs() }} ms</div>
+      }
+      @if (status() !== 'idle') {
+        <div class="viewer-status">{{ statusLabel() }}</div>
+      }
+    </div>
   `,
   styles: [
     `
@@ -58,10 +63,17 @@ export type ViewerMode = 'model' | 'gcode';
         position: absolute;
         inset: 0;
       }
-      .viewer-status {
+      .viewer-bottom-left {
         position: absolute;
         bottom: 12px;
         left: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        pointer-events: none;
+      }
+      .viewer-fps,
+      .viewer-status {
         padding: 6px 10px;
         background: rgba(0, 0, 0, 0.55);
         color: #e6e6e6;
@@ -69,7 +81,6 @@ export type ViewerMode = 'model' | 'gcode';
           12px/1.2 ui-monospace,
           monospace;
         border-radius: 4px;
-        pointer-events: none;
       }
     `,
   ],
@@ -87,11 +98,15 @@ export class ViewerComponent implements OnDestroy {
   private readonly hostRef = viewChild.required<ElementRef<HTMLElement>>('host');
   private readonly elementRef = inject(ElementRef);
   private readonly viewerControl = inject(ViewerControl);
-  private readonly printArea = inject(PrintAreaService);
-  private readonly objectTracker = inject(ObjectTrackerService);
+  private readonly printArea = inject(PrintArea);
+  private readonly objectTracker = inject(ObjectTracker);
 
   /** Current loading status for the optional overlay. */
   readonly status = signal<'idle' | 'loading' | 'streaming' | 'ready' | 'error'>('idle');
+  /** Smoothed frames-per-second reported by the render loop. */
+  readonly fps = signal(0);
+  /** Smoothed average frame delay in milliseconds. */
+  readonly frameDelayMs = signal(0);
   private readonly progressSegments = signal(0);
   private readonly errorMessage = signal<string>('');
 
@@ -218,6 +233,10 @@ export class ViewerComponent implements OnDestroy {
       state.direction.copy(dir);
       state.up.copy(up);
       state.fov = fov;
+    };
+    this.scene.fpsSink = (fps, delayMs) => {
+      this.fps.set(fps);
+      this.frameDelayMs.set(delayMs);
     };
     // Allow external gizmos (viewport-cube drag) to orbit the main camera.
     this.viewerControl.orbitSink = (azimuth, polar) => this.scene?.orbitBy(azimuth, polar);

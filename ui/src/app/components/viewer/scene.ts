@@ -32,7 +32,7 @@ import type { PrintAreaConfig } from '../../services/print-area';
 /**
  * Callbacks invoked by {@link ViewerScene} when the user interacts with a
  * registered selectable object. The viewer wires these to the application's
- * selection store (see `PrintAreaService`); the scene itself knows nothing
+ * selection store (see `PrintArea`); the scene itself knows nothing
  * about the store, only the contract.
  */
 export interface SceneSelectionHandlers {
@@ -265,6 +265,19 @@ export class ViewerScene {
    * viewport-cube gizmo to mirror the main camera's orientation.
    */
   cameraStateSink: ((direction: Vector3, up: Vector3, fov: number) => void) | null = null;
+
+  /**
+   * Optional sink invoked periodically with the smoothed frames-per-second
+   * and average frame delay (ms) of the render loop. Called approximately once per second.
+   */
+  fpsSink: ((fps: number, delayMs: number) => void) | null = null;
+
+  /** Exponentially-smoothed FPS estimate. */
+  private smoothedFps = 0;
+  /** Exponentially-smoothed frame delay in milliseconds. */
+  private smoothedDelayMs = 0;
+  /** Timestamp of the last time {@link fpsSink} was called. */
+  private lastFpsPublishTime = 0;
 
   /**
    * Hook for selection / drag interactions. The viewer assigns this once it
@@ -1030,7 +1043,30 @@ export class ViewerScene {
     this.updateNearFar();
     this.renderer.render(this.scene, this.camera);
     this.publishCameraState();
+    this.publishFps(now, dt);
   };
+
+  /** Update the smoothed FPS / delay estimates and push to {@link fpsSink} ~once/s. */
+  private publishFps(now: number, dt: number): void {
+    if (!this.fpsSink) {
+      return;
+    }
+    if (dt > 0) {
+      const instantFps = 1 / dt;
+      const instantDelayMs = dt * 1000;
+      // Exponential moving average — α=0.1 smooths over ~10 frames.
+      this.smoothedFps =
+        this.smoothedFps === 0 ? instantFps : 0.9 * this.smoothedFps + 0.1 * instantFps;
+      this.smoothedDelayMs =
+        this.smoothedDelayMs === 0
+          ? instantDelayMs
+          : 0.9 * this.smoothedDelayMs + 0.1 * instantDelayMs;
+    }
+    if (now - this.lastFpsPublishTime >= 500) {
+      this.lastFpsPublishTime = now;
+      this.fpsSink(Math.round(this.smoothedFps), Math.round(this.smoothedDelayMs * 10) / 10);
+    }
+  }
 
   /** Push the camera's live direction/up to the optional sink. */
   private publishCameraState(): void {

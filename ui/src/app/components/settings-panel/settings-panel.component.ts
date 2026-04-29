@@ -1,7 +1,7 @@
 import { Component, inject } from '@angular/core';
 import globalSettingsSchema from '../../../schemas/slicer-engine-global-settings-v1.json';
 import { FieldChangeEvent, SchemaFormComponent } from '../../schema-form/schema-form.component';
-import { SlicerService } from '../../services/slicer.service';
+import { Slicer } from '../../services/slicer';
 
 // Extract the SlicingParams sub-schema so the form renders all slicer settings,
 // not just the 8 fields in WsSlicingParams.
@@ -18,7 +18,7 @@ const SLICING_PARAMS_SCHEMA = {
   styleUrl: './settings-panel.component.scss',
 })
 export class SettingsPanelComponent {
-  private readonly slicer = inject(SlicerService);
+  private readonly slicer = inject(Slicer);
 
   readonly settings = this.slicer.settings;
   readonly schema = SLICING_PARAMS_SCHEMA;

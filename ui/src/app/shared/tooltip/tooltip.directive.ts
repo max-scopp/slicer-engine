@@ -12,7 +12,7 @@ import {
   OnInit,
 } from '@angular/core';
 import { Subscription } from 'rxjs';
-import { InputModalityService } from '../input-modality/input-modality.service';
+import { InputModality } from '../input-modality/input-modality';
 import { TooltipComponent } from './tooltip.component';
 
 const MOUSE_DELAY_MS = 600;
@@ -23,7 +23,7 @@ const PEN_HOVER_DELAY_MS = 300;
  *
  * Usage: <button [tooltip]="'Reset view'">…</button>
  *
- * Behaviour is driven by the active input modality (via InputModalityService):
+ * Behaviour is driven by the active input modality (via InputModality):
  *
  *   mouse    — show after a short hover delay; hide on mouse-leave.
  *              Keyboard focus/blur events are ignored.
@@ -52,7 +52,7 @@ export class TooltipDirective implements OnInit, OnDestroy {
   private readonly overlay = inject(Overlay);
   private readonly elementRef = inject(ElementRef<HTMLElement>);
   private readonly focusMonitor = inject(FocusMonitor);
-  private readonly inputModality = inject(InputModalityService);
+  private readonly inputModality = inject(InputModality);
 
   private overlayRef: OverlayRef | null = null;
   private componentRef: ComponentRef<TooltipComponent> | null = null;

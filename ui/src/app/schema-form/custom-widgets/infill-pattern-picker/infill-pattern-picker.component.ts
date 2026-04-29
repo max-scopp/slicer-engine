@@ -91,8 +91,6 @@ const PATTERNS: PatternOption[] = [
           font-weight: 500;
           padding: 4px 2px;
           white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
         }
       }
     `,

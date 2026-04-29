@@ -1,6 +1,10 @@
 /// Utility classes
 /// @group utilities
 
+.stacked {
+  flex-direction: column;
+}
+
 .text-primary {
   color: var(--color-text-primary);
 }

@@ -1,6 +1,6 @@
-import { Component, inject, ViewChild, AfterViewInit, effect } from '@angular/core';
+import { AfterViewInit, Component, effect, inject, ViewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { SlicerService } from '../../services/slicer.service';
+import { Slicer } from '../../services/slicer';
 
 @Component({
   selector: 'nexus-status-panel',
@@ -10,7 +10,7 @@ import { SlicerService } from '../../services/slicer.service';
   styleUrl: './status-panel.component.scss',
 })
 export class StatusPanelComponent implements AfterViewInit {
-  private readonly slicer = inject(SlicerService);
+  private readonly slicer = inject(Slicer);
 
   @ViewChild('logContainer') logContainer: any;
 
@@ -43,8 +43,7 @@ export class StatusPanelComponent implements AfterViewInit {
 
   private scrollToBottom(): void {
     if (this.logContainer) {
-      this.logContainer.nativeElement.scrollTop =
-        this.logContainer.nativeElement.scrollHeight;
+      this.logContainer.nativeElement.scrollTop = this.logContainer.nativeElement.scrollHeight;
     }
   }
 

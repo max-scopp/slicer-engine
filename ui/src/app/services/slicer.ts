@@ -26,7 +26,7 @@ export interface PhaseTimingData {
 }
 
 @Injectable({ providedIn: 'root' })
-export class SlicerService {
+export class Slicer {
   private readonly ws = inject(SlicerConnection);
   private readonly http = inject(HttpClient);
   private readonly slicerFile = inject(SlicerFile);

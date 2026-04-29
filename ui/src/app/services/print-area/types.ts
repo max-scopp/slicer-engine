@@ -1,8 +1,8 @@
 /**
- * Shared shapes for the {@link ./print-area.service `PrintAreaService`}.
+ * Shared shapes for the {@link ./print-area `PrintArea`}.
  *
  * Object identity, position, rotation, and scale live with
- * {@link ../object-tracker `ObjectTrackerService`}; this file only carries
+ * {@link ../object-tracker `ObjectTracker`}; this file only carries
  * configuration + UI-helper types.
  */
 
@@ -38,7 +38,7 @@ export interface DragAnchor {
   startY: number;
 }
 
-/** Options accepted by `PrintAreaService.select`. */
+/** Options accepted by `PrintArea.select`. */
 export interface SelectOptions {
   /**
    * When `true`, the id is added to (or removed from, if already present)
