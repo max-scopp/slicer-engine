@@ -1,0 +1,39 @@
+:host {
+  position: relative;
+  display: flex;
+  height: 100%;
+}
+
+.shell-content {
+  position: relative;
+
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.print-estimates {
+  $off: 40px;
+
+  position: absolute;
+  bottom: $off;
+  right: $off;
+}
+
+.shell-toolbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+
+  z-index: 100;
+}
+
+.viewport-cube {
+  position: absolute;
+  // Slot just below the 60px-tall toolbar.
+  top: calc(60px + var(--spacing-sm, 8px));
+  right: var(--spacing-lg, 24px);
+  z-index: 90;
+  pointer-events: auto;
+}

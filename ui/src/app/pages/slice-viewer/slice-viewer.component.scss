@@ -1,0 +1,50 @@
+.slice-viewer-page {
+  display: flex;
+  gap: 16px;
+  height: 100%;
+}
+
+.viewport-area {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+}
+
+.viewport-container {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+.viewport-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #999;
+  gap: 8px;
+
+  p {
+    margin: 0;
+    font-size: 14px;
+  }
+
+  .uuid {
+    font-size: 12px;
+    color: #ccc;
+    font-family: monospace;
+  }
+}
+
+.estimates-sidebar {
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}

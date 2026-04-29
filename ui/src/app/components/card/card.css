@@ -1,0 +1,18 @@
+:host {
+  display: grid;
+  gap: 2px;
+
+  background: var(--color-surface);
+}
+
+:host(.small) {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-sm);
+}
+
+:host(.large) {
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  border: none;
+}

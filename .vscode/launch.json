@@ -1,0 +1,66 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug slicer-engine (server)",
+      "cargo": {
+        "args": ["build", "--bin=slicer-engine"],
+        "filter": { "name": "slicer-engine", "kind": "bin" }
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug slicer-engine (slice simple-cube)",
+      "cargo": {
+        "args": ["build", "--bin=slicer-engine"],
+        "filter": { "name": "slicer-engine", "kind": "bin" }
+      },
+      "args": [
+        "slice",
+        "--input",
+        "${workspaceFolder}/tests/fixtures/simple-cube.3mf",
+        "--output",
+        "${workspaceFolder}/output.gcode"
+      ],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug slicer-engine (custom args)",
+      "cargo": {
+        "args": ["build", "--bin=slicer-engine"],
+        "filter": { "name": "slicer-engine", "kind": "bin" }
+      },
+      "args": ["${input:cliArgs}"],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug unit tests (lib)",
+      "cargo": {
+        "args": ["test", "--no-run", "--lib"],
+        "filter": { "name": "slicer-engine", "kind": "lib" }
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "cliArgs",
+      "type": "promptString",
+      "description": "CLI arguments to pass to slicer-engine",
+      "default": "info --verbose"
+    }
+  ]
+}

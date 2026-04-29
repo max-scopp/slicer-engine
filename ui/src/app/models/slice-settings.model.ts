@@ -1,23 +1,13 @@
-export type InfillPattern = 'rectilinear' | 'grid' | 'honeycomb' | 'gyroid' | 'tpms-d';
+export type { WsSlicingParams as SliceSettings } from '../../generated/slicer-engine-ws-client-message-v1';
 
-export interface SliceSettings {
-  layerHeight: number;
-  printSpeed: number;
-  nozzleTemp: number;
-  bedTemp: number;
-  gcodeFlavor: 'marlin' | 'klipper';
-  infillDensity: number;
-  infillPattern: InfillPattern;
-  infillAngle: number;
-}
-
-export const DEFAULT_SETTINGS: SliceSettings = {
-  layerHeight: 0.2,
-  printSpeed: 60,
-  nozzleTemp: 215,
-  bedTemp: 60,
-  gcodeFlavor: 'marlin',
-  infillDensity: 20,
-  infillPattern: 'rectilinear',
-  infillAngle: 45,
-};
+export const DEFAULT_SETTINGS: import('../../generated/slicer-engine-ws-client-message-v1').WsSlicingParams =
+    {
+        layer_height: 0.2,
+        print_speed: 60,
+        nozzle_temp: 215,
+        bed_temp: 60,
+        gcode_flavor: 'Marlin',
+        infill_density: 20,
+        infill_pattern: 'Rectilinear',
+        infill_angle: 45,
+    };

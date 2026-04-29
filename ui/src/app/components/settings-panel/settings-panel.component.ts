@@ -1,21 +1,29 @@
 import { Component, inject } from '@angular/core';
-import { FormsModule } from '@angular/forms';
-import { SlicerService } from '../../services/slicer.service';
-import { SliceSettings } from '../../models/slice-settings.model';
+import globalSettingsSchema from '../../../schemas/slicer-engine-global-settings-v1.json';
+import { FieldChangeEvent, SchemaFormComponent } from '../../schema-form/schema-form.component';
+import { Slicer } from '../../services/slicer';
+
+// Extract the SlicingParams sub-schema so the form renders all slicer settings,
+// not just the 8 fields in WsSlicingParams.
+const SLICING_PARAMS_SCHEMA = {
+  ...(globalSettingsSchema.$defs.SlicingParams as Record<string, unknown>),
+  $defs: globalSettingsSchema.$defs as Record<string, unknown>,
+};
 
 @Component({
-  selector: 'app-settings-panel',
+  selector: 'nexus-settings-panel',
   standalone: true,
-  imports: [FormsModule],
+  imports: [SchemaFormComponent],
   templateUrl: './settings-panel.component.html',
   styleUrl: './settings-panel.component.scss',
 })
 export class SettingsPanelComponent {
-  private readonly slicer = inject(SlicerService);
+  private readonly slicer = inject(Slicer);
 
   readonly settings = this.slicer.settings;
+  readonly schema = SLICING_PARAMS_SCHEMA;
 
-  update(patch: Partial<SliceSettings>): void {
-    this.slicer.updateSettings(patch);
+  update(event: FieldChangeEvent): void {
+    this.slicer.updateSettings({ [event.key]: event.value });
   }
 }

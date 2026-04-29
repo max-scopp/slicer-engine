@@ -159,7 +159,7 @@ impl GcodeGenerator {
     /// Apply a full [`LifecycleMarkerConfig`] to this generator.
     ///
     /// This replaces the current marker configuration entirely, allowing callers
-    /// to set per-flavor overrides loaded from [`crate::settings::params::GlobalSettings`].
+    /// to set per-flavor overrides loaded from the TOML config lifecycle_markers.
     pub fn with_marker_config(mut self, config: LifecycleMarkerConfig) -> Self {
         self.marker_config = config;
         self

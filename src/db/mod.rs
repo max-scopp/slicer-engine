@@ -63,9 +63,9 @@ pub struct RequestSession {
     pub status: RequestStatus,
     pub original_filename: Option<String>,
     pub upload_file_path: Option<PathBuf>,
-    pub upload_file_size: Option<u64>,
+    pub upload_file_size: Option<i64>,
     pub download_file_path: Option<PathBuf>,
-    pub download_file_size: Option<u64>,
+    pub download_file_size: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -188,9 +188,9 @@ impl Database {
                     status_str,
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, Option<String>>(3)?,
-                    row.get::<_, Option<u64>>(4)?,
+                    row.get::<_, Option<i64>>(4)?,
                     row.get::<_, Option<String>>(5)?,
-                    row.get::<_, Option<u64>>(6)?,
+                    row.get::<_, Option<i64>>(6)?,
                     created_at_str,
                     updated_at_str,
                 ))
@@ -269,7 +269,7 @@ impl Database {
             params![
                 &original_filename,
                 &path_str,
-                file_size,
+                file_size as i64,
                 RequestStatus::UploadComplete.to_db(),
                 &now,
                 request_uuid.to_string(),
@@ -300,7 +300,7 @@ impl Database {
              WHERE request_uuid = ?",
             params![
                 &path_str,
-                file_size,
+                file_size as i64,
                 RequestStatus::SliceComplete.to_db(),
                 &now,
                 request_uuid.to_string(),
@@ -387,9 +387,9 @@ impl Database {
                 status_str,
                 row.get::<_, Option<String>>(2)?,
                 row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<u64>>(4)?,
+                row.get::<_, Option<i64>>(4)?,
                 row.get::<_, Option<String>>(5)?,
-                row.get::<_, Option<u64>>(6)?,
+                row.get::<_, Option<i64>>(6)?,
                 created_at_str,
                 updated_at_str,
             ))

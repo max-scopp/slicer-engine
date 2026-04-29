@@ -6,6 +6,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::gcode::GcodeFlavor;
+use crate::infill::InfillPattern;
+
 /// Slicing parameters sent from the browser with a `slice` request.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WsSlicingParams {
@@ -18,14 +21,14 @@ pub struct WsSlicingParams {
     /// Heated-bed temperature in °C.
     pub bed_temp: f64,
     /// G-code dialect (`"marlin"` or `"klipper"`).
-    pub gcode_flavor: String,
+    pub gcode_flavor: GcodeFlavor,
     /// Infill density as a percentage (0–100). Converted to a fraction before
     /// being forwarded to the slicing pipeline (e.g. 20 → 0.2).
     #[serde(default = "WsSlicingParams::default_infill_density")]
     pub infill_density: f64,
-    /// Infill pattern name (`"rectilinear"`, `"grid"`, `"honeycomb"`, `"gyroid"`).
-    #[serde(default = "WsSlicingParams::default_infill_pattern")]
-    pub infill_pattern: String,
+    /// Infill pattern name (`"rectilinear"`, `"grid"`, `"honeycomb"`, `"gyroid"`, `"tpms-d"`).
+    #[serde(default)]
+    pub infill_pattern: InfillPattern,
     /// Base angle in degrees for infill lines (default 45°). Alternating layers
     /// rotate by +90° on top of this base angle.
     #[serde(default = "WsSlicingParams::default_infill_angle")]
@@ -35,10 +38,6 @@ pub struct WsSlicingParams {
 impl WsSlicingParams {
     fn default_infill_density() -> f64 {
         20.0
-    }
-
-    fn default_infill_pattern() -> String {
-        "rectilinear".to_string()
     }
 
     fn default_infill_angle() -> f64 {

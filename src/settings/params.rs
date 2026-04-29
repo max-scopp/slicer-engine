@@ -1,134 +1,247 @@
 //! Slicing parameters: per-print and per-object settings.
 
+use crate::gcode::GcodeFlavor;
+use crate::infill::InfillPattern;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// Parameters that control how a model is sliced and printed.
 ///
 /// All dimensional values are in millimeters; speeds in mm/s;
 /// temperatures in °C; infill density as a fraction 0.0–1.0.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(default)]
 pub struct SlicingParams {
-    /// Layer height in mm (e.g. 0.2).
+    #[schemars(description = "Layer height in mm.
+
+Smaller values produce finer detail but increase print time.
+**Typical:** 0.05–0.35 mm.", extend("x-group" = "Layer"))]
     pub layer_height: f64,
-    /// Maximum number of perimeter (wall) beads per layer.
-    ///
-    /// Arachne will place up to this many concentric wall paths around each
-    /// shell polygon.  The innermost bead may have a variable extrusion width
-    /// when the remaining space is thinner than the nozzle diameter.
+
+    #[schemars(description = "Number of perimeter (wall) beads per layer.
+
+Arachne places up to this many concentric wall paths around each shell polygon.
+The innermost bead may have variable width when narrow space remains.
+**Typical:** 2–4.", extend("x-group" = "Walls"))]
     #[serde(default = "SlicingParams::default_wall_count")]
     pub wall_count: usize,
-    /// Minimum allowed bead width as a fraction of the nozzle diameter.
-    ///
-    /// Beads narrower than `wall_line_width_min × nozzle_diameter_mm` are
-    /// skipped entirely.  Typical range: 0.5–1.0.
+
+    #[schemars(
+        description = "Minimum allowed bead width as a fraction of nozzle diameter.
+
+Beads narrower than `wall_line_width_min × nozzle_diameter_mm` are skipped entirely.
+**Range:** 0.5–1.0.",
+        extend("x-group" = "Walls")
+    )]
     #[serde(default = "SlicingParams::default_wall_line_width_min")]
     pub wall_line_width_min: f64,
-    /// Maximum allowed bead width as a fraction of the nozzle diameter.
-    ///
-    /// Variable-width beads are capped at `wall_line_width_max × nozzle_diameter_mm`
-    /// to avoid excessive over-extrusion at corners.  Typical range: 1.0–2.0.
+
+    #[schemars(
+        description = "Maximum allowed bead width as a fraction of nozzle diameter.
+
+Variable-width beads are capped at this multiple to avoid excessive over-extrusion at corners.
+**Range:** 1.0–2.0.",
+        extend("x-group" = "Walls")
+    )]
     #[serde(default = "SlicingParams::default_wall_line_width_max")]
     pub wall_line_width_max: f64,
-    /// Minimum wall thickness (as a fraction of nozzle diameter) before the
-    /// bead count transitions down by one.
-    ///
-    /// When the remaining space is narrower than
-    /// `wall_transition_threshold × nozzle_diameter_mm`, the algorithm avoids
-    /// adding another bead and instead widens the existing innermost bead.
+
+    #[schemars(
+        description = "Minimum wall space (fraction of nozzle diameter) before bead count decreases.
+
+When remaining space is narrower than `wall_transition_threshold × nozzle_diameter_mm`,
+the algorithm widens the existing innermost bead instead of adding a new one.
+**Typical:** 0.4–0.8.",
+        extend("x-group" = "Walls")
+    )]
     #[serde(default = "SlicingParams::default_wall_transition_threshold")]
     pub wall_transition_threshold: f64,
-    /// Length over which a bead-count transition is smoothed (mm).
-    ///
-    /// Larger values produce a longer gradual width ramp at bead-count changes;
-    /// smaller values produce abrupt transitions.
+
+    #[schemars(
+        description = "Length (mm) over which a bead-count transition is smoothed.
+
+Larger values produce a gradual width ramp at transitions; smaller values create abrupt changes.
+**Typical:** 0.5–2.0 mm.",
+        extend("x-group" = "Walls")
+    )]
     #[serde(default = "SlicingParams::default_wall_transition_length")]
     pub wall_transition_length: f64,
-    /// Number of inner walls that absorb width variation.
-    ///
-    /// When the remaining inner space is too narrow for a separate bead,
-    /// up to `wall_distribution_count` of the innermost beads are widened
-    /// proportionally to fill the gap.
+
+    #[schemars(description = "Number of inner wall beads that absorb width variation.
+
+When space is too narrow for a separate bead, up to this many innermost beads
+are widened proportionally to fill the gap.
+**Typical:** 1–2.", extend("x-group" = "Walls"))]
     #[serde(default = "SlicingParams::default_wall_distribution_count")]
     pub wall_distribution_count: usize,
-    /// Infill density as a fraction (0.0 = hollow, 1.0 = solid).
+
+    #[schemars(description = "Infill density as a fraction (0.0–1.0).
+
+- `0.0` = completely hollow
+- `0.15`–`0.3` = typical range for good strength/speed balance
+- `1.0` = fully solid", extend("x-group" = "Infill"))]
     pub infill_density: f64,
-    /// Infill pattern type (rectilinear, grid, honeycomb, gyroid).
-    /// Defaults to "rectilinear" if not specified.
+
+    #[schemars(description = "Infill pattern geometry.
+
+Supported values:
+- `rectilinear` — alternating straight lines (fastest)
+- `grid` — crossed lines forming a grid
+- `honeycomb` — hexagonal cells (good strength-to-weight ratio)
+- `gyroid` — smooth triply-periodic surface (excellent isotropy)", extend("x-group" = "Infill"))]
     #[serde(default = "SlicingParams::default_infill_pattern")]
-    pub infill_pattern: String,
-    /// Base angle in degrees for sparse infill lines (default 45°).
-    /// Alternating layers rotate +90° on top of this base angle.
+    pub infill_pattern: InfillPattern,
+
+    #[schemars(description = "Base angle in degrees for sparse infill lines.
+
+Alternating layers rotate by +90° on top of this base angle to create a crossing pattern.
+**Default:** 45°.", extend("x-group" = "Infill"))]
     #[serde(default = "SlicingParams::default_infill_base_angle")]
     pub infill_base_angle: f64,
-    /// Print speed in mm/s.
+
+    #[schemars(description = "Print speed in mm/s.
+
+Slower speeds improve layer adhesion and surface quality; faster speeds reduce print time.
+**Typical:** 40–100 mm/s.", extend("x-group" = "Speed"))]
     pub print_speed: f64,
-    /// Nozzle temperature in °C.
+
+    #[schemars(description = "Nozzle temperature in °C.
+
+Material guidelines:
+- **PLA:** 200–210 °C
+- **PETG:** 230–250 °C
+- **ABS:** 240–260 °C", extend("x-group" = "Temperature"))]
     pub nozzle_temp: f64,
-    /// Heated bed temperature in °C.
+
+    #[schemars(description = "Heated bed temperature in °C.
+
+Material guidelines:
+- **PLA:** 60–80 °C
+- **PETG:** 80–100 °C
+- **ABS:** 100–120 °C
+
+Set to `0` for an unheated bed.", extend("x-group" = "Temperature"))]
     pub bed_temp: f64,
-    /// Number of solid top layers (horizontal surfaces facing up).
+
+    #[schemars(
+        description = "Number of solid top layers (horizontal surfaces facing up).
+
+More layers improve surface quality and reduce infill show-through.
+**Typical:** 4–6 layers at 0.2 mm layer height.",
+        extend("x-group" = "Surfaces")
+    )]
     #[serde(default = "SlicingParams::default_top_layers")]
     pub top_layers: usize,
-    /// Number of solid bottom layers (horizontal surfaces facing down).
+
+    #[schemars(
+        description = "Number of solid bottom layers (horizontal surfaces facing down).
+
+More layers improve bottom surface finish and bed adhesion strength.
+**Typical:** 3–4 layers.",
+        extend("x-group" = "Surfaces")
+    )]
     #[serde(default = "SlicingParams::default_bottom_layers")]
     pub bottom_layers: usize,
-    /// Angle in degrees for top/bottom surface infill lines (e.g. 45 for diagonal).
+
+    #[schemars(
+        description = "Angle in degrees for top/bottom solid surface infill lines.
+
+Changing from the default can improve finish on curved or organic models.
+**Default:** 45°.",
+        extend("x-group" = "Surfaces")
+    )]
     #[serde(default = "SlicingParams::default_surface_infill_angle")]
     pub surface_infill_angle: f64,
-    /// Filament diameter in mm (e.g. 1.75 for standard PLA/PETG).
+
+    #[schemars(description = "Filament diameter in mm.
+
+Used to calculate extrusion volume from feed distance. Standard sizes:
+- `1.75 mm` — most common
+- `2.85 mm` — some older or larger-format printers", extend("x-group" = "Hardware"))]
     #[serde(default = "SlicingParams::default_filament_diameter_mm")]
     pub filament_diameter_mm: f64,
-    /// Nozzle diameter in mm (e.g. 0.4 for a standard 0.4 mm nozzle).
+
+    #[schemars(description = "Nozzle orifice diameter in mm.
+
+Affects minimum feature resolution and all line-width calculations.
+**Standard:** 0.4 mm. Other common sizes: 0.2, 0.6, 0.8 mm.", extend("x-group" = "Hardware"))]
     #[serde(default = "SlicingParams::default_nozzle_diameter_mm")]
     pub nozzle_diameter_mm: f64,
-    /// Non-print (travel) speed in mm/min (e.g. 9000 = 150 mm/s).
+
+    #[schemars(description = "Non-print (travel) move speed in **mm/min**.
+
+Convert from mm/s by multiplying by 60. Fast travel reduces print time without affecting print quality.
+**Example:** 9000 mm/min = 150 mm/s.", extend("x-group" = "Speed"))]
     #[serde(default = "SlicingParams::default_travel_speed_mm_min")]
     pub travel_speed_mm_min: f64,
-    /// Z-hop height in mm applied during travel moves to avoid stringing.
+
+    #[schemars(description = "Z-hop lift height in mm during travel moves.
+
+Lifts the nozzle before travelling to reduce stringing and nozzle drag across the print.
+**Typical:** 0.2–0.5 mm. Set to `0` to disable.", extend("x-group" = "Retraction"))]
     #[serde(default = "SlicingParams::default_z_hop_mm")]
     pub z_hop_mm: f64,
-    /// Retraction distance in mm on travel moves.
+
+    #[schemars(description = "Retraction distance in mm on travel moves.
+
+Pulls filament back into the nozzle to reduce oozing and stringing.
+**Typical:** 0.5–2 mm (direct drive) or 3–7 mm (Bowden).", extend("x-group" = "Retraction"))]
     #[serde(default = "SlicingParams::default_retract_mm")]
     pub retract_mm: f64,
-    /// Use only outer wall on the last layer of top surfaces.
-    ///
-    /// When true, the final layer of top surface regions will only print the
-    /// outermost perimeter, creating a cleaner top finish with less chance of
-    /// pillowing or visible infill patterns showing through.
+
+    #[schemars(
+        description = "Use a single outer wall on the topmost layer of top surfaces.
+
+Reduces the chance of pillowing and prevents infill patterns from showing through the top surface.
+**Recommended:** enabled.",
+        extend("x-group" = "Surfaces")
+    )]
     #[serde(default = "SlicingParams::default_only_one_wall_top")]
     pub only_one_wall_top: bool,
-    /// Use only outer wall on the first layer (bottom surface or general first layer).
-    ///
-    /// When true, the first layer uses only the outermost perimeter for better
-    /// bed adhesion and to avoid potential issues with multiple perimeters on
-    /// the first layer.
+
+    #[schemars(description = "Use a single outer wall on the first layer.
+
+Improves bed adhesion and avoids potential issues with multiple perimeters pressing against the bed simultaneously.
+**Recommended:** enabled.", extend("x-group" = "Surfaces"))]
     #[serde(default = "SlicingParams::default_only_one_wall_first_layer")]
     pub only_one_wall_first_layer: bool,
-    /// Overhang angle threshold in degrees (0-90) for skipping surface generation.
-    ///
-    /// When the angle between adjacent layers suggests a shallow overhang
-    /// (angle < threshold), skip generating solid top/bottom surfaces since
-    /// perimeters alone may suffice. Default 0° means always generate surfaces;
-    /// higher values (e.g., 45°) skip surfaces on gentle slopes.
-    ///
-    /// This is a foundation for future overhang support without implementing
-    /// full overhang detection yet.
+
+    #[schemars(
+        description = "Overhang angle threshold in degrees (0–90) for skipping solid surface generation.
+
+Surfaces are skipped when the overhang angle is below this threshold, since shallow overhangs may not need solid fill.
+**Default:** 45°. Set to `0` to always generate surfaces.",
+        extend("x-group" = "Surfaces")
+    )]
     #[serde(default = "SlicingParams::default_support_threshold_angle")]
     pub support_threshold_angle: f64,
-    /// How much solid surfaces overlap into perimeter walls for bonding (0.0-1.0).
-    ///
-    /// A small overlap (e.g., 0.25 = 25%) ensures surfaces bond well to walls
-    /// without gaps, while keeping walls as the dominant structure. Default 0.25.
+
+    #[schemars(
+        description = "Overlap of solid surfaces into perimeter walls for bonding (0.0–1.0).
+
+Ensures surfaces bond to walls without leaving gaps at the perimeter boundary.
+**Typical:** 0.25 (25% of a bead width).",
+        extend("x-group" = "Infill")
+    )]
     #[serde(default = "SlicingParams::default_infill_overlap_percent")]
     pub infill_overlap_percent: f64,
-    /// Maximum allowed perpendicular deviation (mm) when simplifying output
-    /// paths with the Ramer-Douglas-Peucker algorithm.
-    ///
-    /// Set to `0.0` to disable simplification entirely.
-    /// Typical values: `0.01`–`0.1` mm; default `0.05` mm.
+
+    #[schemars(
+        description = "Maximum perpendicular deviation (mm) for path simplification (Ramer–Douglas–Peucker).
+
+Reduces the number of G-code points without visibly affecting print quality.
+**Typical:** 0.01–0.1 mm. Set to `0.0` to disable.",
+        extend("x-group" = "Output")
+    )]
     #[serde(default = "SlicingParams::default_path_tolerance")]
     pub path_tolerance: f64,
+
+    #[schemars(
+        description = "G-code firmware flavor for the target printer.\n\nSupported values:\n- `marlin` — Marlin firmware (widely compatible)\n- `klipper` — Klipper firmware (macro-based)",
+        extend("x-group" = "Output")
+    )]
+    #[serde(default = "SlicingParams::default_gcode_flavor")]
+    pub gcode_flavor: GcodeFlavor,
 }
 
 impl Default for SlicingParams {
@@ -161,6 +274,7 @@ impl Default for SlicingParams {
             support_threshold_angle: Self::default_support_threshold_angle(),
             infill_overlap_percent: Self::default_infill_overlap_percent(),
             path_tolerance: Self::default_path_tolerance(),
+            gcode_flavor: Self::default_gcode_flavor(),
         }
     }
 }
@@ -190,8 +304,8 @@ impl SlicingParams {
         1
     }
 
-    fn default_infill_pattern() -> String {
-        "rectilinear".to_string()
+    fn default_infill_pattern() -> InfillPattern {
+        InfillPattern::Rectilinear
     }
 
     fn default_infill_base_angle() -> f64 {
@@ -249,6 +363,10 @@ impl SlicingParams {
     fn default_path_tolerance() -> f64 {
         0.05
     }
+
+    fn default_gcode_flavor() -> GcodeFlavor {
+        GcodeFlavor::Marlin
+    }
 }
 
 /// Per-flavor lifecycle marker configuration.
@@ -261,7 +379,7 @@ impl SlicingParams {
 /// - `{height}` → layer height (e.g. `0.200`)
 /// - `{type}` → extrusion role type name (e.g. `Perimeter`)
 /// - `{width}` → default extrusion width for the role (e.g. `0.40`)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LifecycleMarkerConfig {
     /// Whether to emit lifecycle markers at all. Default: true.
     #[serde(default = "LifecycleMarkerConfig::default_enabled")]
@@ -310,67 +428,6 @@ impl LifecycleMarkerConfig {
     }
 }
 
-/// Global (print-level) settings that apply to the entire print job.
-///
-/// These act as the baseline from which per-object overrides are applied.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GlobalSettings {
-    /// Base slicing parameters for the whole print.
-    pub params: SlicingParams,
-    /// Preferred G-code firmware flavor (e.g. `"marlin"`, `"klipper"`).
-    ///
-    /// Used as the default when the `slice` command is invoked without an
-    /// explicit `--gcode-flavor` flag.  Must be a valid [`crate::gcode::GcodeFlavor`]
-    /// string; defaults to `"marlin"` for new or migrated settings files.
-    #[serde(default = "GlobalSettings::default_gcode_flavor")]
-    pub gcode_flavor: String,
-    /// Optional custom G-code to emit at the start of every print job.
-    ///
-    /// When set, this replaces the firmware dialect's built-in start script.
-    /// The value may be either a newline-separated block of G-code or a path
-    /// to a `.gcode` file — resolved at slice time via
-    /// [`crate::gcode::resolve_gcode_source`].
-    ///
-    /// Override precedence: `--start-print-gcode` CLI arg → this field → dialect default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub start_print_gcode: Option<String>,
-    /// Optional custom G-code to emit at the end of every print job.
-    ///
-    /// When set, this replaces the firmware dialect's built-in end script.
-    /// The value may be either a newline-separated block of G-code or a path
-    /// to a `.gcode` file — resolved at slice time via
-    /// [`crate::gcode::resolve_gcode_source`].
-    ///
-    /// Override precedence: `--end-print-gcode` CLI arg → this field → dialect default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub end_print_gcode: Option<String>,
-    /// Per-flavor lifecycle marker configuration.
-    ///
-    /// Keys are lowercase flavor names (e.g. `"marlin"`, `"klipper"`).
-    /// Missing flavors inherit the default [`LifecycleMarkerConfig`] (enabled: true,
-    /// all markers at defaults).
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub lifecycle_markers: HashMap<String, LifecycleMarkerConfig>,
-}
-
-impl GlobalSettings {
-    fn default_gcode_flavor() -> String {
-        "marlin".to_string()
-    }
-}
-
-impl Default for GlobalSettings {
-    fn default() -> Self {
-        Self {
-            params: SlicingParams::default(),
-            gcode_flavor: Self::default_gcode_flavor(),
-            start_print_gcode: None,
-            end_print_gcode: None,
-            lifecycle_markers: HashMap::new(),
-        }
-    }
-}
-
 /// Per-object settings that may selectively override the global defaults.
 ///
 /// `overrides` is `None` when no object-level customisation is applied.
@@ -386,96 +443,6 @@ pub struct ObjectSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_global_settings_round_trip() {
-        let gs = GlobalSettings::default();
-        let json = serde_json::to_string(&gs).expect("serialize");
-        let back: GlobalSettings = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(back.params.layer_height, gs.params.layer_height);
-        assert_eq!(back.params.nozzle_temp, gs.params.nozzle_temp);
-        assert_eq!(back.gcode_flavor, gs.gcode_flavor);
-        assert!(back.lifecycle_markers.is_empty());
-    }
-
-    #[test]
-    fn test_global_settings_default_gcode_flavor_is_marlin() {
-        let gs = GlobalSettings::default();
-        assert_eq!(gs.gcode_flavor, "marlin");
-    }
-
-    #[test]
-    fn test_global_settings_default_lifecycle_markers_is_empty() {
-        let gs = GlobalSettings::default();
-        assert!(gs.lifecycle_markers.is_empty());
-    }
-
-    #[test]
-    fn test_global_settings_gcode_flavor_defaults_when_absent() {
-        // Simulate a legacy settings JSON that doesn't have the gcode_flavor field.
-        // `wall_thickness` is an unknown field in the new schema and is silently ignored.
-        let json = r#"{"params":{"layer_height":0.2,"infill_density":0.2,"print_speed":60.0,"nozzle_temp":210.0,"bed_temp":60.0}}"#;
-        let back: GlobalSettings = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(
-            back.gcode_flavor, "marlin",
-            "should default to marlin for legacy files"
-        );
-        assert!(
-            back.lifecycle_markers.is_empty(),
-            "should default to empty map for legacy files"
-        );
-    }
-
-    #[test]
-    fn test_global_settings_start_end_gcode_default_none() {
-        let gs = GlobalSettings::default();
-        assert!(gs.start_print_gcode.is_none());
-        assert!(gs.end_print_gcode.is_none());
-    }
-
-    #[test]
-    fn test_global_settings_start_end_gcode_round_trip() {
-        let gs = GlobalSettings {
-            start_print_gcode: Some("START_PRINT BED_TEMP=60".to_string()),
-            end_print_gcode: Some("END_PRINT".to_string()),
-            ..GlobalSettings::default()
-        };
-        let json = serde_json::to_string(&gs).expect("serialize");
-        let back: GlobalSettings = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(
-            back.start_print_gcode.as_deref(),
-            Some("START_PRINT BED_TEMP=60")
-        );
-        assert_eq!(back.end_print_gcode.as_deref(), Some("END_PRINT"));
-    }
-
-    #[test]
-    fn test_global_settings_start_end_gcode_absent_from_legacy_json() {
-        // Legacy JSON without start_print_gcode / end_print_gcode should default to None
-        let json = r#"{"params":{"layer_height":0.2,"infill_density":0.2,"print_speed":60.0,"nozzle_temp":210.0,"bed_temp":60.0},"gcode_flavor":"klipper"}"#;
-        let back: GlobalSettings = serde_json::from_str(json).expect("deserialize");
-        assert!(back.start_print_gcode.is_none());
-        assert!(back.end_print_gcode.is_none());
-    }
-
-    #[test]
-    fn test_global_settings_none_fields_omitted_in_json() {
-        let gs = GlobalSettings::default();
-        let json = serde_json::to_string(&gs).expect("serialize");
-        // Optional None fields should be omitted (skip_serializing_if)
-        assert!(
-            !json.contains("start_print_gcode"),
-            "None field should be omitted from JSON"
-        );
-        assert!(
-            !json.contains("end_print_gcode"),
-            "None field should be omitted from JSON"
-        );
-        assert!(
-            !json.contains("lifecycle_markers"),
-            "Empty HashMap should be omitted from JSON"
-        );
-    }
 
     #[test]
     fn test_object_settings_with_overrides_round_trip() {
@@ -546,24 +513,6 @@ mod tests {
         let json = serde_json::to_string(&cfg).expect("serialize");
         assert!(!json.contains("layer_change"), "None field omitted");
         assert!(!json.contains("z_marker"), "None field omitted");
-    }
-
-    #[test]
-    fn test_global_settings_lifecycle_markers_round_trip() {
-        let mut gs = GlobalSettings::default();
-        gs.lifecycle_markers.insert(
-            "klipper".to_string(),
-            LifecycleMarkerConfig {
-                enabled: true,
-                layer_change: Some(";LAYER_CHANGE".to_string()),
-                ..LifecycleMarkerConfig::default()
-            },
-        );
-        let json = serde_json::to_string(&gs).expect("serialize");
-        let back: GlobalSettings = serde_json::from_str(&json).expect("deserialize");
-        let klipper_cfg = back.lifecycle_markers.get("klipper").unwrap();
-        assert!(klipper_cfg.enabled);
-        assert_eq!(klipper_cfg.layer_change.as_deref(), Some(";LAYER_CHANGE"));
     }
 
     #[test]

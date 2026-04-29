@@ -3,6 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::config;
 use crate::settings::params::GlobalSettings;
 use dirs;
 use serde_json::Value;
@@ -124,7 +125,14 @@ pub fn load_and_merge_settings(
     let defaults = GlobalSettings::default();
     let mut merged: Value = serde_json::to_value(&defaults)?;
 
-    // Layer 2: user config
+    // Layer 2: TOML config (global user config → project config)
+    let toml_config = config::load_and_merge_config(project_config_path)?;
+    let toml_overlay = toml_slicing_to_json(toml_config.slicing.as_ref());
+    if !toml_overlay.is_null() {
+        merged = merge_json_configs(merged, toml_overlay);
+    }
+
+    // Layer 3: legacy JSON user config (settings.json) takes priority over TOML
     let user_path = settings_file();
     if user_path.exists() {
         let content = fs::read_to_string(&user_path)?;
@@ -132,13 +140,13 @@ pub fn load_and_merge_settings(
         merged = merge_json_configs(merged, user_val);
     }
 
-    // Layer 3: project config (auto-discover or explicit path)
-    let project_path: Option<PathBuf> = project_config_path
-        .filter(|p| p.exists())
+    // Layer 4: legacy project JSON config (slicer.json) — kept for back-compat
+    let project_json_path: Option<PathBuf> = project_config_path
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json") && p.exists())
         .map(|p| p.to_path_buf())
         .or_else(find_project_config);
 
-    if let Some(ref p) = project_path {
+    if let Some(ref p) = project_json_path {
         let project_val = load_project_config(p)?;
         merged = merge_json_configs(merged, project_val);
     }
@@ -146,6 +154,19 @@ pub fn load_and_merge_settings(
     let settings: GlobalSettings = serde_json::from_value(merged)
         .map_err(|e| format!("Merged settings are invalid: {}", e))?;
     Ok(settings)
+}
+
+/// Convert a `SlicingParams` from TOML config into a JSON overlay for `params`.
+///
+/// Returns `Null` when no `[slicing]` section was present in TOML.
+fn toml_slicing_to_json(slicing: Option<&crate::settings::params::SlicingParams>) -> Value {
+    match slicing {
+        Some(params) => {
+            let params_val = serde_json::to_value(params).unwrap_or(Value::Null);
+            serde_json::json!({ "params": params_val })
+        }
+        None => Value::Null,
+    }
 }
 
 #[cfg(test)]
@@ -275,16 +296,15 @@ mod tests {
     #[test]
     fn test_load_and_merge_settings_priority() {
         let dir = tempfile::tempdir().unwrap();
-        // Project config sets layer_height = 0.15, gcode_flavor = klipper
+        // Project config sets layer_height = 0.15
         let project_path = dir.path().join("slicer.json");
         fs::write(
             &project_path,
-            r#"{"params":{"layer_height":0.15},"gcode_flavor":"klipper"}"#,
+            r#"{"params":{"layer_height":0.15}}"#,
         )
         .unwrap();
         let settings = load_and_merge_settings(Some(&project_path)).unwrap();
         // Project value wins over default (0.2)
         assert_eq!(settings.params.layer_height, 0.15);
-        assert_eq!(settings.gcode_flavor, "klipper");
     }
 }

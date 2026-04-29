@@ -1,0 +1,40 @@
+/// CSS reset and box-sizing
+/// @group base
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  // Disable the blue/grey tap-highlight overlay on iOS/iPadOS
+  -webkit-tap-highlight-color: transparent;
+}
+
+// Prevent iOS rubber-band / overscroll bounce at the page level and disable
+// pinch-to-zoom gestures. Pinch-zoom is also disabled via the viewport meta
+// tag in index.html; `touch-action: manipulation` here suppresses double-tap
+// zoom and improves tap responsiveness.
+html,
+body {
+  margin: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: manipulation;
+  -webkit-text-size-adjust: 100%;
+}
+
+// iOS needs body fixed-positioning to fully kill the page rubber-band effect.
+body {
+  position: fixed;
+  inset: 0;
+}
+
+// Inner scrollable regions should opt in via this class (or set their own
+// overflow). `contain` keeps inertia natural while preventing scroll chaining
+// back to the locked body.
+.app-scroll {
+  overflow: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}

@@ -2,12 +2,15 @@
 
 use std::str::FromStr;
 
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
 /// Supported G-code firmware flavors.
 ///
 /// Each variant selects the concrete [`crate::gcode::GcodeDialect`] used by
 /// [`crate::gcode::GcodeGenerator`].  Only **Marlin** and **Klipper** are
 /// first-class citizens; additional flavors will be added in future releases.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 pub enum GcodeFlavor {
     /// Marlin firmware: standard M-command set, widely compatible with consumer FDM printers.
     #[default]

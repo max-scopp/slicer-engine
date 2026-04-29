@@ -11,7 +11,7 @@ pub mod output;
 pub mod schemas;
 
 use clap::Parser;
-use commands::{GenSchemasCommand, InfoCommand, ServeCommand, SettingsCommand, SliceCommand};
+use commands::{ConfigCommand, GenSchemasCommand, InfoCommand, ServeCommand, SettingsCommand, SliceCommand};
 
 /// Slicer Engine CLI
 #[derive(Parser, Debug)]
@@ -37,6 +37,9 @@ pub enum Commands {
     /// Validate or diff slicing settings
     Settings(SettingsCommand),
 
+    /// Manage the centralized TOML configuration
+    Config(ConfigCommand),
+
     /// Serve the Angular UI over a local HTTP server
     Serve(ServeCommand),
 
@@ -58,6 +61,7 @@ impl CliArgs {
             Commands::Slice(cmd) => cmd.execute(),
             Commands::Info(cmd) => cmd.execute(),
             Commands::Settings(cmd) => cmd.execute(),
+            Commands::Config(cmd) => cmd.execute(),
             Commands::Serve(cmd) => cmd.execute(),
             Commands::GenSchemas(cmd) => cmd.execute(),
         }

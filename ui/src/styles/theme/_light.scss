@@ -1,0 +1,82 @@
+/// Light mode CSS variables
+/// @group theme
+
+html {
+  // Backgrounds
+  --color-bg-primary: #f4f5f8;
+  --color-bg-secondary: #ffffff;
+  --color-bg-tertiary: #ebebeb;
+
+  // Surfaces & Interactions
+  --color-surface: #ffffff;
+  --color-surface-hover: #f0f0f0;
+  --color-surface-active: #e6e6e6;
+
+  // Text Colors
+  --color-text-primary: #111214;
+  --color-text-secondary: #3e4048;
+  --color-text-tertiary: #757880;
+
+  // Borders
+  --color-border: #e0e0e0;
+  --color-border-light: #f0f0f0;
+  --color-border-lighter: #ebebeb;
+
+  // Primary (Indigo)
+  --color-primary: #6b72e1;
+  --color-primary-hover: #4f56cc;
+  --color-primary-active: #444bb8;
+  --color-primary-light: #f0f2ff;
+  --color-primary-lighter: #f8faff;
+
+  // Focus ring
+  --color-focus-ring: #6b72e1;
+
+  // Status Colors
+  --color-success: #30a46c;
+  --color-success-light: #e8f5e9;
+  --color-warning: #f5a623;
+  --color-warning-light: #fff3e0;
+  --color-danger: #e5484d;
+  --color-danger-light: #ffebee;
+
+  // Scrollbar
+  --color-scrollbar-track: #f0f0f0;
+  --color-scrollbar-thumb: #d1d1d6;
+  --color-scrollbar-thumb-hover: #b0b0b5;
+
+  // Spacing
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 12px;
+  --spacing-lg: 16px;
+  --spacing-xl: 24px;
+  --spacing-2xl: 32px;
+
+  // Radius
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+
+  // Transitions
+  --transition-fast: 0.15s ease;
+  --transition-normal: 0.2s ease;
+  --transition-slow: 0.3s ease;
+
+  // Easing curves & durations
+  --duration-fast: 0.12s;
+  --duration-normal: 0.18s;
+  --duration-slow: 0.28s;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-decelerate: cubic-bezier(0, 0, 0.2, 1);
+  --ease-accelerate: cubic-bezier(0.4, 0, 1, 1);
+
+  // Shadows
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.14);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 8px 32px rgba(0, 0, 0, 0.12);
+  --shadow-lg: 0 4px 24px rgba(0, 0, 0, 0.08);
+
+  // Icon Weight
+  --icon-stroke-width: 1.8;
+}

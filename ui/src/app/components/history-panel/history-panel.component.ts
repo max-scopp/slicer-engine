@@ -1,41 +1,35 @@
-import { Component, inject, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { SlicerService, PreviousSession } from '../../services/slicer.service';
+import { Component, inject } from '@angular/core';
+import { History, SessionSummary } from '../../services/history';
 
 @Component({
-  selector: 'app-history-panel',
+  selector: 'nexus-history-panel',
   standalone: true,
   imports: [CommonModule],
   templateUrl: './history-panel.component.html',
   styleUrl: './history-panel.component.scss',
 })
-export class HistoryPanelComponent implements OnInit {
-  private readonly slicerService = inject(SlicerService);
+export class HistoryPanelComponent {
+  private readonly historyService = inject(History);
 
-  readonly previousSessions = this.slicerService.previousSessions;
-
-  ngOnInit(): void {
-    this.loadHistory();
-  }
+  readonly previousSessions = this.historyService.sessions;
 
   loadHistory(): void {
-    this.slicerService.loadPreviousSessions();
+    this.historyService.refresh();
   }
 
-  downloadSession(session: PreviousSession): void {
-    this.slicerService.downloadFromHistory(session);
+  downloadSession(session: SessionSummary): void {
+    this.historyService.download(session);
   }
 
   formatDate(dateStr: string): string {
-    try {
-      const date = new Date(dateStr);
-      return date.toLocaleString();
-    } catch {
-      return dateStr;
-    }
+    return this.historyService.formatDate(dateStr);
   }
 
-  getFilename(session: PreviousSession): string {
-    return session.original_filename?.replace(/\.stl$/i, '.gcode') ?? 'output.gcode';
+  getFilename(session: SessionSummary): string {
+    return (
+      (session.original_filename as string | null | undefined)?.replace(/\.stl$/i, '.gcode') ??
+      'output.gcode'
+    );
   }
 }

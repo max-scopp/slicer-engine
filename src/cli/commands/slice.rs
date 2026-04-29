@@ -2,13 +2,14 @@
 
 use crate::cli::emit::{CliLogger, Emitter};
 use crate::cli::output::{EmitPayload, OutputFormat};
+use crate::config::load_and_merge_config;
 use crate::gcode::{resolve_gcode_source, GcodeFlavor, GcodeGenerator};
+use crate::infill::InfillPattern;
 use crate::logging::{phases, PhaseTimer, ProcessLogger};
 use crate::mesh::analysis::{calculate_aabb, calculate_surface_area, calculate_volume};
 use crate::mesh::io::read_mesh;
 use crate::mesh::transforms::{center_mesh, drop_to_floor};
 use crate::settings::params::LifecycleMarkerConfig;
-use crate::settings::{load_and_merge_settings, load_settings};
 use clap::Parser;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -150,32 +151,34 @@ impl SliceCommand {
 
         let emitter = Emitter::new(format);
 
-        // Load and merge settings following the priority hierarchy:
-        // global defaults → user config → project config (slicer.json or --config)
-        let settings = match load_and_merge_settings(self.config.as_deref()) {
-            Ok(s) => s,
+        // Load and merge config following the priority hierarchy:
+        // global defaults → user slicer.toml → project slicer.toml → CLI args
+        let config = match load_and_merge_config(self.config.as_deref()) {
+            Ok(c) => c,
             Err(e) => {
                 emitter.log_warn(&format!(
-                    "Failed to load project config, using user/default settings: {}",
+                    "Failed to load config, using defaults: {}",
                     e
                 ));
-                load_settings().unwrap_or_default()
+                crate::config::AppConfig::default()
             }
         };
 
-        // Resolve gcode flavor: CLI arg → global settings → built-in default (Marlin)
-        let flavor_str = self
-            .gcode_flavor
-            .as_deref()
-            .unwrap_or(&settings.gcode_flavor);
-        let flavor = flavor_str
-            .parse::<GcodeFlavor>()
-            .map_err(|e| format!("Invalid G-code flavor: {}", e))?;
-        let default_layer_height = settings.params.layer_height;
+        let settings = config.slicing.unwrap_or_default();
+
+        // Resolve gcode flavor: CLI arg → params in settings → built-in default (Marlin)
+        let flavor = if let Some(ref flavor_str) = self.gcode_flavor {
+            flavor_str
+                .parse::<GcodeFlavor>()
+                .map_err(|e| format!("Invalid G-code flavor: {}", e))?
+        } else {
+            settings.gcode_flavor
+        };
+        let default_layer_height = settings.layer_height;
         let layer_height = self.layer_height.unwrap_or(default_layer_height);
 
         // Build slicing params (layer height may be overridden by CLI flag)
-        let mut slice_params = settings.params.clone();
+        let mut slice_params = settings.clone();
         slice_params.layer_height = layer_height;
         
         // Apply CLI overrides for infill settings
@@ -183,7 +186,8 @@ impl SliceCommand {
             slice_params.infill_density = density / 100.0; // Convert percentage to fraction
         }
         if let Some(ref pattern) = self.infill_pattern {
-            slice_params.infill_pattern = pattern.clone();
+            slice_params.infill_pattern = InfillPattern::parse(pattern)
+                .ok_or_else(|| format!("Unknown infill pattern: '{}'. Supported: rectilinear, grid, honeycomb, gyroid, tpms-d", pattern))?;
         }
         if let Some(angle) = self.infill_angle {
             slice_params.infill_base_angle = angle;
@@ -257,9 +261,9 @@ impl SliceCommand {
         // inside process_mesh and routed through `logger`.
         let layers = crate::core::process_mesh(&mesh, &slice_params, &logger);
 
-        // Resolve per-flavor lifecycle marker config from settings.
+        // Resolve per-flavor lifecycle marker config from config.
         // CLI flags override the enabled field.
-        let marker_config = settings
+        let marker_config = config
             .lifecycle_markers
             .get(&flavor.to_string())
             .cloned()
@@ -286,22 +290,22 @@ impl SliceCommand {
             .with_marker_config(marker_config)
             .with_warn_fn(move |msg| warn_logger.log_warn(msg));
 
-        // Resolve custom start script (CLI arg takes priority over global settings)
+        // Resolve custom start script (CLI arg takes priority over config)
         let start_source = self
             .start_print_gcode
             .as_deref()
-            .or(settings.start_print_gcode.as_deref());
+            .or(config.start_print_gcode.as_deref());
         if let Some(src) = start_source {
             let lines = resolve_gcode_source(src)
                 .map_err(|e| format!("Failed to read start G-code: {}", e))?;
             generator = generator.with_start_script(lines);
         }
 
-        // Resolve custom end script (CLI arg takes priority over global settings)
+        // Resolve custom end script (CLI arg takes priority over config)
         let end_source = self
             .end_print_gcode
             .as_deref()
-            .or(settings.end_print_gcode.as_deref());
+            .or(config.end_print_gcode.as_deref());
         if let Some(src) = end_source {
             let lines = resolve_gcode_source(src)
                 .map_err(|e| format!("Failed to read end G-code: {}", e))?;

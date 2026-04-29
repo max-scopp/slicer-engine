@@ -29,23 +29,25 @@
 //! ```
 
 use clipper2::*;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
-mod rectilinear;
 mod grid;
-mod honeycomb;
 mod gyroid;
+mod honeycomb;
+mod rectilinear;
 mod tpms_d;
 mod utils;
 
-use rectilinear::generate_rectilinear;
 use grid::generate_grid;
-use honeycomb::generate_honeycomb;
 use gyroid::generate_gyroid;
+use honeycomb::generate_honeycomb;
+use rectilinear::generate_rectilinear;
 use tpms_d::generate_tpms_d;
 use utils::clip_lines_to_region;
 
 /// Supported infill patterns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 pub enum InfillPattern {
     /// Parallel lines alternating direction per layer (default, fastest).
     #[default]
@@ -144,11 +146,20 @@ mod tests {
 
     #[test]
     fn test_infill_pattern_from_str() {
-        assert_eq!(InfillPattern::parse("rectilinear"), Some(InfillPattern::Rectilinear));
-        assert_eq!(InfillPattern::parse("linear"), Some(InfillPattern::Rectilinear));
+        assert_eq!(
+            InfillPattern::parse("rectilinear"),
+            Some(InfillPattern::Rectilinear)
+        );
+        assert_eq!(
+            InfillPattern::parse("linear"),
+            Some(InfillPattern::Rectilinear)
+        );
         assert_eq!(InfillPattern::parse("grid"), Some(InfillPattern::Grid));
         assert_eq!(InfillPattern::parse("GRID"), Some(InfillPattern::Grid));
-        assert_eq!(InfillPattern::parse("honeycomb"), Some(InfillPattern::Honeycomb));
+        assert_eq!(
+            InfillPattern::parse("honeycomb"),
+            Some(InfillPattern::Honeycomb)
+        );
         assert_eq!(InfillPattern::parse("gyroid"), Some(InfillPattern::Gyroid));
         assert_eq!(InfillPattern::parse("tpms-d"), Some(InfillPattern::TpmsD));
         assert_eq!(InfillPattern::parse("tpmsd"), Some(InfillPattern::TpmsD));
@@ -189,7 +200,7 @@ mod tests {
         perimeters.push(square);
 
         let infill = generate_infill(&perimeters, InfillPattern::Rectilinear, 0.2, 0.0, 0.2);
-        
+
         // Should generate some infill lines (non-empty)
         assert!(!infill.is_empty(), "Expected infill lines to be generated");
     }
@@ -201,9 +212,12 @@ mod tests {
         perimeters.push(square);
 
         let infill = generate_infill(&perimeters, InfillPattern::Honeycomb, 0.2, 0.0, 0.2);
-        
+
         // Should generate honeycomb pattern
-        assert!(!infill.is_empty(), "Expected honeycomb infill to be generated");
+        assert!(
+            !infill.is_empty(),
+            "Expected honeycomb infill to be generated"
+        );
     }
 
     #[test]
@@ -213,7 +227,7 @@ mod tests {
         perimeters.push(square);
 
         let infill = generate_infill(&perimeters, InfillPattern::Gyroid, 0.2, 0.0, 0.2);
-        
+
         // Should generate gyroid pattern
         assert!(!infill.is_empty(), "Expected gyroid infill to be generated");
     }
@@ -225,7 +239,7 @@ mod tests {
         perimeters.push(square);
 
         let infill = generate_infill(&perimeters, InfillPattern::TpmsD, 0.2, 0.0, 0.2);
-        
+
         // Should generate tpms-d pattern
         assert!(!infill.is_empty(), "Expected tpms-d infill to be generated");
     }

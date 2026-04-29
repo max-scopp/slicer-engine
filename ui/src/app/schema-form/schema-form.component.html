@@ -1,0 +1,91 @@
+<div class="schema-form-search">
+  <nexus-icon name="search" class="schema-form-search-icon" aria-hidden="true" />
+  <input
+    class="schema-form-search-input"
+    type="search"
+    placeholder="Search settings…"
+    autocomplete="off"
+    [(ngModel)]="searchQuery"
+  />
+  @if (searchQuery()) {
+    <button
+      class="schema-form-search-clear"
+      type="button"
+      aria-label="Clear search"
+      (click)="searchQuery.set('')"
+    >
+      <nexus-icon name="xmark" aria-hidden="true" />
+    </button>
+  }
+</div>
+
+@if (searchQuery().trim()) {
+  <div class="schema-form-search-results" role="list" aria-label="Search results">
+    @for (f of searchResults(); track f.key) {
+      <div
+        class="schema-form-field schema-form-search-result"
+        role="listitem"
+        [style.opacity]="1 - f.score * 0.65"
+        [style.filter]="'blur(' + f.score + 'px)'"
+      >
+        <span class="schema-form-search-result-group">{{ f.groupName }}</span>
+        <se-field-host
+          [field]="f"
+          [value]="value()[f.key]"
+          (fieldChange)="onFieldChange(f.key, $event)"
+        />
+      </div>
+    }
+    @if (searchResults().length === 0) {
+      <p class="schema-form-no-results">No settings match "{{ searchQuery() }}"</p>
+    }
+  </div>
+} @else {
+  <div ngAccordionGroup [multiExpandable]="true" class="schema-form-accordion">
+    @for (group of groups(); track group.name; let groupIndex = $index) {
+      @let expandedSig = getExpandedSignal(group.name);
+      <div class="schema-form-group" #groupEl>
+        <h3 class="schema-form-group-heading" role="heading" aria-level="3">
+          <button
+            ngAccordionTrigger
+            [panel]="panel"
+            [(expanded)]="expandedSig"
+            (expandedChange)="onExpandedChange(group.name, groupEl)"
+            (pointerdown)="onGroupTriggerPointerDown($event)"
+            (click)="onGroupTriggerClick(expandedSig)"
+            class="schema-form-group-trigger"
+            type="button"
+          >
+            <span class="schema-form-group-title">{{ group.name }}</span>
+            <nexus-icon
+              name="nav-arrow-down"
+              class="schema-form-group-chevron"
+              aria-hidden="true"
+            />
+          </button>
+        </h3>
+
+        <div
+          ngAccordionPanel
+          #panel="ngAccordionPanel"
+          class="schema-form-group-panel"
+          [attr.data-expanded]="expandedSig()"
+        >
+          <div class="schema-form-group-fields">
+            <div class="schema-form-group-fields-inner">
+              @for (f of group.fields; track f.key) {
+                <div class="schema-form-field">
+                  <se-field-host
+                    [field]="f"
+                    [value]="value()[f.key]"
+                    (fieldChange)="onFieldChange(f.key, $event)"
+                  />
+                </div>
+              }
+            </div>
+          </div>
+        </div>
+      </div>
+    }
+  </div>
+}

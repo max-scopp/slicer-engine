@@ -183,10 +183,7 @@ pub fn process_mesh(
 
     // Add infill
     if params.infill_density > 0.0 {
-        use crate::infill::InfillPattern;
-
-        let infill_pattern = InfillPattern::parse(&params.infill_pattern)
-            .unwrap_or(InfillPattern::Rectilinear);
+        let infill_pattern = params.infill_pattern;
 
         logger.log_debug(&format!(
             "generating {} infill at {:.0}% density, {}° base angle…",

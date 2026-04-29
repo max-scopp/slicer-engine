@@ -1,0 +1,82 @@
+/// Dark mode CSS variables
+/// @group theme
+
+html.dark {
+  // Backgrounds
+  --color-bg-primary: #111214;
+  --color-bg-secondary: #1a1b1e;
+  --color-bg-tertiary: #24272e;
+
+  // Surfaces & Interactions
+  --color-surface: #1e2128;
+  --color-surface-hover: #252b34;
+  --color-surface-active: #2e3640;
+
+  // Text Colors
+  --color-text-primary: #f5f6f8;
+  --color-text-secondary: #d4d6db;
+  --color-text-tertiary: #888c98;
+
+  // Borders
+  --color-border: #2e3640;
+  --color-border-light: #252b34;
+  --color-border-lighter: #1e2128;
+
+  // Primary (Indigo)
+  --color-primary: #7c84f5;
+  --color-primary-hover: #9aa2ff;
+  --color-primary-active: #7c84f5;
+  --color-primary-light: #2a2d5e;
+  --color-primary-lighter: #1f2138;
+
+  // Focus ring
+  --color-focus-ring: #9aa2ff;
+
+  // Status Colors
+  --color-success: #3db76b;
+  --color-success-light: #1d3a2a;
+  --color-warning: #f5a623;
+  --color-warning-light: #3a2a1a;
+  --color-danger: #ff6b6b;
+  --color-danger-light: #3a1e1e;
+
+  // Scrollbar
+  --color-scrollbar-track: #1a1b1e;
+  --color-scrollbar-thumb: #2e3640;
+  --color-scrollbar-thumb-hover: #3a4250;
+
+  // Spacing
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 12px;
+  --spacing-lg: 16px;
+  --spacing-xl: 24px;
+  --spacing-2xl: 32px;
+
+  // Radius
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+
+  // Transitions
+  --transition-fast: 0.15s ease;
+  --transition-normal: 0.2s ease;
+  --transition-slow: 0.3s ease;
+
+  // Easing curves & durations
+  --duration-fast: 0.12s;
+  --duration-normal: 0.18s;
+  --duration-slow: 0.28s;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-decelerate: cubic-bezier(0, 0, 0.2, 1);
+  --ease-accelerate: cubic-bezier(0.4, 0, 1, 1);
+
+  // Shadows
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.28);
+  --shadow-md: 0 8px 32px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 4px 24px rgba(0, 0, 0, 0.3);
+
+  // Icon Weight
+  --icon-stroke-width: 1.8;
+}

@@ -11,12 +11,17 @@
       "projectType": "application",
       "schematics": {
         "@schematics/angular:component": {
-          "style": "scss"
+          "style": "scss",
+          "standalone": true,
+          "skipTests": true
+        },
+        "@schematics/angular:application": {
+          "strict": true
         }
       },
       "root": "",
       "sourceRoot": "src",
-      "prefix": "app",
+      "prefix": "nexus",
       "architect": {
         "build": {
           "builder": "@angular/build:application",
@@ -28,11 +33,19 @@
               {
                 "glob": "**/*",
                 "input": "public"
+              },
+              {
+                "glob": "**/*.svg",
+                "input": "node_modules/iconoir/icons/regular",
+                "output": "/assets/icons"
+              },
+              {
+                "glob": "**/*.svg",
+                "input": "node_modules/iconoir/icons/solid",
+                "output": "/assets/icons/solid"
               }
             ],
-            "styles": [
-              "src/styles.scss"
-            ]
+            "styles": ["src/styles/main.scss"]
           },
           "configurations": {
             "production": {
@@ -60,6 +73,9 @@
         },
         "serve": {
           "builder": "@angular/build:dev-server",
+          "options": {
+            "port": 4213
+          },
           "configurations": {
             "production": {
               "buildTarget": "slicer-ui:build:production"

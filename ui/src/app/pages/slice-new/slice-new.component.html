@@ -1,0 +1,41 @@
+<div class="drop-zone">
+  <input
+    type="file"
+    accept=".stl,.obj,.3mf,model/stl,model/obj,model/3mf,application/vnd.ms-pki.stl,application/sla,application/vnd.ms-package.3dmanufacturing-3dmodel+xml,application/octet-stream"
+    (change)="onFileSelected($event)"
+    class="file-input"
+    [disabled]="uploading() || slicerFile.isPending()"
+    [style.visibility]="uploading() || slicerFile.isPending() ? 'hidden' : 'visible'"
+  />
+
+  @if (uploading()) {
+    <div class="upload-state">
+      <nexus-icon name="cloud-upload" class="drop-icon uploading"></nexus-icon>
+      <p class="drop-title">Uploading&hellip;</p>
+      <p class="drop-sub">{{ slicerFile.uploadProgress() }}%</p>
+      <div class="progress-track">
+        <div class="progress-fill" [style.width.%]="slicerFile.uploadProgress()"></div>
+      </div>
+    </div>
+  } @else if (slicerFile.isPending()) {
+    <div class="upload-state">
+      <nexus-icon name="cloud-upload" class="drop-icon uploading"></nexus-icon>
+      <p class="drop-title">Preparing&hellip;</p>
+      <p class="drop-sub">{{ slicerFile.selectedFile()!.name }}</p>
+      <div class="progress-track">
+        <div class="progress-fill indeterminate"></div>
+      </div>
+    </div>
+  } @else if (slicerFile.uploadError()) {
+    <nexus-icon name="warning-triangle" class="drop-icon error"></nexus-icon>
+    <p class="drop-title">Upload failed</p>
+    <p class="drop-sub error-msg">{{ slicerFile.uploadError() }}</p>
+    <span class="browse-btn">Try again</span>
+  } @else {
+    <nexus-icon name="cloud-upload" class="drop-icon"></nexus-icon>
+    <p class="drop-title">Drop your model here</p>
+    <p class="drop-sub">STL, OBJ or 3MF &mdash; up to 500&nbsp;MB</p>
+    <span class="drop-divider">or</span>
+    <span class="browse-btn">Browse file</span>
+  }
+</div>
