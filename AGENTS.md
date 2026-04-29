@@ -140,6 +140,30 @@ slicer-engine slice --help
 - Include usage examples in doc comments for core APIs
 - Update [README.md](README.md) for user-facing changes
 
+#### Module READMEs — house style
+
+Long-form module docs (`src/<module>/README.md`) follow the
+[Diátaxis](https://diataxis.fr/) **Explanation** quadrant — they discuss what
+something is and *why* it is that way, not how to call every function (that's
+what `///` doc comments are for). Reference [src/scene/README.md](src/scene/README.md)
+as the canonical example. Conventions:
+
+- **Open with a one-sentence answer to "what does this module exist for?"**
+  followed by the single rule or invariant the rest of the doc defends.
+- **Lead with motivation, then contract, then anatomy.** Why → rules → shapes
+  → catalog → role in the wider system → lifecycle → non-goals.
+- **Sprinkle small Mermaid diagrams** where a picture saves a paragraph. Prefer
+  several focused diagrams (one `flowchart`, one `classDiagram`, one
+  `sequenceDiagram`) over one monster graph. Keep node labels short.
+- **Compact tables for catalogs** (ops, variants, flags) — three or four columns
+  max; one-line cells.
+- **State the non-goals explicitly.** A "what this module deliberately does
+  *not* do" section prevents future drift back into anti-patterns.
+- **Plain language over jargon.** Assume a contributor who knows Rust but is
+  new to *this* subsystem. Define a term the first time it appears.
+- **End with a "See also" pointing at the source files**, the relevant AGENTS.md
+  section, and the originating issue/PR.
+
 ### Testing
 
 - Write tests inline with `#[cfg(test)]` modules
