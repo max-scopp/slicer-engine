@@ -89,8 +89,7 @@ export class RadioGroup implements OnDestroy {
     }
 
     const style = getComputedStyle(el);
-    const paddingH = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
-    const available = el.offsetWidth - paddingH;
+    const available = el.offsetWidth;
 
     const shouldStack = this.neededWidth > available;
     const isStacked = el.classList.contains('stacked');

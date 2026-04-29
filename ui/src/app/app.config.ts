@@ -4,7 +4,7 @@ import { provideRouter, withViewTransitions } from '@angular/router';
 import { provideMarkdown } from 'ngx-markdown';
 import { APP_ROUTES } from './app-routes';
 import { UploadGuard } from './services/upload-guard';
-import { InputModality } from './shared/input-modality/input-modality';
+import { UserInputModality } from './shared/input-modality/input-modality';
 
 export const appConfig: ApplicationConfig = {
   providers: [
@@ -14,6 +14,6 @@ export const appConfig: ApplicationConfig = {
     provideMarkdown(),
     UploadGuard,
     // Eagerly instantiate so body modality classes are stamped from first interaction.
-    InputModality,
+    UserInputModality,
   ],
 };

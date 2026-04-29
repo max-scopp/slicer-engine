@@ -1,11 +1,9 @@
-import { InputModalityDetector } from '@angular/cdk/a11y';
+import { InputModality, InputModalityDetector } from '@angular/cdk/a11y';
 import { DOCUMENT } from '@angular/common';
 import { Injectable, inject } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 
-export type InputModalityKind = 'mouse' | 'keyboard' | 'touch' | null;
-
-const MODALITY_CLASSES: Record<NonNullable<InputModalityKind>, string> = {
+const MODALITY_CLASSES: Record<NonNullable<InputModality>, string> = {
   mouse: 'nexus-mouse-user',
   keyboard: 'nexus-keyboard-user',
   touch: 'nexus-touch-user',
@@ -24,7 +22,7 @@ const MODALITY_CLASSES: Record<NonNullable<InputModalityKind>, string> = {
  * any per-element Angular binding.
  */
 @Injectable({ providedIn: 'root' })
-export class InputModality {
+export class UserInputModality {
   private readonly detector = inject(InputModalityDetector);
   private readonly document = inject(DOCUMENT);
 

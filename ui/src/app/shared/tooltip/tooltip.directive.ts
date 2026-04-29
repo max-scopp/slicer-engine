@@ -2,17 +2,17 @@ import { FocusMonitor } from '@angular/cdk/a11y';
 import { Overlay, OverlayRef } from '@angular/cdk/overlay';
 import { ComponentPortal } from '@angular/cdk/portal';
 import {
-  ComponentRef,
-  Directive,
-  ElementRef,
-  HostListener,
-  inject,
-  input,
-  OnDestroy,
-  OnInit,
+    ComponentRef,
+    Directive,
+    ElementRef,
+    HostListener,
+    inject,
+    input,
+    OnDestroy,
+    OnInit,
 } from '@angular/core';
 import { Subscription } from 'rxjs';
-import { InputModality } from '../input-modality/input-modality';
+import { UserInputModality } from '../input-modality/input-modality';
 import { TooltipComponent } from './tooltip.component';
 
 const MOUSE_DELAY_MS = 600;
@@ -52,7 +52,7 @@ export class TooltipDirective implements OnInit, OnDestroy {
   private readonly overlay = inject(Overlay);
   private readonly elementRef = inject(ElementRef<HTMLElement>);
   private readonly focusMonitor = inject(FocusMonitor);
-  private readonly inputModality = inject(InputModality);
+  private readonly inputModality = inject(UserInputModality);
 
   private overlayRef: OverlayRef | null = null;
   private componentRef: ComponentRef<TooltipComponent> | null = null;
