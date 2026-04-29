@@ -1,59 +1,170 @@
-# SlicerUi
+# Slicer Engine — Web UI
 
-This project was generated using [Angular CLI](https://github.com/angular/angular-cli) version 21.2.8.
+The Angular front-end of Slicer Engine. It uploads meshes, drives the slice, renders the live G-code preview, and lets you tweak settings — all against a single Rust core that also powers the CLI.
 
-## Development server
+It exists for one reason: **what you preview in the browser must be exactly what slices on the server.** Both run the same Rust code. The UI compiles part of the engine to WebAssembly so scene placement is computed locally, and delegates the heavy slicing to the server over WebSocket.
 
-To start a local development server, run:
+---
 
-```bash
-ng serve
+## The contract
+
+```mermaid
+flowchart LR
+    user[(User)]
+    ui["Angular shell<br/>(this app)"]
+    wasm["scene-wasm<br/>(Rust → WebAssembly)"]
+    ws["WebSocket session<br/>/api/ws"]
+    server["Rust server<br/>(serve command)"]
+
+    user -->|drag mesh| ui
+    ui -->|SceneOp| wasm
+    wasm -->|render buffer| ui
+    ui -->|Slice / SceneSnapshot| ws --> server
+    server -->|Progress · SliceComplete| ws --> ui
 ```
 
-Once the server is running, open your browser and navigate to `http://localhost:4200/`. The application will automatically reload whenever you modify any of the source files.
+- The Angular app **never reimplements** scene math. Translate, rotate, drop-to-floor, align-face — every gesture becomes a `SceneOp` and is applied by the Rust scene engine compiled to WASM. See [src/scene/README.md](../src/scene/README.md) for the SSOT contract.
+- Schemas and TypeScript types are **generated from the Rust definitions**, not hand-written. See "Generated artifacts" below.
+- The G-code preview is decoded from the same `SliceResult` produced by the CLI's `slice` command.
 
-## Code scaffolding
+---
 
-Angular CLI includes powerful code scaffolding tools. To generate a new component, run:
+## Anatomy
 
-```bash
-ng generate component component-name
+```
+ui/src/app/
+├── app.config.ts          providers (router, http, markdown, input-modality)
+├── app-routes.ts          /, /scene-demo, /slice/(new|:requestUuid)
+├── pages/
+│   ├── home/              landing dashboard
+│   ├── scene-demo/        scene-engine playground (manual SceneOp dispatch)
+│   ├── slice-new/         upload + initial slice
+│   └── slice-viewer/      G-code preview, layer scrubber, history
+├── nexus/                 application shell — top bar, sidebar, layout, print-estimates
+├── components/            stateless building blocks
+│   ├── viewer/            three.js canvas + ViewportCube + 3D-view-toolbar
+│   ├── settings-panel/    schema-driven forms
+│   ├── file-upload/       drag-and-drop, progress, upload-guard hook
+│   ├── history-panel/     past slice runs from the server's SQLite ledger
+│   ├── status-panel/ connection-state/ notification-center/ logo/
+│   └── …                  card, list-history, viewport-cube
+├── services/
+│   ├── scene-engine.service.ts   wraps the WASM SceneHandle (single instance)
+│   ├── slicer.ts                 high-level slice orchestration
+│   ├── slicer-connection.ts      WebSocket transport (typed messages)
+│   ├── slicer-file.ts            mesh upload (REST), download
+│   ├── upload-guard.ts           CanDeactivate guard for in-flight uploads
+│   ├── viewer-control.ts         camera / framing helpers
+│   ├── object-tracker/           per-object UI state
+│   ├── print-area/               build-volume + bed config from server
+│   ├── history.ts                slice history client
+│   ├── notifications.ts          toast layer
+│   ├── browser-storage.ts        localStorage wrapper
+│   ├── logger.service.ts         structured logger (mirrors server logs in console)
+│   └── app-theme.ts              light / dark token switcher
+├── schema-form/           generic form renderer driven by JSON Schema
+├── models/                shared types (mostly re-exports from generated/)
+└── shared/                cross-cutting widgets, directives, input-modality
 ```
 
-For a complete list of available schematics (such as `components`, `directives`, or `pipes`), run:
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User
+    participant UI as Angular UI
+    participant W as scene-wasm (in browser)
+    participant S as Server (WS)
 
-```bash
-ng generate --help
+    U->>UI: drop model.stl
+    UI->>S: POST /api/upload (multipart, ≤ 500 MB)
+    S-->>UI: { fileId, requestUuid }
+    UI->>W: SceneHandle.applyOp(Add { file_id })
+    W-->>UI: render buffer (positions, normals, transforms)
+    U->>UI: drag / rotate / drop-to-floor
+    UI->>W: SceneHandle.applyOp(Translate / Rotate / DropToFloor / …)
+    UI->>S: WS Scene { ops }
+    U->>UI: click Slice
+    UI->>S: WS Slice { requestUuid, settings }
+    S-->>UI: WS Progress · PhaseMarker · SliceComplete
+    UI-->>U: layered G-code preview + estimates
 ```
 
-## Building
+---
 
-To build the project run:
+## Generated artifacts
 
-```bash
-ng build
-```
+Anything under `src/generated/` is **regenerated, not edited**. Each file maps 1:1 to a Rust type or wasm-pack output, and any drift is treated as a bug in the generator, not in this folder.
 
-This will compile your project and store the build artifacts in the `dist/` directory. By default, the production build optimizes your application for performance and speed.
+| Path                        | Source of truth                                   | Regenerated by                          |
+| --------------------------- | ------------------------------------------------- | --------------------------------------- |
+| `src/generated/*.d.ts`      | Rust schemas via `slicer-engine gen-schemas`      | `pnpm run gen` (also runs on `install`) |
+| `src/generated/scene-wasm/` | `src/scene/wasm.rs` (`cfg(target_arch="wasm32")`) | `make build-wasm` at the repo root      |
+| `src/schemas/*.json`        | JSON Schema emitted by the Rust CLI               | `pnpm run gen-schemas`                  |
 
-## Running unit tests
+The `postinstall` script in [package.json](package.json) wires this up: cloning the repo and running `pnpm install` (with the WASM bundle already built) is enough to get a working dev environment.
 
-To execute unit tests with the [Vitest](https://vitest.dev/) test runner, use the following command:
+---
 
-```bash
-ng test
-```
-
-## Running end-to-end tests
-
-For end-to-end (e2e) testing, run:
+## Quick start
 
 ```bash
-ng e2e
+# From the repo root, build the WASM scene engine first
+make build-wasm                                  # writes ui/src/generated/scene-wasm/
+
+# Then, in this folder:
+pnpm install                                     # also runs `pnpm run gen`
+pnpm start                                       # ng serve --host 0.0.0.0 → http://localhost:4200
+
+# In a second terminal, run the slicer-engine server (UI talks to this)
+cargo run --release -- serve                     # default http://localhost:5201
 ```
 
-Angular CLI does not come with an end-to-end testing framework by default. You can choose one that suits your needs.
+Reset the generated folder anytime with `pnpm run gen`. If types or schemas look stale after editing Rust, run `pnpm run gen` — never edit `src/generated/` by hand.
 
-## Additional Resources
+---
 
-For more information on using the Angular CLI, including detailed command references, visit the [Angular CLI Overview and Command Reference](https://angular.dev/tools/cli) page.
+## Development workflow
+
+| Task                            | Command                                 |
+| ------------------------------- | --------------------------------------- |
+| Dev server with HMR             | `pnpm start`                            |
+| Production build                | `pnpm build`                            |
+| Watch incremental dev build     | `pnpm watch`                            |
+| Unit tests (Vitest, jsdom)      | `pnpm test`                             |
+| Regenerate JSON schemas + .d.ts | `pnpm run gen`                          |
+| Rebuild the WASM scene engine   | `make build-wasm` (repo root)           |
+| Format                          | Prettier (configured in `package.json`) |
+
+The UI follows the project [`.editorconfig`](.editorconfig) and is formatted with Prettier.
+
+---
+
+## Tech stack
+
+- **Angular 21** — standalone components, signals, `provideRouter` with view transitions, zoneless-ready.
+- **three.js 0.184** — 3D viewer, custom camera/orbit controls (`viewer-control.ts`), `viewport-cube` orientation widget.
+- **Iconoir 7** — icon set.
+- **fuse.js 7** — fuzzy search inside settings/history.
+- **ngx-markdown 21** — renders Rust READMEs and docs inline where useful.
+- **Vitest 4** — fast unit tests via `@angular/build`.
+- **wasm-bindgen** (via `scene-wasm`) — typed bridge to the Rust scene engine.
+
+---
+
+## What this UI deliberately does not do
+
+- **No client-side slicing.** The browser only handles scene placement and preview. The slice runs on the server, against the same Rust core.
+- **No second source of truth for transforms.** All placement state lives in the WASM `SceneHandle`. The UI reads from it, never duplicates it.
+- **No hand-written API types.** If a Rust struct changes, regenerate; do not patch the `.d.ts`.
+- **No bundled meshes.** Test fixtures live in [`/stls`](../stls/) and [`/tests/fixtures`](../tests/fixtures/) at the repo root.
+
+---
+
+## See also
+
+- [src/scene/README.md](../src/scene/README.md) — the scene engine SSOT this UI sits on top of
+- [src/server/README.md](../src/server/README.md) — HTTP + WebSocket protocol
+- [src/cli/README.md](../src/cli/README.md) — the same engine, different surface
+- [ui/src/styles/README.md](src/styles/README.md) — design tokens and SCSS architecture
+- [THEME.md](THEME.md) — colour and spacing system
+- [AGENTS.md](../AGENTS.md) — repo-wide conventions and AI-agent guidance

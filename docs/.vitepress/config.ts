@@ -25,6 +25,7 @@ const IGNORED_DIRS = new Set([
   "stls",
   "tests",
   "plan",
+  "generated", // wasm-pack and codegen output — never docs source
 ]);
 
 function findReadmes(dir: string, out: string[] = []): string[] {
@@ -41,10 +42,60 @@ function findReadmes(dir: string, out: string[] = []): string[] {
   return out;
 }
 
+// Find non-README .md files under src/ and ui/ (e.g. SLICING.md, logging.md,
+// THEME.md). Routed by writeWrapper using the same architecture-/guide-
+// flattening rules as READMEs.
+function findExtraDocs(dir: string, out: string[] = []): string[] {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      if (IGNORED_DIRS.has(entry.name) || entry.name.startsWith(".")) {
+        continue;
+      }
+      findExtraDocs(path.join(dir, entry.name), out);
+    } else if (
+      entry.isFile() &&
+      entry.name.endsWith(".md") &&
+      !/^README\.md$/i.test(entry.name)
+    ) {
+      out.push(path.join(dir, entry.name));
+    }
+  }
+  return out;
+}
+
 const discovered: Map<string, DocPage> = new Map();
 for (const absPath of findReadmes(repoRoot)) {
   const rel = path.relative(repoRoot, absPath).replace(/\\/g, "/");
   discovered.set(rel, { source: rel });
+}
+
+// Also pull in stand-alone .md files inside src/ and ui/ (SLICING.md,
+// logging.md, THEME.md, …).
+for (const subtree of ["src", "ui"]) {
+  const absSubtree = path.join(repoRoot, subtree);
+  if (!fs.existsSync(absSubtree)) {
+    continue;
+  }
+  for (const absPath of findExtraDocs(absSubtree)) {
+    const rel = path.relative(repoRoot, absPath).replace(/\\/g, "/");
+    discovered.set(rel, { source: rel });
+  }
+}
+
+// Also pick up uppercase top-level docs (ARCHITECTURE.md, CONTRIBUTING.md,
+// AGENTS.md, QUICK_REFERENCE.md, SETUP_COMPLETE.md) so they show up under
+// the Guide section.
+for (const entry of fs.readdirSync(repoRoot, { withFileTypes: true })) {
+  if (!entry.isFile()) {
+    continue;
+  }
+  if (entry.name === "README.md") {
+    continue; // already discovered
+  }
+  if (!/^[A-Z_]+\.md$/.test(entry.name)) {
+    continue;
+  }
+  discovered.set(entry.name, { source: entry.name });
 }
 
 // Auto-generate wrapper pages on every config load. Each wrapper is a
@@ -60,9 +111,17 @@ function writeWrapper(source: string) {
   } else if (source.startsWith("src/") && source.endsWith("/README.md")) {
     const inner = source.slice("src/".length, -"/README.md".length);
     url = `architecture/${inner.replace(/\//g, "-")}`;
+  } else if (source.startsWith("src/") && source.endsWith(".md")) {
+    // Stand-alone src/ markdown (e.g. src/SLICING.md, src/logging.md).
+    const inner = source.slice("src/".length, -".md".length);
+    url = `architecture/${inner.replace(/\//g, "-").toLowerCase()}`;
   } else if (source.startsWith("ui/") && source.endsWith("/README.md")) {
     const inner = source.slice("ui/".length, -"/README.md".length);
     url = inner === "" ? "guide/ui" : `guide/ui-${inner.replace(/\//g, "-")}`;
+  } else if (source.startsWith("ui/") && source.endsWith(".md")) {
+    // Stand-alone ui/ markdown (e.g. ui/THEME.md).
+    const inner = source.slice("ui/".length, -".md".length);
+    url = `guide/ui-${inner.replace(/\//g, "-").toLowerCase()}`;
   } else {
     return; // Skip unroutable files
   }
@@ -101,6 +160,7 @@ export default withMermaid(
       "A high-performance 3D model slicer engine written in Rust, powered by Clipper2.",
     lastUpdated: true,
     cleanUrls: true,
+    base: "/slicer-engine/",
 
     themeConfig: {
       search: {
@@ -112,24 +172,63 @@ export default withMermaid(
         { text: "Guide", link: "/guide/", activeMatch: "/guide/" },
         {
           text: "Architecture",
-          link: "/architecture/scene",
+          link: "/architecture/core",
           activeMatch: "/architecture/",
         },
       ],
 
       sidebar: {
         "/guide/": [
-          { text: "Project Overview", link: "/guide/" },
-          { text: "UI", link: "/guide/ui" },
-          { text: "Contributing", link: "/guide/contributing" },
+          {
+            text: "Overview",
+            items: [{ text: "Project Overview", link: "/guide/" }],
+          },
+          {
+            text: "Working on the engine",
+            items: [
+              { text: "Architecture", link: "/guide/architecture" },
+              { text: "Contributing", link: "/guide/contributing" },
+              { text: "Agents (AI)", link: "/guide/agents" },
+            ],
+          },
+          {
+            text: "UI",
+            items: [
+              { text: "Angular UI", link: "/guide/ui" },
+              { text: "Theme", link: "/guide/ui-theme" },
+              { text: "Styles", link: "/guide/ui-src-styles" },
+            ],
+          },
         ],
         "/architecture/": [
-          { text: "Scene Engine", link: "/architecture/scene" },
-          { text: "Mesh", link: "/architecture/mesh" },
-          { text: "Arachne", link: "/architecture/arachne" },
-          { text: "G-code", link: "/architecture/gcode" },
-          { text: "Settings", link: "/architecture/settings" },
-          { text: "CLI", link: "/architecture/cli" },
+          {
+            text: "Pipeline",
+            items: [
+              { text: "Slicing Pipeline (core)", link: "/architecture/core" },
+              { text: "Slicing algorithm", link: "/architecture/slicing" },
+              { text: "Mesh", link: "/architecture/mesh" },
+              { text: "Arachne (walls)", link: "/architecture/arachne" },
+              { text: "Infill patterns", link: "/architecture/infill" },
+              { text: "G-code", link: "/architecture/gcode" },
+            ],
+          },
+          {
+            text: "Scene & Settings",
+            items: [
+              { text: "Scene Engine (SSOT)", link: "/architecture/scene" },
+              { text: "Settings", link: "/architecture/settings" },
+              { text: "Config (TOML)", link: "/architecture/config" },
+            ],
+          },
+          {
+            text: "Interfaces",
+            items: [
+              { text: "CLI", link: "/architecture/cli" },
+              { text: "Server (HTTP + WS)", link: "/architecture/server" },
+              { text: "Database (SQLite)", link: "/architecture/db" },
+              { text: "Logging", link: "/architecture/logging" },
+            ],
+          },
         ],
       },
 
