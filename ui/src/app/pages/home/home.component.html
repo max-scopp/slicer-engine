@@ -1,9 +1,18 @@
 <div class="home-dashboard">
+  <nexus-connection-state class="app-status-bar" />
   <div class="dashboard-container">
-    <h1>Dashboard</h1>
+    <h1>Let's get slicing.</h1>
 
     <div class="dashboard-actions">
-      <button routerLink="/slice">New Slice</button>
+      <button routerLink="/slice">New Workplate</button>
+      <button (click)="openQuickSlice()">Quick Slice</button>
+      <input
+        #quickFileInput
+        type="file"
+        accept=".stl,.obj,.3mf,model/stl,model/obj,model/3mf,application/vnd.ms-pki.stl,application/sla,application/vnd.ms-package.3dmanufacturing-3dmodel+xml,application/octet-stream"
+        (change)="onQuickFileSelected($event)"
+        style="display: none"
+      />
       <button (click)="_theme.toggleTheme()">Change Theme</button>
     </div>
 
