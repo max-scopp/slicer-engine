@@ -11,8 +11,9 @@ import { Component, effect, ElementRef, inject, input } from '@angular/core';
         place-items: center;
 
         ::ng-deep svg {
-          width: var(--icon-size, 1em);
-          height: var(--icon-size, 1em);
+          width: var(--icon-size, 20px);
+          height: var(--icon-size, 20px);
+          stroke-width: var(--icon-stroke-width);
         }
       }
     `,
@@ -20,13 +21,15 @@ import { Component, effect, ElementRef, inject, input } from '@angular/core';
 })
 export class Icon {
   readonly name = input.required<string>();
+  readonly variant = input<'regular' | 'solid'>('regular');
 
   private readonly http = inject(HttpClient);
   private readonly el = inject(ElementRef<HTMLElement>);
 
   constructor() {
     effect(() => {
-      this.http.get(`/assets/icons/${this.name()}.svg`, { responseType: 'text' }).subscribe({
+      const basePath = this.variant() === 'solid' ? '/assets/icons/solid' : '/assets/icons';
+      this.http.get(`${basePath}/${this.name()}.svg`, { responseType: 'text' }).subscribe({
         next: (content) => {
           this.el.nativeElement.innerHTML = content;
         },

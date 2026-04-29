@@ -1,18 +1,20 @@
 <div ngAccordionGroup [multiExpandable]="true" class="schema-form-accordion">
   @for (group of groups(); track group.name; let groupIndex = $index) {
     @let expandedSig = getExpandedSignal(group.name);
-    <div class="schema-form-group">
+    <div class="schema-form-group" #groupEl>
       <h3 class="schema-form-group-heading" role="heading" aria-level="3">
         <button
           ngAccordionTrigger
           [panel]="panel"
           [(expanded)]="expandedSig"
-          (expandedChange)="onExpandedChange(group.name)"
+          (expandedChange)="onExpandedChange(group.name, groupEl)"
+          (pointerdown)="onGroupTriggerPointerDown($event)"
+          (click)="onGroupTriggerClick(expandedSig)"
           class="schema-form-group-trigger"
           type="button"
         >
           <span class="schema-form-group-title">{{ group.name }}</span>
-          <span class="schema-form-group-chevron" aria-hidden="true"></span>
+          <nexus-icon name="nav-arrow-down" class="schema-form-group-chevron" aria-hidden="true" />
         </button>
       </h3>
 

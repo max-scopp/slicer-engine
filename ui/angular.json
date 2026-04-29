@@ -38,6 +38,11 @@
                 "glob": "**/*.svg",
                 "input": "node_modules/iconoir/icons/regular",
                 "output": "/assets/icons"
+              },
+              {
+                "glob": "**/*.svg",
+                "input": "node_modules/iconoir/icons/solid",
+                "output": "/assets/icons/solid"
               }
             ],
             "styles": ["src/styles/main.scss"]

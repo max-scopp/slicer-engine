@@ -43,11 +43,11 @@ import { FieldWidget } from '../base-field';
       <span>{{ field().title ?? field().key }}</span>
       @if (field().description) {
         <nexus-icon-button
-          icon="info-circle"
-          size="xs"
+          icon="help-circle"
           label="More info"
           [tooltip]="field().description!"
           [tooltipMode]="'block'"
+          [tooltipClickToggle]="true"
         />
       }
     </label>

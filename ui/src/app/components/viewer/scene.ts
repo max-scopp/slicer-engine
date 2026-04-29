@@ -1088,6 +1088,9 @@ export class ViewerScene {
     this.camera.aspect = clientWidth / clientHeight;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(clientWidth, clientHeight);
+    // Re-render immediately so the canvas never shows a blank frame between
+    // the buffer clear (caused by setSize) and the next RAF tick.
+    this.renderer.render(this.scene, this.camera);
   }
 
   private sizeOf(el: HTMLElement): { clientWidth: number; clientHeight: number } {

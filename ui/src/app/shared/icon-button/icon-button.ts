@@ -19,15 +19,12 @@ import { Icon } from '../icon/icon';
   imports: [Icon],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <button
-      type="button"
-      class="icon-btn"
-      [class.icon-btn--xs]="size() === 'xs'"
-      [class.icon-btn--sm]="size() === 'sm'"
-      [class.icon-btn--md]="size() === 'md'"
-      [attr.aria-label]="label()"
-    >
-      <nexus-icon [name]="icon()" />
+    <button type="button" class="icon-btn" [attr.aria-label]="label()">
+      <nexus-icon
+        [name]="icon()"
+        [variant]="variant()"
+        [style.--icon-stroke-width]="strokeWidth()"
+      />
     </button>
   `,
   styles: [
@@ -39,6 +36,8 @@ import { Icon } from '../icon/icon';
       .icon-btn {
         display: inline-grid;
         place-items: center;
+        width: 24px;
+        height: 24px;
         border: none;
         padding: 0;
         background: transparent;
@@ -50,6 +49,10 @@ import { Icon } from '../icon/icon';
           color var(--transition-fast),
           background-color var(--transition-fast);
 
+        nexus-icon {
+          --icon-size: 18px;
+        }
+
         &:hover {
           color: var(--color-text-secondary);
           background: var(--color-surface-hover);
@@ -58,33 +61,6 @@ import { Icon } from '../icon/icon';
         &:focus-visible {
           outline: 2px solid var(--color-focus-ring);
           outline-offset: 1px;
-        }
-      }
-
-      .icon-btn--xs {
-        width: 16px;
-        height: 16px;
-
-        nexus-icon {
-          --icon-size: 12px;
-        }
-      }
-
-      .icon-btn--sm {
-        width: 20px;
-        height: 20px;
-
-        nexus-icon {
-          --icon-size: 14px;
-        }
-      }
-
-      .icon-btn--md {
-        width: 28px;
-        height: 28px;
-
-        nexus-icon {
-          --icon-size: 16px;
         }
       }
     `,
@@ -97,6 +73,9 @@ export class IconButton {
   /** Accessible label used as `aria-label` on the inner button. */
   readonly label = input<string>('');
 
-  /** Visual size variant. Defaults to `sm`. */
-  readonly size = input<'xs' | 'sm' | 'md'>('sm');
+  /** Icon style variant. Defaults to `regular` (outlined). */
+  readonly variant = input<'regular' | 'solid'>('regular');
+
+  /** SVG stroke-width override. Leave undefined to use the icon's built-in value. */
+  readonly strokeWidth = input<number | string | undefined>(undefined);
 }

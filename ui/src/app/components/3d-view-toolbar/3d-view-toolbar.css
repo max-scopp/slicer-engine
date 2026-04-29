@@ -16,7 +16,7 @@
 
 .button-radio-group {
   display: flex;
-  padding: 3px;
+  padding: 2px;
 
   > button {
     font-size: 12px;
@@ -24,12 +24,8 @@
 
   &.icon-group {
     button {
-      padding-top: 6px;
-      padding-bottom: 6px;
-    }
-
-    nexus-icon {
-      --icon-size: 16px;
+      padding-top: 5px;
+      padding-bottom: 5px;
     }
   }
 }
@@ -49,10 +45,6 @@
     background-color 160ms ease,
     border-color 160ms ease,
     transform 160ms ease;
-
-  nexus-icon {
-    --icon-size: 16px;
-  }
 
   &:hover {
     background: var(--color-surface-hover, rgba(127, 127, 127, 0.12));

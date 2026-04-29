@@ -2,14 +2,14 @@ import { FocusMonitor } from '@angular/cdk/a11y';
 import { Overlay, OverlayRef } from '@angular/cdk/overlay';
 import { ComponentPortal } from '@angular/cdk/portal';
 import {
-    ComponentRef,
-    Directive,
-    ElementRef,
-    HostListener,
-    inject,
-    input,
-    OnDestroy,
-    OnInit,
+  ComponentRef,
+  Directive,
+  ElementRef,
+  HostListener,
+  inject,
+  input,
+  OnDestroy,
+  OnInit,
 } from '@angular/core';
 import { Subscription } from 'rxjs';
 import { UserInputModality } from '../input-modality/input-modality';
@@ -48,6 +48,12 @@ export class TooltipDirective implements OnInit, OnDestroy {
   /** 'inline' — single-line floating label above the host (default).
    *  'block'  — wider markdown-rendered card anchored to the right of the host. */
   readonly tooltipMode = input<'inline' | 'block'>('inline');
+  /**
+   * When true, clicking the host element toggles the tooltip open/closed.
+   * Useful for info icons on touch devices where hover is not practical.
+   * The tooltip dismisses on an outside click or Escape.
+   */
+  readonly tooltipClickToggle = input<boolean>(false);
 
   private readonly overlay = inject(Overlay);
   private readonly elementRef = inject(ElementRef<HTMLElement>);
@@ -58,13 +64,17 @@ export class TooltipDirective implements OnInit, OnDestroy {
   private componentRef: ComponentRef<TooltipComponent> | null = null;
   private showTimeout: ReturnType<typeof setTimeout> | null = null;
   private modalitySub: Subscription | null = null;
+  private backdropSub: Subscription | null = null;
+  private clickToggleOpen = false;
 
   ngOnInit(): void {
     // Hide immediately whenever the user switches input method.
     // This covers e.g. reaching for the mouse while a keyboard tooltip is open,
     // or tabbing away while a hover tooltip is pending.
     this.modalitySub = this.inputModality.modalityChanged$.subscribe(() => {
-      this.hide();
+      if (!this.clickToggleOpen) {
+        this.hide();
+      }
     });
 
     // FocusMonitor emits null when focus leaves, or the origin when it arrives.
@@ -94,6 +104,9 @@ export class TooltipDirective implements OnInit, OnDestroy {
     if (this.inputModality.modality() !== 'mouse') {
       return;
     }
+    if (this.clickToggleOpen) {
+      return;
+    }
     this.hide();
   }
 
@@ -119,6 +132,9 @@ export class TooltipDirective implements OnInit, OnDestroy {
     if (event.pointerType !== 'pen') {
       return;
     }
+    if (this.clickToggleOpen) {
+      return;
+    }
     this.hide();
   }
 
@@ -127,11 +143,29 @@ export class TooltipDirective implements OnInit, OnDestroy {
     if (event.pointerType !== 'pen') {
       return;
     }
+    if (this.clickToggleOpen) {
+      return;
+    }
     this.hide();
+  }
+
+  @HostListener('click')
+  onClick(): void {
+    if (!this.tooltipClickToggle()) {
+      return;
+    }
+    if (this.clickToggleOpen) {
+      this.clickToggleOpen = false;
+      this.hide();
+    } else {
+      this.clickToggleOpen = true;
+      this.show();
+    }
   }
 
   @HostListener('keydown.escape')
   onEscape(): void {
+    this.clickToggleOpen = false;
     this.hide();
   }
 
@@ -139,6 +173,7 @@ export class TooltipDirective implements OnInit, OnDestroy {
     this.hide();
     this.modalitySub?.unsubscribe();
     this.focusMonitor.stopMonitoring(this.elementRef);
+    this.backdropSub?.unsubscribe();
   }
 
   private scheduleShow(delayMs: number): void {
@@ -204,11 +239,21 @@ export class TooltipDirective implements OnInit, OnDestroy {
             ],
       );
 
+    const hasBackdrop = this.tooltipClickToggle();
     this.overlayRef = this.overlay.create({
       positionStrategy,
       scrollStrategy: this.overlay.scrollStrategies.close(),
       panelClass: 'nexus-tooltip-overlay',
+      hasBackdrop,
+      backdropClass: 'nexus-tooltip-backdrop',
     });
+
+    if (hasBackdrop) {
+      this.backdropSub = this.overlayRef.backdropClick().subscribe(() => {
+        this.clickToggleOpen = false;
+        this.hide();
+      });
+    }
 
     const portal = new ComponentPortal(TooltipComponent);
     this.componentRef = this.overlayRef.attach(portal);
@@ -222,6 +267,8 @@ export class TooltipDirective implements OnInit, OnDestroy {
       this.showTimeout = null;
     }
 
+    this.backdropSub?.unsubscribe();
+    this.backdropSub = null;
     this.overlayRef?.dispose();
     this.overlayRef = null;
     this.componentRef = null;

@@ -9,6 +9,8 @@ import {
   signal,
 } from '@angular/core';
 import { BrowserStorage } from '../services/browser-storage';
+import { UserInputModality } from '../shared/input-modality/input-modality';
+import { Icon } from '../shared/icon/icon';
 import { FieldHostComponent } from './field-host/field-host.component';
 import { SchemaGroup } from './models/field-def';
 import { parseSchema } from './models/schema-parser';
@@ -47,13 +49,14 @@ const ACCORDION_STORAGE_KEY = 'schema-form-accordion';
 @Component({
   selector: 'se-schema-form',
   standalone: true,
-  imports: [FieldHostComponent, AccordionGroup, AccordionPanel, AccordionTrigger],
+  imports: [Icon, FieldHostComponent, AccordionGroup, AccordionPanel, AccordionTrigger],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './schema-form.component.html',
   styleUrl: './schema-form.component.scss',
 })
 export class SchemaFormComponent {
   private readonly storage = inject(BrowserStorage);
+  private readonly inputModality = inject(UserInputModality);
 
   /** Raw JSON Schema object. Changing this input re-parses the schema. */
   readonly schema = input.required<Record<string, unknown>>();
@@ -87,13 +90,39 @@ export class SchemaFormComponent {
     return this.expandedSignalMap.get(groupName)!;
   }
 
-  protected onExpandedChange(groupName: string): void {
+  protected onExpandedChange(groupName: string, groupEl: HTMLElement): void {
     const sig = this.getExpandedSignal(groupName);
+    if (sig()) {
+      // Defer until the expand animation has started so the element has its
+      // final height. block:'nearest' scrolls the minimum distance to reveal
+      // the whole group; if the panel is taller than the viewport the browser
+      // aligns the top (heading) to the viewport top instead.
+      setTimeout(() => groupEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 180);
+    }
     this.persistExpandedState();
   }
 
   protected onFieldChange(key: string, value: unknown): void {
     this.fieldChange.emit({ key, value });
+  }
+
+  /**
+   * On touch devices the AccordionGroup listens to `pointerdown` which fires
+   * before the finger is lifted, so the panel opens on touch-start rather
+   * than on a tap.  Stopping propagation at the trigger button prevents the
+   * event from reaching the group's listener; `onGroupTriggerClick` then
+   * handles the tap via the normal `click` event instead.
+   */
+  protected onGroupTriggerPointerDown(event: PointerEvent): void {
+    if (this.inputModality.modality() === 'touch') {
+      event.stopPropagation();
+    }
+  }
+
+  protected onGroupTriggerClick(sig: ReturnType<typeof signal<boolean>>): void {
+    if (this.inputModality.modality() === 'touch') {
+      sig.set(!sig());
+    }
   }
 
   private isGroupExpandedInStorage(groupName: string): boolean {
