@@ -1,0 +1,22 @@
+.schema-form-group {
+  & + .schema-form-group {
+    margin-top: var(--spacing-xl);
+  }
+}
+
+.schema-form-group-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin: 0 0 var(--spacing-sm);
+  padding-bottom: var(--spacing-xs);
+  border-bottom: 1px solid var(--color-border-light);
+}
+
+.schema-form-group-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}

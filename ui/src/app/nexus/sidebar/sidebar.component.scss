@@ -10,11 +10,17 @@
 }
 
 .sidebar-header {
+  position: sticky;
+  top: 0;
+
   display: flex;
   justify-content: space-between;
 
   padding: 16px;
-  border-bottom: 1px solid var(--color-border-light);
+  border-bottom: 1px solid var(--color-border);
+
+  background: color-mix(in srgb, var(--color-bg-tertiary) 70%, transparent);
+  backdrop-filter: blur(6px);
 }
 
 .sidebar-content {

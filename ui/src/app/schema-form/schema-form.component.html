@@ -1,0 +1,16 @@
+@for (group of groups(); track group.name) {
+  <section class="schema-form-group">
+    <h3 class="schema-form-group-title">{{ group.name }}</h3>
+    <div class="schema-form-group-fields">
+      @for (f of group.fields; track f.key) {
+        <div class="schema-form-field">
+          <se-field-host
+            [field]="f"
+            [value]="value()[f.key]"
+            (fieldChange)="onFieldChange(f.key, $event)"
+          />
+        </div>
+      }
+    </div>
+  </section>
+}

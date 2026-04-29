@@ -1,1 +1,7 @@
-<span class="tooltip-text">{{ text() }}</span>
+@if (mode() === 'block') {
+  <div class="tooltip-block">
+    <markdown [data]="text()" />
+  </div>
+} @else {
+  <span class="tooltip-text">{{ text() }}</span>
+}

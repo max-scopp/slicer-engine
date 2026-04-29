@@ -1,35 +1,4 @@
 <section class="settings-panel">
-    <h2>Slice Settings</h2>
-
-    @for (field of fields; track field.key) {
-        <div class="field">
-            <label [for]="field.key">
-                {{ field.key }}
-                @if (field.description) {
-                    <span class="tooltip-anchor" [attr.aria-label]="field.description">
-                        <span class="tooltip-icon">?</span>
-                        <span class="tooltip-popup"><markdown [data]="field.description"></markdown></span>
-                    </span>
-                }
-            </label>
-            @if (field.enumValues) {
-                <select
-                    [id]="field.key"
-                    [value]="settings()[field.key] ?? field.default ?? ''"
-                    (change)="update(field.key, $any($event.target).value)"
-                >
-                    @for (opt of field.enumValues; track opt) {
-                        <option [value]="opt">{{ opt }}</option>
-                    }
-                </select>
-            } @else {
-                <input
-                    [id]="field.key"
-                    [type]="field.type === 'number' ? 'number' : 'text'"
-                    [value]="settings()[field.key] ?? field.default ?? ''"
-                    (change)="update(field.key, $any($event.target).value)"
-                />
-            }
-        </div>
-    }
+  <h2>Slice Settings</h2>
+  <se-schema-form [schema]="schema" [value]="settings()" (fieldChange)="update($event)" />
 </section>

@@ -45,6 +45,9 @@ const PEN_HOVER_DELAY_MS = 300;
 })
 export class TooltipDirective implements OnInit, OnDestroy {
   readonly tooltip = input.required<string>();
+  /** 'inline' — single-line floating label above the host (default).
+   *  'block'  — wider markdown-rendered card anchored to the right of the host. */
+  readonly tooltipMode = input<'inline' | 'block'>('inline');
 
   private readonly overlay = inject(Overlay);
   private readonly elementRef = inject(ElementRef<HTMLElement>);
@@ -149,25 +152,57 @@ export class TooltipDirective implements OnInit, OnDestroy {
     if (this.overlayRef) {
       return;
     }
+
+    const isBlock = this.tooltipMode() === 'block';
+
     const positionStrategy = this.overlay
       .position()
       .flexibleConnectedTo(this.elementRef)
-      .withPositions([
-        {
-          originX: 'center',
-          originY: 'top',
-          overlayX: 'center',
-          overlayY: 'bottom',
-          offsetY: -6,
-        },
-        {
-          originX: 'center',
-          originY: 'bottom',
-          overlayX: 'center',
-          overlayY: 'top',
-          offsetY: 6,
-        },
-      ]);
+      .withPositions(
+        isBlock
+          ? [
+              // Preferred: right side, top-aligned
+              {
+                originX: 'end',
+                originY: 'top',
+                overlayX: 'start',
+                overlayY: 'top',
+                offsetX: 8,
+              },
+              // Fallback: left side, top-aligned
+              {
+                originX: 'start',
+                originY: 'top',
+                overlayX: 'end',
+                overlayY: 'top',
+                offsetX: -8,
+              },
+              // Fallback: below, left-aligned
+              {
+                originX: 'start',
+                originY: 'bottom',
+                overlayX: 'start',
+                overlayY: 'top',
+                offsetY: 8,
+              },
+            ]
+          : [
+              {
+                originX: 'center',
+                originY: 'top',
+                overlayX: 'center',
+                overlayY: 'bottom',
+                offsetY: -6,
+              },
+              {
+                originX: 'center',
+                originY: 'bottom',
+                overlayX: 'center',
+                overlayY: 'top',
+                offsetY: 6,
+              },
+            ],
+      );
 
     this.overlayRef = this.overlay.create({
       positionStrategy,
@@ -178,6 +213,7 @@ export class TooltipDirective implements OnInit, OnDestroy {
     const portal = new ComponentPortal(TooltipComponent);
     this.componentRef = this.overlayRef.attach(portal);
     this.componentRef.setInput('text', this.tooltip());
+    this.componentRef.setInput('mode', this.tooltipMode());
   }
 
   private hide(): void {
