@@ -1,0 +1,49 @@
+<div class="notification-center" aria-live="polite" aria-atomic="false">
+  @for (notification of notifications(); track trackById($index, notification)) {
+    <div
+      animate.enter="notif-enter"
+      animate.leave="notif-leave"
+      class="notification"
+      [class]="'notification notification--' + notification.severity"
+      role="alert"
+    >
+      <div class="notification__body">
+        <nexus-icon
+          class="notification__icon"
+          [name]="iconFor(notification.severity)"
+          aria-hidden="true"
+        />
+
+        <div class="notification__content">
+          <span class="notification__title">{{ notification.title }}</span>
+          @if (notification.message) {
+            <span class="notification__message">{{ notification.message }}</span>
+          }
+        </div>
+
+        @if (notification.dismissible) {
+          <button
+            class="notification__close"
+            type="button"
+            aria-label="Dismiss notification"
+            (click)="dismiss(notification)"
+          >
+            <nexus-icon name="xmark" aria-hidden="true" />
+          </button>
+        }
+      </div>
+
+      @if (notification.progress !== undefined) {
+        <div
+          class="notification__progress-track"
+          role="progressbar"
+          [attr.aria-valuenow]="notification.progress"
+          aria-valuemin="0"
+          aria-valuemax="100"
+        >
+          <div class="notification__progress-fill" [style.width.%]="notification.progress"></div>
+        </div>
+      }
+    </div>
+  }
+</div>

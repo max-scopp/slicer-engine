@@ -13,9 +13,14 @@
       @for (session of history.sessions(); track session.request_uuid) {
         <li class="list-history__item">
           <div class="list-history__info">
-            <span class="list-history__filename">
+            <button
+              class="list-history__filename"
+              type="button"
+              (click)="navigate(session)"
+              [title]="'Open ' + (session.original_filename ?? 'unknown.stl')"
+            >
               {{ session.original_filename ?? 'unknown.stl' }}
-            </span>
+            </button>
             <span class="list-history__meta">
               {{ history.formatDate(session.created_at) }}
               @if (session.layer_count) {

@@ -160,6 +160,14 @@ async fn run_server(
                         "/download/{request_uuid}",
                         web::get().to(handlers::download_handler),
                     )
+                    .route(
+                        "/request/{request_uuid}",
+                        web::get().to(handlers::get_request_handler),
+                    )
+                    .route(
+                        "/stl/{request_uuid}",
+                        web::get().to(handlers::download_stl_handler),
+                    )
                     .route("/config", web::get().to(handlers::get_config_handler))
                     .route("/config", web::patch().to(handlers::patch_config_handler)),
             )

@@ -41,9 +41,7 @@ pub async fn get_config_handler() -> actix_web::HttpResponse {
 }
 
 /// `PATCH /api/config` — update a single config key and persist to `slicer.toml`.
-pub async fn patch_config_handler(
-    body: web::Json<PatchConfigRequest>,
-) -> actix_web::HttpResponse {
+pub async fn patch_config_handler(body: web::Json<PatchConfigRequest>) -> actix_web::HttpResponse {
     use crate::cli::commands::config::apply_config_field;
     use crate::config::{config_file, load_config, save_config};
 
@@ -201,6 +199,98 @@ pub async fn download_handler(
         .insert_header((
             "Content-Disposition",
             format!("attachment; filename=\"{}\"", download_filename),
+        ))
+        .body(content))
+}
+
+/// Response body for `GET /api/request/:request_uuid`.
+#[derive(serde::Serialize)]
+pub struct RequestMetaResponse {
+    pub request_uuid: String,
+    pub status: String,
+    pub original_filename: Option<String>,
+    pub has_stl: bool,
+    pub has_gcode: bool,
+}
+
+/// `GET /api/request/:request_uuid` — return metadata for a request session.
+pub async fn get_request_handler(
+    state: web::Data<AppState>,
+    request_uuid: web::Path<String>,
+) -> Result<actix_web::HttpResponse, actix_web::Error> {
+    let uuid_str = request_uuid.into_inner();
+    let uuid = uuid::Uuid::parse_str(&uuid_str)
+        .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
+
+    let db = state.db.clone();
+    let session = tokio::task::spawn_blocking(move || db.get_request(uuid))
+        .await
+        .map_err(actix_web::error::ErrorInternalServerError)?
+        .map_err(actix_web::error::ErrorInternalServerError)?
+        .ok_or_else(|| actix_web::error::ErrorNotFound("Request not found"))?;
+
+    let has_stl = session
+        .upload_file_path
+        .as_ref()
+        .map(|p| p.exists())
+        .unwrap_or(false);
+
+    let has_gcode = session
+        .download_file_path
+        .as_ref()
+        .map(|p| p.exists())
+        .unwrap_or(false);
+
+    let status_str = format!("{:?}", session.status).to_lowercase();
+
+    Ok(actix_web::HttpResponse::Ok().json(RequestMetaResponse {
+        request_uuid: session.request_uuid.to_string(),
+        status: status_str,
+        original_filename: session.original_filename,
+        has_stl,
+        has_gcode,
+    }))
+}
+
+/// `GET /api/stl/:request_uuid` — stream the uploaded STL file back to the browser.
+pub async fn download_stl_handler(
+    state: web::Data<AppState>,
+    request_uuid: web::Path<String>,
+) -> Result<actix_web::HttpResponse, actix_web::Error> {
+    let uuid_str = request_uuid.into_inner();
+    let uuid = uuid::Uuid::parse_str(&uuid_str)
+        .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
+
+    let db = state.db.clone();
+    let session = tokio::task::spawn_blocking(move || db.get_request(uuid))
+        .await
+        .map_err(actix_web::error::ErrorInternalServerError)?
+        .map_err(actix_web::error::ErrorInternalServerError)?
+        .ok_or_else(|| actix_web::error::ErrorNotFound("Request not found"))?;
+
+    let upload_path = session
+        .upload_file_path
+        .ok_or_else(|| actix_web::error::ErrorNotFound("STL file not available"))?;
+
+    if !upload_path.exists() {
+        return Err(actix_web::error::ErrorNotFound(
+            "STL file not found on disk",
+        ));
+    }
+
+    let filename = session
+        .original_filename
+        .unwrap_or_else(|| "model.stl".to_string());
+
+    let content = tokio::fs::read(&upload_path)
+        .await
+        .map_err(|_| actix_web::error::ErrorNotFound("STL file could not be read"))?;
+
+    Ok(actix_web::HttpResponse::Ok()
+        .content_type("application/octet-stream")
+        .insert_header((
+            "Content-Disposition",
+            format!("attachment; filename=\"{}\"", filename),
         ))
         .body(content))
 }
