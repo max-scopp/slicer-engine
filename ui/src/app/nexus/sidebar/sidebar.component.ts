@@ -5,7 +5,7 @@ import { Logo } from '../../components/logo/logo';
 import { AppTheme } from '../../services/app-theme';
 
 @Component({
-  selector: 'nexus-nexus-sidebar',
+  selector: 'nexus-sidebar',
   standalone: true,
   imports: [Logo, RouterLink, ConnectionState],
   templateUrl: './sidebar.component.html',
