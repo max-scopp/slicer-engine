@@ -40,8 +40,11 @@ jobs:
           node-version: 20
           cache: pnpm
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Install docs dependencies
+        # Only install the docs workspace; skip lifecycle scripts so the
+        # ui/ postinstall (which runs `cargo`) never executes. Pages builds
+        # are pure VitePress — no Rust toolchain needed.
+        run: pnpm install --frozen-lockfile --ignore-scripts --filter slicer-engine-docs...
 
       - name: Build with VitePress
         run: pnpm --filter slicer-engine-docs docs:build
