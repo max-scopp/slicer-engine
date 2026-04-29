@@ -1,0 +1,11 @@
+# VitePress build output
+.vitepress/dist
+.vitepress/cache
+
+# Dependencies
+node_modules
+
+# Auto-generated wrapper pages (created by .vitepress/config.ts from the
+# README map). Source of truth lives in the actual README files.
+guide/
+architecture/

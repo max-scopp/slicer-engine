@@ -1,0 +1,99 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "G-code",
+  "scopeName": "source.gcode",
+  "fileTypes": ["gcode", "gc", "g", "nc", "cnc", "tap"],
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#block-delete" },
+    { "include": "#line-number" },
+    { "include": "#command" },
+    { "include": "#parameter" },
+    { "include": "#string" },
+    { "include": "#checksum" }
+  ],
+  "repository": {
+    "comment": {
+      "patterns": [
+        {
+          "name": "comment.line.semicolon.gcode",
+          "match": ";.*$"
+        },
+        {
+          "name": "comment.block.gcode",
+          "begin": "\\(",
+          "end": "\\)",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.comment.gcode" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.comment.gcode" }
+          }
+        }
+      ]
+    },
+    "block-delete": {
+      "name": "keyword.operator.block-delete.gcode",
+      "match": "^/"
+    },
+    "line-number": {
+      "name": "entity.name.tag.line-number.gcode",
+      "match": "(?i)\\bN\\d+"
+    },
+    "command": {
+      "patterns": [
+        {
+          "comment": "Motion commands",
+          "name": "keyword.control.motion.gcode",
+          "match": "(?i)\\bG[0-3]\\b"
+        },
+        {
+          "comment": "G-code commands",
+          "name": "keyword.other.gcode.g",
+          "match": "(?i)\\bG\\d+(\\.\\d+)?"
+        },
+        {
+          "comment": "M-code commands",
+          "name": "support.function.mcode.gcode",
+          "match": "(?i)\\bM\\d+"
+        },
+        {
+          "comment": "T (tool) commands",
+          "name": "support.type.tool.gcode",
+          "match": "(?i)\\bT\\d+"
+        }
+      ]
+    },
+    "parameter": {
+      "patterns": [
+        {
+          "comment": "Axis and common parameters with value",
+          "name": "variable.parameter.gcode",
+          "match": "(?i)\\b([XYZABCUVWIJKQRDEFHLOPST])(-?\\d*\\.?\\d+)"
+        },
+        {
+          "comment": "Feed rate F and spindle S",
+          "name": "variable.other.readwrite.gcode",
+          "match": "(?i)\\b([FS])(-?\\d*\\.?\\d+)"
+        },
+        {
+          "comment": "Extruder E parameter",
+          "name": "support.variable.extruder.gcode",
+          "match": "(?i)\\bE(-?\\d*\\.?\\d+)"
+        }
+      ]
+    },
+    "string": {
+      "name": "string.quoted.double.gcode",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        { "name": "constant.character.escape.gcode", "match": "\\\\." }
+      ]
+    },
+    "checksum": {
+      "name": "constant.numeric.checksum.gcode",
+      "match": "\\*\\d+"
+    }
+  }
+}

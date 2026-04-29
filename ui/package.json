@@ -8,12 +8,11 @@
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
     "gen-schemas": "cd .. && cargo run -- gen-schemas --output-dir ui/src/schemas",
-    "gen-types": "npx json-schema-to-typescript --declareExternallyReferenced -i 'src/schemas/*.json' -o src/generated",
-    "gen": "npm run gen-schemas && npm run gen-types",
-    "postinstall": "npm run gen"
+    "gen-types": "pnpm exec json2ts --declareExternallyReferenced -i \"src/schemas/*.json\" -o src/generated",
+    "gen": "pnpm run gen-schemas && pnpm run gen-types",
+    "postinstall": "pnpm run gen"
   },
   "private": true,
-  "packageManager": "npm@10.8.2",
   "dependencies": {
     "@angular/animations": "^21.2.10",
     "@angular/aria": "^21.2.8",

@@ -11,8 +11,15 @@ Cargo.lock
 *.iml
 wasm-pack-*
 
+# Node / pnpm workspace
+node_modules/
+.pnpm-store/
+
 # Angular UI
-ui/node_modules/
 ui/dist/
 ui/.angular/
+
+# VitePress
+docs/.vitepress/dist/
+docs/.vitepress/cache/
 
