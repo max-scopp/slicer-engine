@@ -3,8 +3,8 @@
 //! Generates parallel lines that alternate direction by 90° each layer for
 //! optimal mechanical strength and minimal material usage.
 
+use super::utils::calculate_bounds;
 use clipper2::*;
-use super::utils::{calculate_bounds};
 
 /// Generate rectilinear (parallel line) infill pattern.
 ///
@@ -83,7 +83,7 @@ mod tests {
         let mut region = Paths::default();
         let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
         region.push(square);
-        
+
         let result = generate_rectilinear(&region, 0.0, 0.0);
         assert!(result.is_empty());
     }
@@ -93,7 +93,7 @@ mod tests {
         let mut region = Paths::default();
         let square: Path = vec![(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)].into();
         region.push(square);
-        
+
         let result = generate_rectilinear(&region, 0.2, 0.0);
         assert!(!result.is_empty(), "Should generate infill lines");
     }

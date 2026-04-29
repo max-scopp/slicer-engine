@@ -30,18 +30,19 @@ make build-release build-windows build-macos build-wasm test lint fmt
 
 ### Core Components
 
-| Component                      | Location                                     | Purpose                                                               |
-| ------------------------------ | -------------------------------------------- | --------------------------------------------------------------------- |
-| **SliceLayer / ExtrusionRole** | [src/core/types.rs](src/core/types.rs)       | Core data structures for a single layer                               |
-| **Mesh Slicer**                | [src/core/slicer.rs](src/core/slicer.rs)     | Triangle→layer contour extraction (`slice_mesh`)                      |
-| **Surface Generation**         | [src/core/surfaces.rs](src/core/surfaces.rs) | Top/bottom solid surface detection and infill                         |
-| **Wall Restrictions**          | [src/core/walls.rs](src/core/walls.rs)       | Single-wall first/top-layer constraints                               |
-| **Infill Boundary**            | [src/core/infill.rs](src/core/infill.rs)     | Interior region calculation and sparse infill                         |
-| **Pipeline**                   | [src/core/pipeline.rs](src/core/pipeline.rs) | `process_mesh` — orchestrates the full slicing pipeline               |
-| **Clipper2 Integration**       | [src/core/](src/core/)                       | Geometric polygon clipping operations throughout                      |
-| **Library Interface**          | [src/lib.rs](src/lib.rs)                     | Public API exposing core functionality                                |
-| **CLI Layer**                  | [src/cli/](src/cli/)                         | User-friendly command-line interface bridging library API to commands |
-| **Build Configuration**        | [build.rs](build.rs)                         | Platform detection and environment setup                              |
+| Component                      | Location                                     | Purpose                                                                                       |
+| ------------------------------ | -------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| **SliceLayer / ExtrusionRole** | [src/core/types.rs](src/core/types.rs)       | Core data structures for a single layer                                                       |
+| **Mesh Slicer**                | [src/core/slicer.rs](src/core/slicer.rs)     | Triangle→layer contour extraction (`slice_mesh`)                                              |
+| **Surface Generation**         | [src/core/surfaces.rs](src/core/surfaces.rs) | Top/bottom solid surface detection and infill                                                 |
+| **Wall Restrictions**          | [src/core/walls.rs](src/core/walls.rs)       | Single-wall first/top-layer constraints                                                       |
+| **Infill Boundary**            | [src/core/infill.rs](src/core/infill.rs)     | Interior region calculation and sparse infill                                                 |
+| **Pipeline**                   | [src/core/pipeline.rs](src/core/pipeline.rs) | `process_mesh` — orchestrates the full slicing pipeline                                       |
+| **Scene Engine**               | [src/scene/](src/scene/)                     | Single source of truth for object placement (CLI / WS / WASM all consume `SceneState::apply`) |
+| **Clipper2 Integration**       | [src/core/](src/core/)                       | Geometric polygon clipping operations throughout                                              |
+| **Library Interface**          | [src/lib.rs](src/lib.rs)                     | Public API exposing core functionality                                                        |
+| **CLI Layer**                  | [src/cli/](src/cli/)                         | User-friendly command-line interface bridging library API to commands                         |
+| **Build Configuration**        | [build.rs](build.rs)                         | Platform detection and environment setup                                                      |
 
 ### Module Organization
 
@@ -67,6 +68,14 @@ src/
 │   ├── walls.rs           # apply_single_wall_restrictions (per-island), compute_per_island_strip_masks
 │   ├── infill.rs          # calculate_interior_region, add_infill_to_layers
 │   └── pipeline.rs        # process_mesh (full pipeline orchestrator)
+├── scene/                 # Unified scene engine (issue #51 — SSOT for object placement)
+│   ├── mod.rs             # Re-exports public API
+│   ├── transform.rs       # Transform { translation, rotation: Quat, scale }; apply_transform; Euler-XYZ deg helpers
+│   ├── bed.rs             # BedConfig (width/depth/height/origin offsets); From<&MachineConfig>
+│   ├── loader.rs          # MeshFormat enum + load_bytes / load_path
+│   ├── state.rs           # SceneState, SceneObject, ObjectId
+│   ├── ops.rs             # SceneOp (Add/Remove/Translate/Rotate/Scale/SetTransform/Center/Drop/AlignFace) + apply()
+│   └── wasm.rs            # SceneHandle wasm-bindgen exports (cfg(target_arch="wasm32"))
 ├── lib.rs                 # Public library root
 └── main.rs                # Application entry point (uses CLI)
 ```
@@ -225,6 +234,21 @@ GitHub Actions ([.github/workflows/build.yml](.github/workflows/build.yml)) auto
 - **LTO Compilation**: Release builds are slower due to LTO. Use debug builds during iterative development.
 - **Cross-compilation**: Requires appropriate target toolchains installed. CI verifies these work.
 - **`apply_single_wall_restrictions` is per-island**: Inner walls are stripped only from the specific island whose top-surface run ends on that layer; other islands on the same layer are untouched. The `pre_strip_infill_regions` snapshot is still taken before this step to guard against future regressions — keep that order.
+
+## Scene Engine — SSOT Contract
+
+[src/scene/](src/scene/) is the **single source of truth** for object placement, orientation, and transforms. Issue #51 introduced it; CLI, WS server, and the Angular UI (via WASM) all consume the same `SceneState::apply()` code path. Every CLI flag and every UI gesture must translate to a `SceneOp`.
+
+- **Math**: `glam::{Vec3, Quat, Mat4}`. Quaternions internally; **Euler-XYZ degrees only at protocol/CLI boundaries** (see `Transform::from_euler_xyz_deg` / `to_euler_xyz_deg`).
+- **Ops** (`SceneOp`): `Add`, `Remove`, `Translate`, `SetTransform`, `Rotate`, `Scale`, `CenterOnBed`, `DropToFloor`, `AlignFaceToFloor`. Each `apply` returns an `OpReceipt { inverse }` — sets up undo without implementing it.
+- **AlignFaceToFloor**: picks face by index, computes `Quat::from_rotation_arc(world_normal, -Z)`, then drops to floor.
+- **Bake at the slicer boundary only**: `apply_transform(&Mesh, &Transform) -> Mesh` is called once before the slicing pipeline runs. Never bake mid-pipeline.
+- **Object IDs**: `ObjectId(u64)` is monotonically allocated and **never reused**. UUIDs are reserved for the WS protocol's upload tokens, not for scene objects.
+- **Server scenes are ephemeral per WS connection** (no DB persistence). UI uploads bytes via the file-upload endpoint, then dispatches `Scene { ops: [Add { file_id }, …] }`.
+- **WASM** (`src/scene/wasm.rs`, `cfg(target_arch="wasm32")`): exposes `SceneHandle` with `addMesh`, `applyOp`, `getRenderBuffer`, `getMatrix`, `snapshot`. JS bindings build via `make build-wasm` → `ui/src/generated/scene-wasm/`.
+- **Wasm vs native deps**: `clipper2`, `zip`, `uuid`, `rayon`, `tobj`, `actix-*`, `tokio`, `rusqlite` are gated `cfg(not(target_arch="wasm32"))`. The wasm build only ships `mesh`, `scene`, `logging`, plus wasm-only `wasm-bindgen`/`js-sys`/`serde-wasm-bindgen`. Module-level `#[cfg]`s in `lib.rs` enforce this.
+- **Deprecated CLI flags**: `--center` / `--drop-to-floor` are kept as aliases that log a deprecation warning and dispatch the equivalent `SceneOp`. Do not add new flags that bypass the scene engine.
+- **Don't add a parallel mesh placement path**. The temptation to "just translate this mesh real quick" in `mesh::transforms` is exactly what issue #51 set out to eliminate.
 
 ## Slicing Pipeline — Deep Knowledge
 

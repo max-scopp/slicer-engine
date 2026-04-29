@@ -564,10 +564,7 @@ impl EmitPayload for SetResult<'_> {
 /// Keys under `params.*` map to `[slicing]` in the TOML file.
 /// Unknown keys are silently ignored (the JSON settings file is the canonical
 /// store; TOML is best-effort for human-readable persistence).
-fn persist_setting_to_toml(
-    key: &str,
-    value: &Value,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn persist_setting_to_toml(key: &str, value: &Value) -> Result<(), Box<dyn std::error::Error>> {
     use crate::settings::params::SlicingParams;
 
     let toml_path = config_file();
@@ -576,7 +573,9 @@ fn persist_setting_to_toml(
     // Normalise: strip "params." prefix if present
     let bare_key = key.strip_prefix("params.").unwrap_or(key);
 
-    let slicing = app_config.slicing.get_or_insert_with(SlicingParams::default);
+    let slicing = app_config
+        .slicing
+        .get_or_insert_with(SlicingParams::default);
     let mut slicing_val = serde_json::to_value(&*slicing)
         .map_err(|e| format!("Failed to serialize slicing params: {}", e))?;
     if let Some(obj) = slicing_val.as_object_mut() {

@@ -3,8 +3,8 @@
 //! Generates perpendicular lines in both directions, creating a grid pattern
 //! for improved strength in all directions.
 
-use clipper2::*;
 use super::rectilinear::generate_rectilinear;
+use clipper2::*;
 
 /// Generate grid infill pattern (perpendicular lines).
 ///
@@ -22,8 +22,9 @@ pub fn generate_grid(region: &Paths, density: f64, angle_offset: f64) -> Paths {
     // Grid is two sets of rectilinear lines at 90° to each other
     // The first set is at angle_offset, the second is perpendicular
     let mut lines = generate_rectilinear(region, density, angle_offset);
-    let perpendicular_lines = generate_rectilinear(region, density, angle_offset + std::f64::consts::FRAC_PI_2);
-    
+    let perpendicular_lines =
+        generate_rectilinear(region, density, angle_offset + std::f64::consts::FRAC_PI_2);
+
     // Merge the two sets of lines
     for path in perpendicular_lines.iter() {
         lines.push(path.clone());
@@ -47,12 +48,14 @@ mod tests {
         let mut region = Paths::default();
         let square: Path = vec![(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)].into();
         region.push(square);
-        
+
         let rectilinear_result = generate_rectilinear(&region, 0.2, 0.0);
         let grid_result = generate_grid(&region, 0.2, 0.0);
-        
+
         // Grid should have approximately double the paths (two directions)
-        assert!(grid_result.len() > rectilinear_result.len(), 
-            "Grid should generate more paths than rectilinear");
+        assert!(
+            grid_result.len() > rectilinear_result.len(),
+            "Grid should generate more paths than rectilinear"
+        );
     }
 }

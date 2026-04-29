@@ -1,16 +1,5 @@
 # Scene Engine — The Single Source of Truth for Object Placement
 
-> [!NOTE]
-> **Status: design proposal (issue #51).** This document is the contract the
-> module will be built against. The Rust source files referenced below
-> (`ops.rs`, `state.rs`, `transform.rs`, `wasm.rs`) do not yet exist in
-> [src/scene/](.). Until they do, scene placement still happens ad hoc in
-> the CLI flag handler, [src/mesh/transforms.rs](../mesh/transforms.rs),
-> and the Angular UI.
->
-> Treat this README as the explanation that bounds the implementation —
-> the rules listed here are the ones the new code must obey.
-
 The scene engine answers one question, and one question only:
 
 > _Where is each mesh, rotated how, scaled how — right now?_

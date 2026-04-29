@@ -7,12 +7,69 @@ use crate::gcode::{resolve_gcode_source, GcodeFlavor, GcodeGenerator};
 use crate::infill::InfillPattern;
 use crate::logging::{phases, PhaseTimer, ProcessLogger};
 use crate::mesh::analysis::{calculate_aabb, calculate_surface_area, calculate_volume};
-use crate::mesh::io::read_mesh;
-use crate::mesh::transforms::{center_mesh, drop_to_floor};
+use crate::scene::{apply_transform, BedConfig, SceneOp, SceneState};
 use crate::settings::params::LifecycleMarkerConfig;
 use clap::Parser;
 use serde_json::{json, Value};
 use std::path::PathBuf;
+use std::sync::Arc;
+
+/// Parse `x,y,z` (three comma-separated floats) into `[f64; 3]`.
+fn parse_vec3(s: &str) -> Result<[f64; 3], String> {
+    let parts: Vec<&str> = s.split(',').map(str::trim).collect();
+    if parts.len() != 3 {
+        return Err(format!(
+            "expected three comma-separated values (x,y,z), got '{}'",
+            s
+        ));
+    }
+    let mut out = [0.0; 3];
+    for (i, p) in parts.iter().enumerate() {
+        out[i] = p
+            .parse::<f64>()
+            .map_err(|e| format!("invalid number '{}': {}", p, e))?;
+    }
+    Ok(out)
+}
+
+/// Parse `axis:degrees` where axis is `x`, `y`, or `z` (case-insensitive),
+/// optionally prefixed with `-` to negate.
+fn parse_rotate(s: &str) -> Result<([f32; 3], f32), String> {
+    let (axis_str, deg_str) = s
+        .split_once(':')
+        .ok_or_else(|| format!("expected 'axis:degrees', got '{}'", s))?;
+    let deg: f32 = deg_str
+        .trim()
+        .parse()
+        .map_err(|e| format!("invalid degrees '{}': {}", deg_str, e))?;
+    let trimmed = axis_str.trim();
+    let (sign, axis_char) = if let Some(rest) = trimmed.strip_prefix('-') {
+        (-1.0_f32, rest)
+    } else {
+        (1.0_f32, trimmed)
+    };
+    let axis = match axis_char.to_ascii_lowercase().as_str() {
+        "x" => [sign, 0.0, 0.0],
+        "y" => [0.0, sign, 0.0],
+        "z" => [0.0, 0.0, sign],
+        other => return Err(format!("unknown axis '{}'; expected x, y, or z", other)),
+    };
+    Ok((axis, deg.to_radians()))
+}
+
+/// Parse `s` (uniform scale) or `x,y,z` (non-uniform).
+fn parse_scale(s: &str) -> Result<[f32; 3], String> {
+    if s.contains(',') {
+        let v = parse_vec3(s)?;
+        Ok([v[0] as f32, v[1] as f32, v[2] as f32])
+    } else {
+        let f: f32 = s
+            .trim()
+            .parse()
+            .map_err(|e| format!("invalid scale '{}': {}", s, e))?;
+        Ok([f, f, f])
+    }
+}
 
 /// Slice a 3D model into layers
 #[derive(Parser, Debug)]
@@ -64,13 +121,29 @@ pub struct SliceCommand {
     #[arg(short, long)]
     pub verbose: bool,
 
-    /// Center the mesh horizontally before slicing
+    /// Center the mesh horizontally on the bed before slicing.
     #[arg(long)]
     pub center: bool,
 
-    /// Drop the mesh to Z=0 before slicing
+    /// Drop the mesh so its lowest Z vertex sits on Z=0 before slicing.
     #[arg(long)]
     pub drop_to_floor: bool,
+
+    /// Translate the mesh by `x,y,z` millimeters before slicing.
+    #[arg(long, value_name = "X,Y,Z", value_parser = parse_vec3)]
+    pub translate: Option<[f64; 3]>,
+
+    /// Rotate around an axis by degrees: `x:90`, `-y:45`, `z:30`. Repeatable.
+    #[arg(long, value_name = "AXIS:DEG", value_parser = parse_rotate, action = clap::ArgAction::Append)]
+    pub rotate: Vec<([f32; 3], f32)>,
+
+    /// Scale the mesh: uniform `--scale 2` or per-axis `--scale 1,1,2`.
+    #[arg(long, value_name = "S|X,Y,Z", value_parser = parse_scale)]
+    pub scale: Option<[f32; 3]>,
+
+    /// Rotate the mesh so the chosen face's normal points down, then drop to floor.
+    #[arg(long, value_name = "FACE_INDEX")]
+    pub align_face: Option<usize>,
 
     /// Explicit path to a project config file (overrides auto-discovery of slicer.json).
     #[arg(long, value_name = "FILE")]
@@ -156,10 +229,7 @@ impl SliceCommand {
         let config = match load_and_merge_config(self.config.as_deref()) {
             Ok(c) => c,
             Err(e) => {
-                emitter.log_warn(&format!(
-                    "Failed to load config, using defaults: {}",
-                    e
-                ));
+                emitter.log_warn(&format!("Failed to load config, using defaults: {}", e));
                 crate::config::AppConfig::default()
             }
         };
@@ -180,7 +250,7 @@ impl SliceCommand {
         // Build slicing params (layer height may be overridden by CLI flag)
         let mut slice_params = settings.clone();
         slice_params.layer_height = layer_height;
-        
+
         // Apply CLI overrides for infill settings
         if let Some(density) = self.infill_density {
             slice_params.infill_density = density / 100.0; // Convert percentage to fraction
@@ -211,19 +281,77 @@ impl SliceCommand {
 
         // Load mesh — format is auto-detected from file extension
         let t_load = PhaseTimer::start(phases::MESH_LOAD, &logger);
-        let mut mesh = read_mesh(&self.input)
+        let raw_mesh = crate::scene::load_path(&self.input)
             .map_err(|e| format!("Failed to load mesh '{}': {}", self.input.display(), e))?;
         t_load.finish();
 
-        // Apply optional transforms
+        // Build a single-object scene rooted on the configured bed; every
+        // transform flag is translated into a SceneOp so the CLI shares the
+        // exact code path used by the WS server and (later) WASM/UI.
+        let bed = BedConfig::from(&config.machine);
+        let mut scene = SceneState::new(bed);
+        let object_id = scene.add_mesh(
+            self.input
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "mesh".to_string()),
+            Arc::new(raw_mesh),
+        );
+
+        // Order: explicit translate → rotate → scale → align-face → center → drop-to-floor.
+        // Center and drop-to-floor are placement helpers and intentionally run
+        // last so other ops compose into them naturally.
+        if let Some(delta) = self.translate {
+            scene.apply(SceneOp::Translate {
+                id: object_id,
+                delta,
+            })?;
+            logger.log_debug(&format!("applied translate: {:?}", delta));
+        }
+        for (axis, radians) in &self.rotate {
+            scene.apply(SceneOp::Rotate {
+                id: object_id,
+                axis: *axis,
+                radians: *radians,
+            })?;
+            logger.log_debug(&format!(
+                "applied rotate: axis={:?} deg={:.3}",
+                axis,
+                radians.to_degrees()
+            ));
+        }
+        if let Some(factors) = self.scale {
+            scene.apply(SceneOp::Scale {
+                id: object_id,
+                factors,
+            })?;
+            logger.log_debug(&format!("applied scale: {:?}", factors));
+        }
+        if let Some(face_index) = self.align_face {
+            scene.apply(SceneOp::AlignFaceToFloor {
+                id: object_id,
+                face_index,
+            })?;
+            logger.log_debug(&format!("applied align-face: {}", face_index));
+        }
         if self.center {
-            mesh = center_mesh(&mesh);
+            logger.log_warn(
+                "--center is deprecated; prefer the scene op CenterOnBed (kept as an alias for one release)",
+            );
+            scene.apply(SceneOp::CenterOnBed { id: object_id })?;
             logger.log_debug("applied center transform");
         }
         if self.drop_to_floor {
-            mesh = drop_to_floor(&mesh);
+            logger.log_warn(
+                "--drop-to-floor is deprecated; prefer the scene op DropToFloor (kept as an alias for one release)",
+            );
+            scene.apply(SceneOp::DropToFloor { id: object_id })?;
             logger.log_debug("applied drop-to-floor transform");
         }
+
+        // Bake the scene transform into the mesh that the slicer pipeline sees.
+        let scene_object = scene.get(object_id).expect("object just added");
+        let mesh = apply_transform(scene_object.mesh.as_ref(), &scene_object.transform);
 
         // Compute and log mesh geometry (verbose detail available to this CLI request).
         {
@@ -383,6 +511,10 @@ mod tests {
             infill_pattern: None,
             infill_density: None,
             infill_angle: None,
+            translate: None,
+            rotate: Vec::new(),
+            scale: None,
+            align_face: None,
         };
         assert_eq!(cmd.layer_height, Some(0.2));
         assert_eq!(cmd.gcode_flavor.as_deref(), Some("marlin"));
@@ -407,6 +539,10 @@ mod tests {
             infill_pattern: None,
             infill_density: None,
             infill_angle: None,
+            translate: None,
+            rotate: Vec::new(),
+            scale: None,
+            align_face: None,
         };
         assert!(cmd.gcode_flavor.is_none());
     }
@@ -430,6 +566,10 @@ mod tests {
             infill_pattern: None,
             infill_density: None,
             infill_angle: None,
+            translate: None,
+            rotate: Vec::new(),
+            scale: None,
+            align_face: None,
         };
         assert_eq!(cmd.gcode_flavor.as_deref(), Some("klipper"));
     }
@@ -453,6 +593,10 @@ mod tests {
             infill_pattern: None,
             infill_density: None,
             infill_angle: None,
+            translate: None,
+            rotate: Vec::new(),
+            scale: None,
+            align_face: None,
         };
         assert_eq!(
             cmd.start_print_gcode.as_deref(),
@@ -480,6 +624,10 @@ mod tests {
             infill_pattern: None,
             infill_density: None,
             infill_angle: None,
+            translate: None,
+            rotate: Vec::new(),
+            scale: None,
+            align_face: None,
         };
         assert!(cmd_on.lifecycle_markers);
         assert!(!cmd_on.no_lifecycle_markers);
@@ -501,6 +649,10 @@ mod tests {
             infill_pattern: None,
             infill_density: None,
             infill_angle: None,
+            translate: None,
+            rotate: Vec::new(),
+            scale: None,
+            align_face: None,
         };
         assert!(!cmd_off.lifecycle_markers);
         assert!(cmd_off.no_lifecycle_markers);

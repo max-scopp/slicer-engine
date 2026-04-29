@@ -21,10 +21,7 @@ use super::types::{ExtrusionRole, SliceLayer};
 /// sub-feature ending mid-model (e.g. a raised ledge on the side of a cube)
 /// would strip inner walls from every island on that layer — including the
 /// main body — causing the infill boundary to over-expand into the wall zone.
-pub(crate) fn apply_single_wall_restrictions(
-    layers: &mut [SliceLayer],
-    params: &SlicingParams,
-) {
+pub(crate) fn apply_single_wall_restrictions(layers: &mut [SliceLayer], params: &SlicingParams) {
     if layers.is_empty() {
         return;
     }
@@ -38,8 +35,7 @@ pub(crate) fn apply_single_wall_restrictions(
     // Top surface: compute a per-island strip mask and selectively remove.
     if params.only_one_wall_top {
         let perimeters: Vec<Paths> = layers.iter().map(perimeter_paths_of).collect();
-        let strip_masks =
-            compute_per_island_strip_masks(layers, &perimeters, params.top_layers);
+        let strip_masks = compute_per_island_strip_masks(layers, &perimeters, params.top_layers);
         for (i, strip_indices) in strip_masks.iter().enumerate() {
             if !strip_indices.is_empty() {
                 remove_inner_walls_for_islands(&mut layers[i], strip_indices);
@@ -99,8 +95,8 @@ fn compute_per_island_strip_masks(
                         covered = Paths::new(vec![]);
                         break;
                     }
-                    covered = intersect(covered, neighbor.clone(), FillRule::EvenOdd)
-                        .unwrap_or_default();
+                    covered =
+                        intersect(covered, neighbor.clone(), FillRule::EvenOdd).unwrap_or_default();
                     if covered.is_empty() {
                         break;
                     }

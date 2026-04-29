@@ -10,7 +10,9 @@ mod walls;
 pub use infill::add_infill_to_layers;
 pub use pipeline::process_mesh;
 pub use slicer::slice_mesh;
-pub use surfaces::{generate_top_bottom_surfaces, generate_top_bottom_surfaces_with_interior, SurfaceSubTimings};
+pub use surfaces::{
+    generate_top_bottom_surfaces, generate_top_bottom_surfaces_with_interior, SurfaceSubTimings,
+};
 pub use types::{ExtrusionRole, SliceLayer};
 
 #[cfg(test)]
@@ -309,7 +311,14 @@ mod tests {
         }
 
         // Add infill
-        add_infill_to_layers(&mut layers, 0.2, InfillPattern::Rectilinear, 45.0, 0.4, None);
+        add_infill_to_layers(
+            &mut layers,
+            0.2,
+            InfillPattern::Rectilinear,
+            45.0,
+            0.4,
+            None,
+        );
 
         // After infill: should have both wall and infill paths
         for layer in &layers {
@@ -332,7 +341,14 @@ mod tests {
         let initial_path_count: usize = layers.iter().map(|l| l.paths.len()).sum();
 
         // Add zero-density infill (should do nothing)
-        add_infill_to_layers(&mut layers, 0.0, InfillPattern::Rectilinear, 45.0, 0.4, None);
+        add_infill_to_layers(
+            &mut layers,
+            0.0,
+            InfillPattern::Rectilinear,
+            45.0,
+            0.4,
+            None,
+        );
 
         let final_path_count: usize = layers.iter().map(|l| l.paths.len()).sum();
         assert_eq!(
@@ -403,7 +419,14 @@ mod tests {
             .collect();
 
         // Now add sparse infill.
-        add_infill_to_layers(&mut layers, 0.3, InfillPattern::Rectilinear, 45.0, 0.4, None);
+        add_infill_to_layers(
+            &mut layers,
+            0.3,
+            InfillPattern::Rectilinear,
+            45.0,
+            0.4,
+            None,
+        );
 
         // For a layer that is entirely solid (solid_regions == perimeter area),
         // no new Infill paths should have been added.
@@ -423,9 +446,7 @@ mod tests {
             let surface_now = layers[i]
                 .path_roles
                 .iter()
-                .filter(|r| {
-                    **r == ExtrusionRole::TopSurface || **r == ExtrusionRole::BottomSurface
-                })
+                .filter(|r| **r == ExtrusionRole::TopSurface || **r == ExtrusionRole::BottomSurface)
                 .count();
             assert_eq!(
                 surface_now, surface_counts[i],

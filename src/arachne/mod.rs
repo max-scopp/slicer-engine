@@ -40,8 +40,8 @@ use clipper2::*;
 use crate::core::{ExtrusionRole, SliceLayer};
 
 // Re-export public types
-pub use types::{ArachneParams, ArachneSubTimings, Bead};
 pub use beads::compute_arachne_beads;
+pub use types::{ArachneParams, ArachneSubTimings, Bead};
 
 // ── Per-run timing accumulators (CPU time Σ across all worker threads) ────────
 use beads::{ARACHNE_BEAD_SHRINK_NS, ARACHNE_COLLAPSE_NS};
@@ -58,7 +58,10 @@ use beads::{ARACHNE_BEAD_SHRINK_NS, ARACHNE_COLLAPSE_NS};
 /// * `layers` – mutable slice layers produced by [`crate::core::slice_mesh`]
 ///   (after surface generation).
 /// * `params` – resolved Arachne parameters.
-pub fn generate_arachne_walls(layers: &mut [SliceLayer], params: &ArachneParams) -> ArachneSubTimings {
+pub fn generate_arachne_walls(
+    layers: &mut [SliceLayer],
+    params: &ArachneParams,
+) -> ArachneSubTimings {
     ARACHNE_COLLAPSE_NS.store(0, Ordering::Relaxed);
     ARACHNE_BEAD_SHRINK_NS.store(0, Ordering::Relaxed);
     #[cfg(not(target_arch = "wasm32"))]

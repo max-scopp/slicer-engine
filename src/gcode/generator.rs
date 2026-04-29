@@ -471,7 +471,9 @@ impl GcodeGenerator {
                 // producing the "weird line crossing" artifact visible in gyroid infill.
                 let is_closed_loop = matches!(
                     role,
-                    crate::core::ExtrusionRole::OuterWall | crate::core::ExtrusionRole::InnerWall | crate::core::ExtrusionRole::Skirt
+                    crate::core::ExtrusionRole::OuterWall
+                        | crate::core::ExtrusionRole::InnerWall
+                        | crate::core::ExtrusionRole::Skirt
                 );
                 if is_closed_loop {
                     let dx = start_x - prev.0;
@@ -486,8 +488,12 @@ impl GcodeGenerator {
                         );
                         out.push_str(&format!(
                             "{} ; close contour\n",
-                            self.dialect
-                                .move_extrude(start_x, start_y, e_total, print_speed_mm_min)
+                            self.dialect.move_extrude(
+                                start_x,
+                                start_y,
+                                e_total,
+                                print_speed_mm_min
+                            )
                         ));
                     }
                 }
