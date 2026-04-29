@@ -1,5 +1,5 @@
-import { HttpClient } from '@angular/common/http';
 import { Component, effect, ElementRef, inject, input } from '@angular/core';
+import { IconCache } from './icon-cache';
 
 @Component({
   selector: 'nexus-icon',
@@ -23,14 +23,23 @@ export class Icon {
   readonly name = input.required<string>();
   readonly variant = input<'regular' | 'solid'>('regular');
 
-  private readonly http = inject(HttpClient);
+  private readonly cache = inject(IconCache);
   private readonly el = inject(ElementRef<HTMLElement>);
+
+  private lastRenderedUrl: string | null = null;
 
   constructor() {
     effect(() => {
       const basePath = this.variant() === 'solid' ? '/assets/icons/solid' : '/assets/icons';
-      this.http.get(`${basePath}/${this.name()}.svg`, { responseType: 'text' }).subscribe({
+      const url = `${basePath}/${this.name()}.svg`;
+
+      if (url === this.lastRenderedUrl) {
+        return;
+      }
+
+      this.cache.get(url).subscribe({
         next: (content) => {
+          this.lastRenderedUrl = url;
           this.el.nativeElement.innerHTML = content;
         },
       });

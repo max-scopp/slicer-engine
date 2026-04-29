@@ -8,11 +8,13 @@ import {
   output,
   signal,
 } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import Fuse, { type IFuseOptions } from 'fuse.js';
 import { BrowserStorage } from '../services/browser-storage';
 import { Icon } from '../shared/icon/icon';
 import { UserInputModality } from '../shared/input-modality/input-modality';
 import { FieldHostComponent } from './field-host/field-host.component';
-import { SchemaGroup } from './models/field-def';
+import { FieldDef, SchemaGroup } from './models/field-def';
 import { parseSchema } from './models/schema-parser';
 
 export interface FieldChangeEvent {
@@ -46,10 +48,40 @@ const ACCORDION_STORAGE_KEY = 'schema-form-accordion';
  * />
  * ```
  */
+/** A `FieldDef` annotated with the name of its parent group and its Fuse relevance score. */
+export interface FieldDefWithGroup extends FieldDef {
+  groupName: string;
+  /** Fuse.js match score: 0 = perfect match, 1 = worst match. */
+  score: number;
+}
+
+type FieldDefIndexed = FieldDef & { groupName: string };
+
+const FUSE_OPTIONS: IFuseOptions<FieldDefIndexed> = {
+  keys: [
+    { name: 'title', weight: 0.7 },
+    { name: 'key', weight: 0.5 },
+    { name: 'description', weight: 0.3 },
+    { name: 'groupName', weight: 0.2 },
+  ],
+  threshold: 0.35,
+  ignoreLocation: true,
+  minMatchCharLength: 2,
+  shouldSort: true,
+  includeScore: true,
+};
+
 @Component({
   selector: 'se-schema-form',
   standalone: true,
-  imports: [Icon, FieldHostComponent, AccordionGroup, AccordionPanel, AccordionTrigger],
+  imports: [
+    FormsModule,
+    Icon,
+    FieldHostComponent,
+    AccordionGroup,
+    AccordionPanel,
+    AccordionTrigger,
+  ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './schema-form.component.html',
   styleUrl: './schema-form.component.scss',
@@ -70,9 +102,29 @@ export class SchemaFormComponent {
   /** Emitted whenever the user changes a single field. */
   readonly fieldChange = output<FieldChangeEvent>();
 
+  protected readonly searchQuery = signal('');
+
   protected readonly groups = computed<SchemaGroup[]>(() => {
     const { groups } = parseSchema(this.schema());
     return groups;
+  });
+
+  /** All fields flattened with their group name, used to build the Fuse index. */
+  private readonly flatFields = computed<FieldDefIndexed[]>(() =>
+    this.groups().flatMap((g) => g.fields.map((f) => ({ ...f, groupName: g.name }))),
+  );
+
+  /**
+   * Ranked search results when the user has typed a query.
+   * Returns an empty array when the query is blank.
+   */
+  protected readonly searchResults = computed<FieldDefWithGroup[]>(() => {
+    const query = this.searchQuery().trim();
+    if (!query) {
+      return [];
+    }
+    const fuse = new Fuse(this.flatFields(), FUSE_OPTIONS);
+    return fuse.search(query).map((r) => ({ ...r.item, score: r.score ?? 0 }));
   });
 
   /**
@@ -97,7 +149,7 @@ export class SchemaFormComponent {
       // final height. block:'nearest' scrolls the minimum distance to reveal
       // the whole group; if the panel is taller than the viewport the browser
       // aligns the top (heading) to the viewport top instead.
-      setTimeout(() => groupEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 180);
+      setTimeout(() => groupEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 0);
     }
     this.persistExpandedState();
   }
