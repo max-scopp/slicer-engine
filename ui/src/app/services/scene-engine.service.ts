@@ -1,5 +1,6 @@
-import { Injectable, computed, signal } from '@angular/core';
+import { Injectable, computed, inject, signal } from '@angular/core';
 import init, { SceneHandle, type RenderBuffer } from '../../generated/scene-wasm/scene_engine';
+import { LoggerService } from './logger.service';
 
 /**
  * JS-side mirror of the Rust `SceneObjectJs` snapshot.
@@ -79,10 +80,22 @@ const DEFAULT_BED: SceneBedSnapshot = {
  */
 @Injectable({ providedIn: 'root' })
 export class SceneEngineService {
+  private readonly log = inject(LoggerService).scope('SceneEngine');
   private handle: SceneHandle | null = null;
   private initPromise: Promise<void> | null = null;
 
   private readonly snapshotSignal = signal<SceneSnapshot>({ objects: [], bed: DEFAULT_BED });
+  /**
+   * Rolling-window stats for the most recent op label dispatched through
+   * {@link apply}. Updated after every op so on-screen overlays can show
+   * a live `last / avg over N` performance readout.
+   */
+  private readonly opStatsSignal = signal<{
+    label: string;
+    lastMs: number;
+    avgMs: number;
+    count: number;
+  } | null>(null);
 
   /** Reactive snapshot of the entire scene. */
   readonly snapshot = computed(() => this.snapshotSignal());
@@ -92,6 +105,9 @@ export class SceneEngineService {
 
   /** Reactive bed configuration. */
   readonly bed = computed(() => this.snapshotSignal().bed);
+
+  /** Last-op rolling stats (last/avg over up to 100 samples). */
+  readonly opStats = computed(() => this.opStatsSignal());
 
   /**
    * Load the WASM module and instantiate a fresh scene with the given bed.
@@ -106,6 +122,8 @@ export class SceneEngineService {
   }
 
   private async bootstrap(bed: SceneBedSnapshot): Promise<void> {
+    this.log.info('bootstrap start', { bed });
+    const stop = this.log.time('bootstrap');
     // Load the wasm binary from the deployed asset path (configured in
     // angular.json) instead of relying on `import.meta.url`, which after
     // bundling resolves to the chunk URL rather than the directory the
@@ -113,6 +131,7 @@ export class SceneEngineService {
     await init({ module_or_path: 'scene_engine_bg.wasm' });
     this.handle = new SceneHandle(bed as unknown as object);
     this.refreshSnapshot();
+    stop();
   }
 
   /**
@@ -121,6 +140,7 @@ export class SceneEngineService {
    */
   async resetWithBed(bed: SceneBedSnapshot): Promise<void> {
     await this.ready();
+    this.log.info('resetWithBed', { bed });
     this.disposeHandle();
     this.handle = new SceneHandle(bed as unknown as object);
     this.refreshSnapshot();
@@ -131,7 +151,9 @@ export class SceneEngineService {
    */
   addMesh(name: string, format: 'stl' | 'obj' | '3mf', bytes: Uint8Array): bigint {
     const handle = this.requireHandle();
+    const stop = this.log.time(`addMesh '${name}' (${format}, ${bytes.byteLength} B)`);
     const id = handle.addMesh(name, format, bytes);
+    stop({ id: String(id) });
     this.refreshSnapshot();
     return id;
   }
@@ -139,17 +161,32 @@ export class SceneEngineService {
   /** Apply a single scene op and refresh the snapshot signal. */
   apply(op: SceneOp): void {
     const handle = this.requireHandle();
+    const label = `apply ${op.op}`;
+    const stop = this.log.time(label);
     handle.applyOp(op);
+    stop(op.args as unknown as Record<string, unknown>);
+    this.publishOpStats(label);
     this.refreshSnapshot();
   }
 
   /** Apply a batch of ops as a single snapshot update. */
   applyBatch(ops: SceneOp[]): void {
     const handle = this.requireHandle();
+    const label = `applyBatch x${ops.length}`;
+    const stop = this.log.time(label);
     for (const op of ops) {
       handle.applyOp(op);
     }
+    stop();
+    this.publishOpStats(label);
     this.refreshSnapshot();
+  }
+
+  private publishOpStats(label: string): void {
+    const stats = this.log.stats(label);
+    if (stats) {
+      this.opStatsSignal.set({ label, ...stats });
+    }
   }
 
   /**
@@ -162,6 +199,7 @@ export class SceneEngineService {
     indices: Uint32Array;
   } {
     const handle = this.requireHandle();
+    const stop = this.log.time(`getRenderBuffer id=${id}`);
     const buffer: RenderBuffer = handle.getRenderBuffer(id);
     // Copy out before the wasm RenderBuffer is freed.
     const result = {
@@ -170,6 +208,10 @@ export class SceneEngineService {
       indices: new Uint32Array(buffer.indices),
     };
     buffer.free();
+    stop({
+      verts: result.positions.length / 3,
+      tris: result.indices.length / 3,
+    });
     return result;
   }
 
@@ -196,6 +238,7 @@ export class SceneEngineService {
 
   private requireHandle(): SceneHandle {
     if (!this.handle) {
+      this.log.error('used before ready() resolved');
       throw new Error('SceneEngineService used before ready() resolved');
     }
     return this.handle;
@@ -203,6 +246,7 @@ export class SceneEngineService {
 
   private disposeHandle(): void {
     if (this.handle) {
+      this.log.debug('disposeHandle');
       this.handle.free();
       this.handle = null;
     }
