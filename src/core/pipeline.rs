@@ -85,7 +85,12 @@ pub fn process_mesh(
                 layers
                     .par_iter()
                     .map(|layer| {
-                        calculate_interior_region(layer, 0.0, params.nozzle_diameter_mm, params.wall_count)
+                        calculate_interior_region(
+                            layer,
+                            0.0,
+                            params.nozzle_diameter_mm,
+                            params.wall_count,
+                        )
                     })
                     .collect(),
             )
@@ -95,7 +100,12 @@ pub fn process_mesh(
             layers
                 .iter()
                 .map(|layer| {
-                    calculate_interior_region(layer, 0.0, params.nozzle_diameter_mm, params.wall_count)
+                    calculate_interior_region(
+                        layer,
+                        0.0,
+                        params.nozzle_diameter_mm,
+                        params.wall_count,
+                    )
                 })
                 .collect(),
         );

@@ -1,0 +1,210 @@
+import { Injectable, computed, signal } from '@angular/core';
+import init, { SceneHandle, type RenderBuffer } from '../../generated/scene-wasm/scene_engine';
+
+/**
+ * JS-side mirror of the Rust `SceneObjectJs` snapshot.
+ *
+ * IDs are exposed as `bigint` because that is the native return type of
+ * `SceneHandle.addMesh`. They survive a JSON round-trip via `String(id)` if
+ * needed at the protocol boundary.
+ */
+export interface SceneObjectSnapshot {
+  id: bigint;
+  name: string;
+  translation: [number, number, number];
+  euler_xyz_deg: [number, number, number];
+  scale: [number, number, number];
+  triangle_count: number;
+  world_aabb: [[number, number, number], [number, number, number]];
+}
+
+export interface SceneBedSnapshot {
+  width: number;
+  depth: number;
+  height: number;
+  origin_offset_x: number;
+  origin_offset_y: number;
+}
+
+export interface SceneSnapshot {
+  objects: SceneObjectSnapshot[];
+  bed: SceneBedSnapshot;
+}
+
+/**
+ * Wire-format scene op accepted by the WASM `applyOp`.
+ *
+ * Mirrors `src/scene/wasm.rs::SceneOpJs` — the discriminant lives in `op` and
+ * the variant payload in `args`. The `Add` variant is omitted because the
+ * service exposes a dedicated {@link SceneEngineService.addMesh} method that
+ * keeps raw bytes off the JSON path.
+ */
+export type SceneOp =
+  | { op: 'remove'; args: { id: bigint } }
+  | { op: 'translate'; args: { id: bigint; delta: [number, number, number] } }
+  | {
+      op: 'set_transform';
+      args: {
+        id: bigint;
+        translation: [number, number, number];
+        euler_xyz_deg: [number, number, number];
+        scale: [number, number, number];
+      };
+    }
+  | { op: 'rotate'; args: { id: bigint; axis: [number, number, number]; degrees: number } }
+  | { op: 'scale'; args: { id: bigint; factors: [number, number, number] } }
+  | { op: 'center_on_bed'; args: { id: bigint } }
+  | { op: 'drop_to_floor'; args: { id: bigint } }
+  | { op: 'align_face_to_floor'; args: { id: bigint; face_index: number } };
+
+const DEFAULT_BED: SceneBedSnapshot = {
+  width: 220,
+  depth: 220,
+  height: 250,
+  origin_offset_x: 0,
+  origin_offset_y: 0,
+};
+
+/**
+ * Single source of truth for object placement, orientation and transforms.
+ *
+ * Wraps the Rust `SceneState` (shipped as WASM) so the same op semantics —
+ * `Translate`, `Rotate`, `CenterOnBed`, `DropToFloor`, `AlignFaceToFloor`,
+ * etc. — are used by the CLI, the WS server and the Angular UI. Components
+ * dispatch ops via {@link apply}; reactive consumers read the resulting
+ * {@link snapshot} signal.
+ *
+ * The service is lazily initialised: callers must `await ready()` before
+ * issuing ops.
+ */
+@Injectable({ providedIn: 'root' })
+export class SceneEngineService {
+  private handle: SceneHandle | null = null;
+  private initPromise: Promise<void> | null = null;
+
+  private readonly snapshotSignal = signal<SceneSnapshot>({ objects: [], bed: DEFAULT_BED });
+
+  /** Reactive snapshot of the entire scene. */
+  readonly snapshot = computed(() => this.snapshotSignal());
+
+  /** Reactive list of objects (convenience derivation). */
+  readonly objects = computed(() => this.snapshotSignal().objects);
+
+  /** Reactive bed configuration. */
+  readonly bed = computed(() => this.snapshotSignal().bed);
+
+  /**
+   * Load the WASM module and instantiate a fresh scene with the given bed.
+   * Idempotent: subsequent calls reuse the existing engine without touching
+   * scene state.
+   */
+  ready(bed: SceneBedSnapshot = DEFAULT_BED): Promise<void> {
+    if (!this.initPromise) {
+      this.initPromise = this.bootstrap(bed);
+    }
+    return this.initPromise;
+  }
+
+  private async bootstrap(bed: SceneBedSnapshot): Promise<void> {
+    // Load the wasm binary from the deployed asset path (configured in
+    // angular.json) instead of relying on `import.meta.url`, which after
+    // bundling resolves to the chunk URL rather than the directory the
+    // generated JS originally lived in.
+    await init({ module_or_path: 'scene_engine_bg.wasm' });
+    this.handle = new SceneHandle(bed as unknown as object);
+    this.refreshSnapshot();
+  }
+
+  /**
+   * Replace the entire scene with a new one bound to the given bed.
+   * Use this when the active machine config changes.
+   */
+  async resetWithBed(bed: SceneBedSnapshot): Promise<void> {
+    await this.ready();
+    this.disposeHandle();
+    this.handle = new SceneHandle(bed as unknown as object);
+    this.refreshSnapshot();
+  }
+
+  /**
+   * Add a mesh to the scene from raw bytes. Returns the assigned object id.
+   */
+  addMesh(name: string, format: 'stl' | 'obj' | '3mf', bytes: Uint8Array): bigint {
+    const handle = this.requireHandle();
+    const id = handle.addMesh(name, format, bytes);
+    this.refreshSnapshot();
+    return id;
+  }
+
+  /** Apply a single scene op and refresh the snapshot signal. */
+  apply(op: SceneOp): void {
+    const handle = this.requireHandle();
+    handle.applyOp(op);
+    this.refreshSnapshot();
+  }
+
+  /** Apply a batch of ops as a single snapshot update. */
+  applyBatch(ops: SceneOp[]): void {
+    const handle = this.requireHandle();
+    for (const op of ops) {
+      handle.applyOp(op);
+    }
+    this.refreshSnapshot();
+  }
+
+  /**
+   * Render buffers for a given object. The returned arrays are owned by
+   * the caller — typically copied into a `BufferGeometry` and disposed.
+   */
+  getRenderBuffer(id: bigint): {
+    positions: Float32Array;
+    normals: Float32Array;
+    indices: Uint32Array;
+  } {
+    const handle = this.requireHandle();
+    const buffer: RenderBuffer = handle.getRenderBuffer(id);
+    // Copy out before the wasm RenderBuffer is freed.
+    const result = {
+      positions: new Float32Array(buffer.positions),
+      normals: new Float32Array(buffer.normals),
+      indices: new Uint32Array(buffer.indices),
+    };
+    buffer.free();
+    return result;
+  }
+
+  /** 4×4 transform matrix as 16 column-major floats. */
+  getMatrix(id: bigint): Float32Array {
+    const handle = this.requireHandle();
+    // The wasm side returns a copy; safe to hand out directly.
+    return handle.getMatrix(id);
+  }
+
+  private refreshSnapshot(): void {
+    const handle = this.requireHandle();
+    const raw = handle.snapshot() as SceneSnapshot;
+    // `serde-wasm-bindgen` serialises `u64` as a JS Number by default, but
+    // every wasm method that takes an id (`getRenderBuffer`, `getMatrix`,
+    // op payloads) expects a real `bigint`. Normalise here so consumers
+    // never have to think about it.
+    const snap: SceneSnapshot = {
+      ...raw,
+      objects: raw.objects.map((o) => ({ ...o, id: BigInt(o.id as unknown as string | number) })),
+    };
+    this.snapshotSignal.set(snap);
+  }
+
+  private requireHandle(): SceneHandle {
+    if (!this.handle) {
+      throw new Error('SceneEngineService used before ready() resolved');
+    }
+    return this.handle;
+  }
+
+  private disposeHandle(): void {
+    if (this.handle) {
+      this.handle.free();
+      this.handle = null;
+    }
+  }
+}

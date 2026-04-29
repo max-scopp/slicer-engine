@@ -132,7 +132,7 @@ pub fn compute_arachne_beads(input: &Paths, params: &ArachneParams) -> Vec<Bead>
     // Try each bead position directly.  If `shrink` returns empty the polygon
     // cannot sustain that bead and we stop.  This replaces the separate
     // `find_collapse_depth` binary search that ran 17 `inflate` calls before
-    // touching any actual bead. 
+    // touching any actual bead.
     //
     // The last depth that produced a non-empty result and the first depth that
     // produced an empty result give us tight bounds for `big_d` if we need it

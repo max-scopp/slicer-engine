@@ -1,7 +1,7 @@
 //! Core data types for Arachne wall generation.
 
-use clipper2::Path;
 use crate::settings::params::SlicingParams;
+use clipper2::Path;
 
 /// Resolved Arachne parameters with all values in absolute mm.
 ///

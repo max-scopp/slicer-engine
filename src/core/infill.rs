@@ -173,12 +173,9 @@ pub fn add_infill_to_layers(
         }
 
         let infill_area = if !layer.solid_regions.is_empty() {
-            let remaining = difference(
-                infill_area,
-                layer.solid_regions.clone(),
-                FillRule::Positive,
-            )
-            .unwrap_or_default();
+            let remaining =
+                difference(infill_area, layer.solid_regions.clone(), FillRule::Positive)
+                    .unwrap_or_default();
             if remaining.is_empty() {
                 return None;
             }

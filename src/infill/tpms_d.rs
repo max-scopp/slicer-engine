@@ -11,8 +11,8 @@
 //! For a given Z height, we sample this in 2D and generate lines where
 //! the function crosses zero.
 
-use clipper2::*;
 use super::utils::calculate_bounds;
+use clipper2::*;
 
 /// Generate TPMS-D infill pattern.
 ///
@@ -27,11 +27,7 @@ use super::utils::calculate_bounds;
 ///
 /// # Returns
 /// Paths containing line segments following the TPMS-D surface
-pub fn generate_tpms_d(
-    region: &Paths,
-    density: f64,
-    z_height: f64,
-) -> Paths {
+pub fn generate_tpms_d(region: &Paths, density: f64, z_height: f64) -> Paths {
     if density <= 0.0 || region.is_empty() {
         return Paths::default();
     }
@@ -102,8 +98,14 @@ pub fn generate_tpms_d(
                     let t = v_a / (v_a - v_b);
                     let (x, y) = match edge_index {
                         0 => (min_x + (i as f64 + t) * step_x, min_y + j as f64 * step_y),
-                        1 => (min_x + (i + 1) as f64 * step_x, min_y + (j as f64 + t) * step_y),
-                        2 => (min_x + (i as f64 + t) * step_x, min_y + (j + 1) as f64 * step_y),
+                        1 => (
+                            min_x + (i + 1) as f64 * step_x,
+                            min_y + (j as f64 + t) * step_y,
+                        ),
+                        2 => (
+                            min_x + (i as f64 + t) * step_x,
+                            min_y + (j + 1) as f64 * step_y,
+                        ),
                         3 => (min_x + i as f64 * step_x, min_y + (j as f64 + t) * step_y),
                         _ => (0.0, 0.0),
                     };
@@ -148,12 +150,7 @@ mod tests {
     #[test]
     fn test_tpms_d_zero_density() {
         let mut region = Paths::default();
-        let square: Path = vec![
-            (0.0, 0.0),
-            (10.0, 0.0),
-            (10.0, 10.0),
-            (0.0, 10.0),
-        ].into();
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
         region.push(square);
         let result = generate_tpms_d(&region, 0.0, 0.0);
         assert!(result.is_empty());
@@ -162,12 +159,7 @@ mod tests {
     #[test]
     fn test_tpms_d_generates_lines() {
         let mut region = Paths::default();
-        let square: Path = vec![
-            (0.0, 0.0),
-            (20.0, 0.0),
-            (20.0, 20.0),
-            (0.0, 20.0),
-        ].into();
+        let square: Path = vec![(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)].into();
         region.push(square);
 
         let result = generate_tpms_d(&region, 0.3, 0.0);

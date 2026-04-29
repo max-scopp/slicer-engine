@@ -11,7 +11,9 @@ pub mod output;
 pub mod schemas;
 
 use clap::Parser;
-use commands::{ConfigCommand, GenSchemasCommand, InfoCommand, ServeCommand, SettingsCommand, SliceCommand};
+use commands::{
+    ConfigCommand, GenSchemasCommand, InfoCommand, ServeCommand, SettingsCommand, SliceCommand,
+};
 
 /// Slicer Engine CLI
 #[derive(Parser, Debug)]
@@ -29,7 +31,7 @@ pub struct CliArgs {
 #[derive(Parser, Debug)]
 pub enum Commands {
     /// Slice a 3D model into layers
-    Slice(SliceCommand),
+    Slice(Box<SliceCommand>),
 
     /// Display build and library information
     Info(InfoCommand),

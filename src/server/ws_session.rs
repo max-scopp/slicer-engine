@@ -1,7 +1,8 @@
 //! WebSocket session management and message handling.
 
 use crate::logging::{phases, PhaseTimer, ProcessLogger, StderrLogger};
-use crate::ws_protocol::{ClientMessage, ServerMessage};
+use crate::scene::{BedConfig, SceneOp, SceneState};
+use crate::ws_protocol::{BedConfigDto, ClientMessage, SceneObjectDto, SceneOpDto, ServerMessage};
 use futures_util::StreamExt as _;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -132,6 +133,9 @@ async fn handle_ws_session(
     let logger = StderrLogger;
     logger.log_info("[WS] New session started");
 
+    // Per-session scene state — ephemeral, dropped on disconnect.
+    let mut scene = SceneState::new(BedConfig::default());
+
     // Aggregate WebSocket continuation frames (limit: 64 MiB per message)
     let mut stream = msg_stream
         .aggregate_continuations()
@@ -171,7 +175,16 @@ async fn handle_ws_session(
                 }
                 Ok(ClientMessage::Reset) => {
                     logger.log_debug("[WS] Processing reset request");
+                    scene = SceneState::new(BedConfig::default());
                     let _ = send_msg(&mut session, &ServerMessage::log_info("Reset.")).await;
+                    let _ = send_msg(&mut session, &snapshot_msg(&scene)).await;
+                }
+                Ok(ClientMessage::Scene { ops }) => {
+                    logger.log_debug(&format!("[WS] Applying {} scene ops", ops.len()));
+                    handle_scene_ops(&mut session, &mut scene, ops, &work_dir).await;
+                }
+                Ok(ClientMessage::SceneSnapshot) => {
+                    let _ = send_msg(&mut session, &snapshot_msg(&scene)).await;
                 }
                 Err(e) => {
                     logger.log_warn(&format!("[WS] Failed to parse message: {}", e));
@@ -419,4 +432,124 @@ async fn send_msg(
         r#"{"type":"error","message":"Internal error: failed to serialize message"}"#;
     let json = serde_json::to_string(msg).unwrap_or_else(|_| SERIALIZATION_ERROR.to_owned());
     session.text(json).await
+}
+
+/// Apply a sequence of [`SceneOpDto`]s to the per-session scene and send back
+/// the resulting [`ServerMessage::SceneState`] snapshot.
+///
+/// Mesh data for `Add` is sourced from the upload work directory by `file_id`
+/// (the `request_uuid` returned by `POST /api/upload`).
+async fn handle_scene_ops(
+    session: &mut actix_ws::Session,
+    scene: &mut SceneState,
+    ops: Vec<SceneOpDto>,
+    work_dir: &std::path::Path,
+) {
+    for dto in ops {
+        let op = match dto_to_op(dto, work_dir) {
+            Ok(op) => op,
+            Err(e) => {
+                let _ = send_msg(session, &ServerMessage::error(e)).await;
+                return;
+            }
+        };
+        if let Err(e) = scene.apply(op) {
+            let _ = send_msg(session, &ServerMessage::error(e.to_string())).await;
+            return;
+        }
+    }
+    let _ = send_msg(session, &snapshot_msg(scene)).await;
+}
+
+/// Translate a wire-format [`SceneOpDto`] into the internal [`SceneOp`].
+///
+/// For `Add` the mesh bytes are read from disk based on the upload `file_id`.
+fn dto_to_op(dto: SceneOpDto, work_dir: &std::path::Path) -> Result<SceneOp, String> {
+    use crate::scene::Transform;
+    match dto {
+        SceneOpDto::Add {
+            name,
+            format,
+            file_id,
+        } => {
+            let uuid = Uuid::parse_str(&file_id)
+                .map_err(|e| format!("invalid file_id '{}': {}", file_id, e))?;
+            let path = work_dir.join(uuid.to_string());
+            let bytes = std::fs::read(&path)
+                .map_err(|e| format!("failed to read upload {}: {}", path.display(), e))?;
+            Ok(SceneOp::Add {
+                name,
+                format,
+                bytes,
+            })
+        }
+        SceneOpDto::Remove { id } => Ok(SceneOp::Remove {
+            id: crate::scene::ObjectId(id),
+        }),
+        SceneOpDto::Translate { id, delta } => Ok(SceneOp::Translate {
+            id: crate::scene::ObjectId(id),
+            delta,
+        }),
+        SceneOpDto::SetTransform {
+            id,
+            translation,
+            euler_xyz_deg,
+            scale,
+        } => Ok(SceneOp::SetTransform {
+            id: crate::scene::ObjectId(id),
+            transform: Transform::from_euler_xyz_deg(translation, euler_xyz_deg, scale),
+        }),
+        SceneOpDto::Rotate { id, axis, degrees } => Ok(SceneOp::Rotate {
+            id: crate::scene::ObjectId(id),
+            axis,
+            radians: degrees.to_radians(),
+        }),
+        SceneOpDto::Scale { id, factors } => Ok(SceneOp::Scale {
+            id: crate::scene::ObjectId(id),
+            factors,
+        }),
+        SceneOpDto::CenterOnBed { id } => Ok(SceneOp::CenterOnBed {
+            id: crate::scene::ObjectId(id),
+        }),
+        SceneOpDto::DropToFloor { id } => Ok(SceneOp::DropToFloor {
+            id: crate::scene::ObjectId(id),
+        }),
+        SceneOpDto::AlignFaceToFloor { id, face_index } => Ok(SceneOp::AlignFaceToFloor {
+            id: crate::scene::ObjectId(id),
+            face_index,
+        }),
+    }
+}
+
+/// Build a [`ServerMessage::SceneState`] snapshot from the current scene.
+fn snapshot_msg(scene: &SceneState) -> ServerMessage {
+    let objects = scene
+        .objects
+        .iter()
+        .map(|o| {
+            let world = o.world_aabb();
+            SceneObjectDto {
+                id: o.id.0,
+                name: o.name.clone(),
+                translation: o.transform.translation,
+                euler_xyz_deg: o.transform.to_euler_xyz_deg(),
+                scale: o.transform.scale,
+                triangle_count: o.mesh.faces.len(),
+                world_aabb: [
+                    [world.min.x, world.min.y, world.min.z],
+                    [world.max.x, world.max.y, world.max.z],
+                ],
+            }
+        })
+        .collect();
+    ServerMessage::SceneState {
+        objects,
+        bed: BedConfigDto {
+            width: scene.bed.width,
+            depth: scene.bed.depth,
+            height: scene.bed.height,
+            origin_offset_x: scene.bed.origin_offset_x,
+            origin_offset_y: scene.bed.origin_offset_y,
+        },
+    }
 }

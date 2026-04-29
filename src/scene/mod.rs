@@ -1,0 +1,20 @@
+//! Unified scene engine — single source of truth for object placement,
+//! orientation, and transforms across CLI, WS server, and (via WASM) the UI.
+//!
+//! See [issue #51](https://github.com/max-scopp/slicer-engine/issues/51)
+//! for the architecture plan.
+
+pub mod bed;
+pub mod loader;
+pub mod ops;
+pub mod state;
+pub mod transform;
+
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
+
+pub use bed::BedConfig;
+pub use loader::{load_bytes, load_path, MeshFormat};
+pub use ops::{OpReceipt, SceneError, SceneOp};
+pub use state::{ObjectId, SceneObject, SceneState};
+pub use transform::{apply_transform, transformed_aabb, Transform};

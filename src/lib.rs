@@ -11,16 +11,27 @@
 //! - Printer profile and slicing parameter validation
 //! - User-friendly CLI layer for command-line usage
 
-pub mod arachne;
-pub mod cli;
-pub mod config;
-pub mod core;
-pub mod gcode;
-pub mod infill;
 pub mod logging;
 pub mod mesh;
+pub mod scene;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod config;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod settings;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod ws_protocol;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod arachne;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod cli;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod core;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod gcode;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod infill;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod db;
@@ -28,4 +39,5 @@ pub mod db;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod server;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub use core::*;

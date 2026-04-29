@@ -60,8 +60,8 @@ pub fn save_config(config: &AppConfig, path: &Path) -> Result<(), Box<dyn std::e
         }
     }
 
-    let content = toml::to_string_pretty(config)
-        .map_err(|e| format!("Cannot serialize config: {}", e))?;
+    let content =
+        toml::to_string_pretty(config).map_err(|e| format!("Cannot serialize config: {}", e))?;
     fs::write(path, content)
         .map_err(|e| format!("Cannot write config '{}': {}", path.display(), e))?;
     Ok(())
@@ -90,10 +90,7 @@ pub fn load_and_merge_config(
 
     // Layer 3: project config (TOML only; .json files are handled by legacy JSON path)
     let project_path: Option<PathBuf> = project_config_path
-        .filter(|p| {
-            p.exists()
-                && p.extension().and_then(|e| e.to_str()) != Some("json")
-        })
+        .filter(|p| p.exists() && p.extension().and_then(|e| e.to_str()) != Some("json"))
         .map(|p| p.to_path_buf())
         .or_else(find_project_config_toml);
 

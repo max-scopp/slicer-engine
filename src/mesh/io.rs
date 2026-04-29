@@ -145,6 +145,7 @@ pub fn read_stl_from_bytes(bytes: &[u8]) -> Result<Mesh, Box<dyn std::error::Err
 /// use slicer_engine::mesh::io::read_obj;
 /// let mesh = read_obj(Path::new("model.obj")).unwrap();
 /// ```
+#[cfg(not(target_arch = "wasm32"))]
 pub fn read_obj(path: &Path) -> Result<Mesh, Box<dyn std::error::Error>> {
     let (models, _materials) = tobj::load_obj(
         path,
@@ -207,6 +208,7 @@ pub fn read_obj(path: &Path) -> Result<Mesh, Box<dyn std::error::Error>> {
 /// use slicer_engine::mesh::io::read_3mf;
 /// let mesh = read_3mf(Path::new("model.3mf")).unwrap();
 /// ```
+#[cfg(not(target_arch = "wasm32"))]
 pub fn read_3mf(path: &Path) -> Result<Mesh, Box<dyn std::error::Error>> {
     let file = OpenOptions::new()
         .read(true)
@@ -226,6 +228,7 @@ pub fn read_3mf(path: &Path) -> Result<Mesh, Box<dyn std::error::Error>> {
 /// # Errors
 /// Returns an error if the bytes are not a valid 3MF archive or the embedded
 /// XML cannot be parsed.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn read_3mf_from_bytes(bytes: &[u8]) -> Result<Mesh, Box<dyn std::error::Error>> {
     use quick_xml::events::Event;
     use quick_xml::Reader;
@@ -363,8 +366,14 @@ pub fn read_mesh(path: &Path) -> Result<Mesh, Box<dyn std::error::Error>> {
 
     match ext.as_str() {
         "stl" => read_stl(path),
+        #[cfg(not(target_arch = "wasm32"))]
         "obj" => read_obj(path),
+        #[cfg(target_arch = "wasm32")]
+        "obj" => Err("OBJ format not supported in wasm builds".into()),
+        #[cfg(not(target_arch = "wasm32"))]
         "3mf" => read_3mf(path),
+        #[cfg(target_arch = "wasm32")]
+        "3mf" => Err("3MF format not supported in wasm builds".into()),
         other => Err(format!(
             "Unsupported file format '.{}'. Supported: {}",
             other,
@@ -433,6 +442,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn test_read_obj() {
         let mesh = read_obj(&fixture("simple-cube.obj")).expect("Failed to read OBJ");
         assert_eq!(mesh.faces.len(), 12, "Expected 12 faces");
@@ -440,12 +450,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn test_read_obj_missing_file() {
         let result = read_obj(Path::new("/nonexistent/path/mesh.obj"));
         assert!(result.is_err(), "Should fail on missing OBJ file");
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn test_read_3mf() {
         let mesh = read_3mf(&fixture("simple-cube.3mf")).expect("Failed to read 3MF");
         assert_eq!(mesh.faces.len(), 12, "Expected 12 faces");
@@ -453,12 +465,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn test_read_3mf_missing_file() {
         let result = read_3mf(Path::new("/nonexistent/path/mesh.3mf"));
         assert!(result.is_err(), "Should fail on missing 3MF file");
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn test_read_3mf_invalid_bytes() {
         let result = read_3mf_from_bytes(b"not a zip archive");
         assert!(result.is_err(), "Should fail on invalid bytes");
@@ -471,12 +485,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn test_read_mesh_obj() {
         let mesh = read_mesh(&fixture("simple-cube.obj")).expect("read_mesh should handle OBJ");
         assert_eq!(mesh.faces.len(), 12);
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn test_read_mesh_3mf() {
         let mesh = read_mesh(&fixture("simple-cube.3mf")).expect("read_mesh should handle 3MF");
         assert_eq!(mesh.faces.len(), 12);
@@ -498,6 +514,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn test_read_3mf_from_bytes_out_of_bounds_index() {
         use std::io::Write;
 
