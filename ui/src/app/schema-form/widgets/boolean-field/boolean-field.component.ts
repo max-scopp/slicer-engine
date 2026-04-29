@@ -25,6 +25,17 @@ import { FieldWidget } from '../base-field';
         font-weight: 500;
         color: var(--color-text-secondary);
         cursor: pointer;
+        padding: 4px 8px;
+        margin-inline: -8px;
+        border-radius: var(--radius-sm);
+        transition:
+          background-color var(--transition-fast),
+          color var(--transition-fast);
+
+        &:hover {
+          background: var(--color-surface-hover);
+          color: var(--color-text-primary);
+        }
       }
 
       input[type='checkbox'] {
