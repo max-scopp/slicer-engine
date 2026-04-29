@@ -40,9 +40,7 @@
                 "output": "/assets/icons"
               }
             ],
-            "styles": [
-              "src/styles/main.scss"
-            ]
+            "styles": ["src/styles/main.scss"]
           },
           "configurations": {
             "production": {
