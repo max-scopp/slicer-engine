@@ -12,7 +12,7 @@ const STATUS_CONFIG: Record<string, StatusConfig> = {
   connecting: { label: 'Connecting…', variant: 'warning', pulse: true },
   connected: { label: 'Connected', variant: 'success', pulse: false },
   disconnected: { label: 'Disconnected', variant: 'default', pulse: false },
-  failed: { label: 'Connection failed', variant: 'danger', pulse: false },
+  failed: { label: '', variant: 'danger', pulse: false },
 };
 
 @Component({

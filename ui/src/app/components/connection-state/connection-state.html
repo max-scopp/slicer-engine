@@ -2,6 +2,6 @@
   <span class="dot" [class.pulse]="config().pulse"></span>
   {{ config().label }}
   @if (connection.isFailed()) {
-    <button class="retry-btn" (click)="connection.retry()">Retry</button>
+    <button class="retry-btn" (click)="connection.retry()">Connect again</button>
   }
 </nexus-badge>

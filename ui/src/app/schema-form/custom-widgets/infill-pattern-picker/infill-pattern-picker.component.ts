@@ -10,6 +10,7 @@ import { Card } from '../../../components/card/card';
 import { IconButton } from '../../../shared/icon-button/icon-button';
 import { RadioButtonValue } from '../../../shared/radio-group/radio-button-value';
 import { RadioGroup } from '../../../shared/radio-group/radio-group';
+import { StackWhenCramped } from '../../../shared/radio-group/stack-when-cramped';
 import { TooltipDirective } from '../../../shared/tooltip/tooltip.directive';
 import { FieldDef } from '../../models/field-def';
 import { FieldWidget } from '../../widgets/base-field';
@@ -59,7 +60,7 @@ const PATTERNS: PatternOption[] = [
 @Component({
   selector: 'se-infill-pattern-picker',
   standalone: true,
-  imports: [Card, RadioGroup, RadioButtonValue, IconButton, TooltipDirective],
+  imports: [Card, RadioGroup, RadioButtonValue, IconButton, TooltipDirective, StackWhenCramped],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styles: [
     `
@@ -112,6 +113,7 @@ const PATTERNS: PatternOption[] = [
       class="pattern-group"
       [(radioGroup)]="selected"
       (radioGroupChange)="onSelect($event)"
+      stackWhenCramped
     >
       @for (p of patterns; track p.value) {
         <button [radioButtonValue]="p.value" [tooltip]="p.description">{{ p.label }}</button>
