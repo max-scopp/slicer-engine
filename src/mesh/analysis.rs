@@ -1,6 +1,197 @@
-//! Spatial analysis functions: AABB, volume, surface area.
+//! Spatial analysis functions: AABB, volume, surface area, coplanar face groups.
 
-use crate::mesh::types::{Mesh, AABB};
+use crate::mesh::types::{Mesh, Vertex, AABB};
+
+// ---------------------------------------------------------------------------
+// Coplanar face groups
+// ---------------------------------------------------------------------------
+
+/// Compute the geometric (unnormalised) normal of a triangle from three vertices.
+#[inline]
+fn geometric_normal(a: &Vertex, b: &Vertex, c: &Vertex) -> [f64; 3] {
+    let ux = b.x - a.x;
+    let uy = b.y - a.y;
+    let uz = b.z - a.z;
+    let vx = c.x - a.x;
+    let vy = c.y - a.y;
+    let vz = c.z - a.z;
+    [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx]
+}
+
+#[inline]
+fn normalise(n: [f64; 3]) -> [f64; 3] {
+    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+    if len < 1e-12 {
+        [0.0, 0.0, 0.0]
+    } else {
+        [n[0] / len, n[1] / len, n[2] / len]
+    }
+}
+
+// Union–find with path compression and union by rank.
+fn uf_find(parent: &mut [u32], mut i: u32) -> u32 {
+    while parent[i as usize] != i {
+        parent[i as usize] = parent[parent[i as usize] as usize]; // path halving
+        i = parent[i as usize];
+    }
+    i
+}
+
+fn uf_union(parent: &mut [u32], rank: &mut [u8], a: u32, b: u32) {
+    let ra = uf_find(parent, a);
+    let rb = uf_find(parent, b);
+    if ra == rb {
+        return;
+    }
+    match rank[ra as usize].cmp(&rank[rb as usize]) {
+        std::cmp::Ordering::Less => parent[ra as usize] = rb,
+        std::cmp::Ordering::Greater => parent[rb as usize] = ra,
+        std::cmp::Ordering::Equal => {
+            parent[rb as usize] = ra;
+            rank[ra as usize] += 1;
+        }
+    }
+}
+
+/// Assign each face to a coplanar group and return a `Vec<u32>` of length
+/// `mesh.faces.len()` where `result[face_index]` is the canonical group id
+/// (the root of its union–find tree, renumbered 0…N-1).
+///
+/// Two triangles are placed in the same group when:
+/// 1. They share an edge (two vertices within `vertex_merge_distance_mm`), **and**
+/// 2. Their geometric normals agree within `angle_threshold_deg`.
+///
+/// The returned group ids are contiguous starting from 0 and are ordered by
+/// the first face that belongs to each group (i.e. `result[0]` is always 0).
+pub fn compute_coplanar_groups(
+    mesh: &Mesh,
+    angle_threshold_deg: f32,
+    vertex_merge_distance_mm: f64,
+) -> Vec<u32> {
+    let n = mesh.faces.len();
+    if n == 0 {
+        return Vec::new();
+    }
+
+    // --- 1. Compute unit normals for every face. ---------------------------
+    let normals: Vec<[f64; 3]> = mesh
+        .faces
+        .iter()
+        .map(|f| {
+            normalise(geometric_normal(
+                &f.vertices[0],
+                &f.vertices[1],
+                &f.vertices[2],
+            ))
+        })
+        .collect();
+
+    let cos_threshold = (angle_threshold_deg as f64).to_radians().cos();
+
+    // --- 2. Build an edge → face adjacency map. ----------------------------
+    // Quantise vertex positions to a grid of `vertex_merge_distance_mm` so
+    // floating-point near-duplicates collapse to the same integer key.
+    // Typical values: 0.001 mm (STL precision) to 0.1 mm.
+    let quant = 1.0 / vertex_merge_distance_mm.max(1e-9);
+
+    // Assign a canonical integer id to each unique vertex position.
+    // We use a flat Vec<(quantised xyz, id)> sorted once; lookup is O(log N).
+    let mut qverts: Vec<([i64; 3], u32)> = mesh
+        .faces
+        .iter()
+        .flat_map(|f| f.vertices.iter())
+        .enumerate()
+        .map(|(raw_idx, v)| {
+            let q = [
+                (v.x * quant).round() as i64,
+                (v.y * quant).round() as i64,
+                (v.z * quant).round() as i64,
+            ];
+            (q, raw_idx as u32)
+        })
+        .collect();
+    qverts.sort_unstable_by_key(|(q, _)| *q);
+
+    // For a raw vertex index (face_idx * 3 + corner), look up its canonical id.
+    // First, build a mapping from sorted position → canonical id.
+    let mut canonical_id: Vec<u32> = vec![0; n * 3];
+    {
+        let mut group_start = 0usize;
+        while group_start < qverts.len() {
+            let key = qverts[group_start].0;
+            let mut group_end = group_start + 1;
+            while group_end < qverts.len() && qverts[group_end].0 == key {
+                group_end += 1;
+            }
+            // Pick the first raw index in the group as the canonical id.
+            let rep = qverts[group_start].1;
+            for &(_, raw) in &qverts[group_start..group_end] {
+                canonical_id[raw as usize] = rep;
+            }
+            group_start = group_end;
+        }
+    }
+
+    // Build: directed half-edge key (min_vert, max_vert) → list of face indices.
+    // Using a Vec of (key, face_idx) sorted by key is cache-friendly and avoids
+    // HashMap overhead for meshes with millions of faces.
+    let mut half_edges: Vec<([u32; 2], u32)> = Vec::with_capacity(n * 3);
+    for face_idx in 0..n {
+        for edge in 0..3usize {
+            let va = canonical_id[face_idx * 3 + edge];
+            let vb = canonical_id[face_idx * 3 + (edge + 1) % 3];
+            let key = if va < vb { [va, vb] } else { [vb, va] };
+            half_edges.push((key, face_idx as u32));
+        }
+    }
+    half_edges.sort_unstable_by_key(|(k, _)| *k);
+
+    // --- 3. Union-find: merge adjacent coplanar faces. ---------------------
+    let mut parent: Vec<u32> = (0..n as u32).collect();
+    let mut rank: Vec<u8> = vec![0; n];
+
+    let mut i = 0usize;
+    while i < half_edges.len() {
+        let key = half_edges[i].0;
+        // Collect all faces sharing this edge key.
+        let mut j = i;
+        while j < half_edges.len() && half_edges[j].0 == key {
+            j += 1;
+        }
+        // Pairwise-check every face pair sharing this edge.
+        for a in i..j {
+            for b in (a + 1)..j {
+                let fa = half_edges[a].1 as usize;
+                let fb = half_edges[b].1 as usize;
+                let na = normals[fa];
+                let nb = normals[fb];
+                let dot = na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2];
+                // Dot product of unit normals ≥ cos(threshold) → same plane.
+                if dot >= cos_threshold {
+                    uf_union(&mut parent, &mut rank, fa as u32, fb as u32);
+                }
+            }
+        }
+        i = j;
+    }
+
+    // --- 4. Compact group ids so they are contiguous 0…G-1. ---------------
+    let mut root_to_compact: std::collections::HashMap<u32, u32> =
+        std::collections::HashMap::with_capacity(n / 2);
+    let mut next_id: u32 = 0;
+    let mut result: Vec<u32> = Vec::with_capacity(n);
+    for face_idx in 0..n as u32 {
+        let root = uf_find(&mut parent, face_idx);
+        let compact = *root_to_compact.entry(root).or_insert_with(|| {
+            let id = next_id;
+            next_id += 1;
+            id
+        });
+        result.push(compact);
+    }
+
+    result
+}
 
 /// Compute the Axis-Aligned Bounding Box for the given mesh.
 ///
@@ -125,5 +316,59 @@ mod tests {
     fn test_volume_empty_mesh_returns_error() {
         let mesh = Mesh::new();
         assert!(calculate_volume(&mesh).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // compute_coplanar_groups
+    // -----------------------------------------------------------------------
+
+    /// A cube has 6 flat faces, each made of 2 coplanar triangles → 6 groups.
+    #[test]
+    fn test_coplanar_groups_cube_has_six_groups() {
+        let mesh = make_cube_mesh();
+        let groups = compute_coplanar_groups(&mesh, 1.0, 0.001);
+        assert_eq!(groups.len(), 12);
+        let mut unique: Vec<u32> = groups.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            6,
+            "expected 6 coplanar groups, got {unique:?}"
+        );
+    }
+
+    /// The two triangles that form each face of the cube must be in the same group.
+    #[test]
+    fn test_coplanar_groups_cube_face_pairs_are_merged() {
+        let mesh = make_cube_mesh();
+        let groups = compute_coplanar_groups(&mesh, 1.0, 0.001);
+        // Face pairs per side (see make_cube_mesh winding order): 0+1, 2+3, etc.
+        for pair_start in (0..12).step_by(2) {
+            assert_eq!(
+                groups[pair_start],
+                groups[pair_start + 1],
+                "face {} and {} should be in the same group",
+                pair_start,
+                pair_start + 1,
+            );
+        }
+    }
+
+    /// Adjacent faces on different sides of the cube must NOT merge.
+    #[test]
+    fn test_coplanar_groups_cube_cross_side_faces_are_separate() {
+        let mesh = make_cube_mesh();
+        let groups = compute_coplanar_groups(&mesh, 1.0, 0.001);
+        // Bottom (0,1) vs top (2,3): different planes.
+        assert_ne!(groups[0], groups[2]);
+    }
+
+    /// Empty mesh returns an empty vec without panicking.
+    #[test]
+    fn test_coplanar_groups_empty_mesh() {
+        let mesh = Mesh::new();
+        let groups = compute_coplanar_groups(&mesh, 1.0, 0.001);
+        assert!(groups.is_empty());
     }
 }

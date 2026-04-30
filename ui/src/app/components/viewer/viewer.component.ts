@@ -291,17 +291,19 @@ export class ViewerComponent implements OnDestroy {
   // dispatch one WASM op per selected object id.
   // ---------------------------------------------------------------------------
 
-  private handleSelect(stringId: string, additive: boolean): void {
+  private handleSelect(stringId: string, _additive: boolean): void {
     const id = parseWasmId(stringId);
     if (id === null) {
       return;
     }
-    if (additive) {
-      if (!this.selectedWasmIds.includes(id)) {
-        this.selectedWasmIds = [...this.selectedWasmIds, id];
-      }
+    // Multi-select with click-to-toggle: clicking an unselected object
+    // adds it to the selection; clicking an already-selected object
+    // removes it. No modifier keys required.
+    const idx = this.selectedWasmIds.indexOf(id);
+    if (idx === -1) {
+      this.selectedWasmIds = [...this.selectedWasmIds, id];
     } else {
-      this.selectedWasmIds = [id];
+      this.selectedWasmIds = this.selectedWasmIds.filter((existing) => existing !== id);
     }
     this.scene?.setSelectedIds(new Set(this.selectedWasmIds.map(String)));
   }
@@ -347,8 +349,10 @@ export class ViewerComponent implements OnDestroy {
   }
 
   /**
-   * Pull-to-floor: align the picked face to Z=0, then re-select the
-   * object and exit pull-to-floor mode so the user lands back in `'none'`.
+   * Pull-to-floor: align the picked face to Z=0. Stays in pull-to-floor
+   * mode so the user can pick another face on another object without
+   * having to re-enter the mode. Selection is left untouched — picking a
+   * face is a manipulation gesture, not a selection gesture.
    */
   private handleFacePicked(stringId: string, faceIndex: number): void {
     const id = parseWasmId(stringId);
@@ -360,8 +364,6 @@ export class ViewerComponent implements OnDestroy {
       args: { id, face_index: faceIndex },
     });
     this.sceneCommand.flush();
-    this.handleSelect(stringId, false);
-    this.viewerControl.objectMode.set('none');
   }
 
   ngOnDestroy(): void {
@@ -461,7 +463,7 @@ export class ViewerComponent implements OnDestroy {
       }
     }
     this.wasmMeshes.clear();
-    this.selectedWasmIds = [];
+    this.handleClearSelection();
     this.dragApplied.clear();
     scene.clearContent();
     this.gcodeGeometry?.dispose();
@@ -547,6 +549,11 @@ export class ViewerComponent implements OnDestroy {
     mesh.matrixWorldNeedsUpdate = true;
     this.scene.contentRoot.add(mesh);
     this.wasmMeshes.set(id, mesh);
+    // Precompute coplanar face groups and store in userData so the
+    // pull-to-floor highlight can light up whole flat regions rather than
+    // individual triangles. Groups are computed once here in WASM (O(F) with
+    // union-find) and read O(1) per hover frame afterwards.
+    mesh.userData['faceGroups'] = this.sceneEngine.getFaceGroups(id);
     // Stamp the same id (stringified) on the legacy scene's selectable
     // registry so the existing raycast / drag pointer plumbing recognises
     // it. The drag handlers translate it back to a bigint.

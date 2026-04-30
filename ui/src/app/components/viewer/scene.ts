@@ -313,6 +313,25 @@ export class ViewerScene {
   private readonly originalEmissive = new Map<Mesh, { color: Color; intensity: number }[]>();
   private readonly raycaster = new Raycaster();
   private readonly ndcScratch = new Vector2();
+  /** Overlay triangles drawn on the coplanar face group the user hovers in pull-to-floor mode. */
+  private readonly faceHighlight: Mesh = (() => {
+    const geo = new BufferGeometry();
+    // Start with capacity for 1 triangle; resized as needed.
+    geo.setAttribute('position', new Float32BufferAttribute(new Float32Array(9), 3));
+    const mat = new MeshBasicMaterial({
+      color: 0x2ecc71,
+      transparent: true,
+      opacity: 0.55,
+      depthTest: false,
+      depthWrite: false,
+      side: 2, // THREE.DoubleSide — pull-to-floor cares about either winding
+    });
+    const m = new Mesh(geo, mat);
+    m.renderOrder = 998;
+    m.visible = false;
+    m.matrixAutoUpdate = false;
+    return m;
+  })();
   private pressState: SelectionPressState | null = null;
   /**
    * Tracks a left-button press that landed on empty space (no selectable
@@ -422,6 +441,7 @@ export class ViewerScene {
       this.controls.enabled = true;
       this.gizmoHandlers?.end();
     };
+    this.scene.add(this.faceHighlight);
     this.scene.add(new AmbientLight(0xffffff, 0.55));
     const dir = new DirectionalLight(0xffffff, 0.9);
     dir.position.set(200, 300, 400);
@@ -768,6 +788,9 @@ export class ViewerScene {
   setObjectMode(mode: ObjectMode): void {
     this.currentObjectMode = mode;
     this.gizmo.setMode(mode, this.computeSelectionCentroid());
+    if (mode !== 'pullToFloor') {
+      this.hideFaceHighlight();
+    }
   }
 
   dispose(): void {
@@ -781,6 +804,12 @@ export class ViewerScene {
     this.uninstallAutoscrollZoom();
     this.uninstallSelectionHandlers();
     this.gizmo.dispose();
+    if (this.highlightRafHandle !== 0) {
+      cancelAnimationFrame(this.highlightRafHandle);
+      this.highlightRafHandle = 0;
+    }
+    this.faceHighlight.geometry.dispose();
+    (this.faceHighlight.material as Material).dispose();
     this.clearContent();
     this.controls.dispose();
     this.renderer.dispose();
@@ -874,6 +903,14 @@ export class ViewerScene {
   };
 
   private onSelectionPointerMove = (event: PointerEvent): void => {
+    if (this.currentObjectMode === 'pullToFloor') {
+      // Coalesce rapid pointer-moves to one raycast per frame. Without
+      // this, devtools-amplified raycast cost can stall the UI thread.
+      this.pendingHighlightEvent = event;
+      if (this.highlightRafHandle === 0) {
+        this.highlightRafHandle = requestAnimationFrame(this.flushFaceHighlight);
+      }
+    }
     const eps = this.emptyPressState;
     if (eps && event.pointerId === eps.pointerId) {
       const dxPx = event.clientX - eps.downX;
@@ -922,6 +959,7 @@ export class ViewerScene {
   };
 
   private onSelectionPointerCancel = (event: PointerEvent): void => {
+    this.hideFaceHighlight();
     if (this.emptyPressState && event.pointerId === this.emptyPressState.pointerId) {
       this.emptyPressState = null;
     }
@@ -944,6 +982,180 @@ export class ViewerScene {
     }
     return raycastFace(this.raycaster, this.camera, ndc, targets);
   }
+
+  /**
+   * Update the green pull-to-floor face overlay to track the coplanar group
+   * currently under the pointer. On hit, all triangles sharing the same
+   * coplanar group id as the hit face are collected and rendered as a single
+   * multi-triangle overlay — so a flat bottom face lights up as a whole
+   * region rather than one triangle at a time.
+   *
+   * Falls back to single-triangle highlight when no `faceGroups` map is
+   * present (e.g. the mesh was loaded before this feature was deployed).
+   */
+  private updateFaceHighlight(event: PointerEvent): void {
+    const ndc = this.toNdc(event, this.ndcScratch);
+    const targets = Array.from(this.selectables.values());
+    if (targets.length === 0) {
+      this.hideFaceHighlight();
+      return;
+    }
+    this.raycaster.setFromCamera(ndc, this.camera);
+    const hits = this.raycaster.intersectObjects(targets, true);
+
+    for (const hit of hits) {
+      const mesh = hit.object;
+      const face = hit.face;
+      if (!face || !(mesh instanceof Mesh) || !mesh.geometry) {
+        continue;
+      }
+      const posAttr = mesh.geometry.getAttribute('position');
+      if (!posAttr) {
+        continue;
+      }
+
+      // --- Determine which face indices belong to the hovered group --------
+      const faceGroups: Uint32Array | undefined = mesh.userData['faceGroups'];
+      // hit.faceIndex is the THREE.js triangle index into the index buffer.
+      const hitFaceIdx = hit.faceIndex ?? 0;
+      const targetGroup =
+        faceGroups && faceGroups.length > hitFaceIdx ? faceGroups[hitFaceIdx] : -1;
+
+      // Fast path: same mesh + same group as last frame → nothing to rebuild.
+      const cache = this.faceHighlightCache;
+      if (
+        cache !== null &&
+        cache.meshUuid === mesh.uuid &&
+        cache.groupId === targetGroup &&
+        this.faceHighlight.visible
+      ) {
+        return;
+      }
+
+      let faceIndices: number[];
+      if (faceGroups && targetGroup >= 0) {
+        faceIndices = [];
+        for (let i = 0; i < faceGroups.length; i++) {
+          if (faceGroups[i] === targetGroup) {
+            faceIndices.push(i);
+          }
+        }
+      } else {
+        // Fallback: just highlight the single hit triangle.
+        faceIndices = [hitFaceIdx];
+      }
+
+      // --- Build world-space position buffer for the highlight mesh --------
+      // Each face contributes 3 vertices × 3 floats.
+      const triCount = faceIndices.length;
+      const posArr = new Float32Array(triCount * 9);
+
+      // Compute a shared lift direction from the hit face normal.
+      const va0 = this.faceTriScratchA.fromBufferAttribute(posAttr, face.a);
+      const vb0 = this.faceTriScratchB.fromBufferAttribute(posAttr, face.b);
+      const vc0 = this.faceTriScratchC.fromBufferAttribute(posAttr, face.c);
+      mesh.localToWorld(va0);
+      mesh.localToWorld(vb0);
+      mesh.localToWorld(vc0);
+      const nx = (vb0.y - va0.y) * (vc0.z - va0.z) - (vb0.z - va0.z) * (vc0.y - va0.y);
+      const ny = (vb0.z - va0.z) * (vc0.x - va0.x) - (vb0.x - va0.x) * (vc0.z - va0.z);
+      const nz = (vb0.x - va0.x) * (vc0.y - va0.y) - (vb0.y - va0.y) * (vc0.x - va0.x);
+      const nlen = Math.hypot(nx, ny, nz) || 1;
+      const lift = 0.02;
+      const lx = (nx / nlen) * lift;
+      const ly = (ny / nlen) * lift;
+      const lz = (nz / nlen) * lift;
+
+      // Get the index buffer to resolve face → vertex indices.
+      const indexAttr = mesh.geometry.getIndex();
+
+      for (let t = 0; t < triCount; t++) {
+        const fi = faceIndices[t];
+        let ia: number, ib: number, ic: number;
+        if (indexAttr) {
+          ia = indexAttr.getX(fi * 3);
+          ib = indexAttr.getX(fi * 3 + 1);
+          ic = indexAttr.getX(fi * 3 + 2);
+        } else {
+          ia = fi * 3;
+          ib = fi * 3 + 1;
+          ic = fi * 3 + 2;
+        }
+        const va = this.faceTriScratchA.fromBufferAttribute(posAttr, ia);
+        const vb = this.faceTriScratchB.fromBufferAttribute(posAttr, ib);
+        const vc = this.faceTriScratchC.fromBufferAttribute(posAttr, ic);
+        mesh.localToWorld(va);
+        mesh.localToWorld(vb);
+        mesh.localToWorld(vc);
+        const base = t * 9;
+        posArr[base] = va.x + lx;
+        posArr[base + 1] = va.y + ly;
+        posArr[base + 2] = va.z + lz;
+        posArr[base + 3] = vb.x + lx;
+        posArr[base + 4] = vb.y + ly;
+        posArr[base + 5] = vb.z + lz;
+        posArr[base + 6] = vc.x + lx;
+        posArr[base + 7] = vc.y + ly;
+        posArr[base + 8] = vc.z + lz;
+      }
+
+      // Replace (or reuse) the position attribute with the new data. We
+      // reuse the existing Float32BufferAttribute storage when the size
+      // matches to avoid GC churn on rapid hovers.
+      const existing = this.faceHighlight.geometry.getAttribute('position');
+      if (
+        existing instanceof Float32BufferAttribute &&
+        (existing.array as Float32Array).length === posArr.length
+      ) {
+        (existing.array as Float32Array).set(posArr);
+        existing.needsUpdate = true;
+      } else {
+        this.faceHighlight.geometry.setAttribute('position', new Float32BufferAttribute(posArr, 3));
+      }
+      this.faceHighlight.geometry.deleteAttribute('index');
+      this.faceHighlight.geometry.computeBoundingSphere();
+      this.faceHighlight.visible = true;
+      this.faceHighlightCache = { meshUuid: mesh.uuid, groupId: targetGroup };
+      return;
+    }
+    this.hideFaceHighlight();
+  }
+
+  private hideFaceHighlight(): void {
+    this.faceHighlight.visible = false;
+    this.faceHighlightCache = null;
+    if (this.highlightRafHandle !== 0) {
+      cancelAnimationFrame(this.highlightRafHandle);
+      this.highlightRafHandle = 0;
+    }
+    this.pendingHighlightEvent = null;
+  }
+
+  /** Scratch vectors so {@link updateFaceHighlight} doesn't allocate per frame. */
+  private readonly faceTriScratchA = new Vector3();
+  private readonly faceTriScratchB = new Vector3();
+  private readonly faceTriScratchC = new Vector3();
+  /**
+   * Cache of the last hovered (mesh, group). While the pointer stays on the
+   * same coplanar group we can skip the full raycast → geometry rebuild,
+   * which is a meaningful savings when devtools are open and source maps /
+   * CDP overhead amplify per-frame work.
+   */
+  private faceHighlightCache: {
+    meshUuid: string;
+    groupId: number;
+  } | null = null;
+  /** Pointer event waiting to drive the next highlight update (rAF coalesced). */
+  private pendingHighlightEvent: PointerEvent | null = null;
+  private highlightRafHandle = 0;
+  private flushFaceHighlight = (): void => {
+    this.highlightRafHandle = 0;
+    const ev = this.pendingHighlightEvent;
+    this.pendingHighlightEvent = null;
+    if (ev !== null && this.currentObjectMode === 'pullToFloor') {
+      this.updateFaceHighlight(ev);
+    }
+  };
 
   /** Convert pointer to NDC and raycast against every registered selectable. */
   private raycastSelectable(event: PointerEvent): string | null {
