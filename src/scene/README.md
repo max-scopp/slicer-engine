@@ -130,6 +130,22 @@ Three.js never invents transforms. It reads `getMatrix(id)` after every op
 and copies the result onto its own `Object3D`. The renderer is a _view_ of
 the scene; it isn't allowed to mutate it.
 
+### WASM query methods
+
+Beyond `applyOp` / `getMatrix`, `SceneHandle` exposes two read-only query
+methods that the UI uses for display purposes — they do not mutate scene state:
+
+| Method              | Signature                                     | Returns                                                                           |
+| ------------------- | --------------------------------------------- | --------------------------------------------------------------------------------- |
+| `getRenderBuffer`   | `(id: u64) → RenderBuffer`                    | Flat position, normal and index arrays for uploading to a `BufferGeometry`       |
+| `getFaceGroups`     | `(id: u64, angle_threshold_deg: f32) → Uint32Array` | One group id per triangle; used by the pull-to-floor face-highlight overlay |
+
+`getFaceGroups` delegates to `mesh::analysis::compute_coplanar_groups`. The
+returned array has one entry per triangle; triangles with the same id are
+coplanar and edge-adjacent. The viewer uses this to highlight an entire flat
+face (potentially many triangles) as the cursor hovers over it in
+`pullToFloor` mode before the user clicks.
+
 ---
 
 ## Why both ends _must_ agree on the scene
@@ -206,7 +222,8 @@ identical.
 - [ops.rs](ops.rs) — `SceneOp`, `OpReceipt`, `SceneError`, the `apply` match arm
 - [state.rs](state.rs) — `SceneState`, `SceneObject`, `ObjectId`
 - [transform.rs](transform.rs) — `Transform`, `apply_transform`, Euler helpers
-- [wasm.rs](wasm.rs) — `SceneHandle` exposed to the Angular UI
+- [wasm.rs](wasm.rs) — `SceneHandle` exposed to the Angular UI (`applyOp`, `getMatrix`, `getFaceGroups`)
 - [../../AGENTS.md](../../AGENTS.md) — "Scene Engine — SSOT Contract" section
+- [../../ui/src/app/components/viewer/README.md](../../ui/src/app/components/viewer/README.md) — gizmo system and object-manipulation modes
 - [issue #51](https://github.com/max-scopp/slicer-engine/issues/51) — original
   motivation and design discussion
