@@ -222,6 +222,21 @@ export class SceneEngineService {
     return handle.getMatrix(id);
   }
 
+  /**
+   * Coplanar face groups for a mesh. Returns a `Uint32Array` of length
+   * `face_count` where `result[i]` is the group id of face `i`.
+   * Faces sharing a group id are coplanar and edge-adjacent.
+   *
+   * @param angleThresholdDeg  Merge tolerance in degrees (default 1°).
+   */
+  getFaceGroups(id: bigint, angleThresholdDeg = 1.0): Uint32Array {
+    const handle = this.requireHandle();
+    const stop = this.log.time(`getFaceGroups id=${id}`);
+    const result = handle.getFaceGroups(id, angleThresholdDeg);
+    stop({ groups: result.length });
+    return result;
+  }
+
   private refreshSnapshot(): void {
     const handle = this.requireHandle();
     const raw = handle.snapshot() as SceneSnapshot;

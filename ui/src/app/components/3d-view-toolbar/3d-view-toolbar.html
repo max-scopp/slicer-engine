@@ -25,10 +25,32 @@
   <button radioButtonValue="zoom" [tooltip]="'Zoom in / out'">
     <nexus-icon name="zoom-in"></nexus-icon>
   </button>
-  <button radioButtonValue="rotate" [tooltip]="'Rotate model around its own axes'">
-    <nexus-icon name="axes"></nexus-icon>
+</nexus-card>
+
+<nexus-card class="button-radio-group icon-group" [(radioGroup)]="selectedObjectMode">
+  <button radioButtonValue="none" [tooltip]="'Select only — no gizmo'">
+    <nexus-icon name="cursor-pointer"></nexus-icon>
   </button>
-  <button radioButtonValue="pullToSurface" [tooltip]="'Pull to surface'">
+  <button radioButtonValue="translate" [tooltip]="'Translate — move along axes or planes'">
+    <nexus-icon name="drag"></nexus-icon>
+  </button>
+  <button radioButtonValue="rotate" [tooltip]="'Rotate around an axis'">
+    <nexus-icon name="crop-rotate-br"></nexus-icon>
+  </button>
+  <button radioButtonValue="scale" [tooltip]="'Scale along axes'">
+    <nexus-icon name="enlarge"></nexus-icon>
+  </button>
+  <button radioButtonValue="pullToFloor" [tooltip]="'Pull a face to the floor'">
     <nexus-icon name="constrained-surface"></nexus-icon>
   </button>
 </nexus-card>
+
+<button
+  class="reset-view-button"
+  type="button"
+  [tooltip]="shell.editorPanelVisible() ? 'Hide operation pipeline' : 'Show operation pipeline'"
+  [class.active]="shell.editorPanelVisible()"
+  (click)="shell.toggleEditorPanel()"
+>
+  <nexus-icon name="filter-list"></nexus-icon>
+</button>

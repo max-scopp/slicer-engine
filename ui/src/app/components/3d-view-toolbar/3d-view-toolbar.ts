@@ -1,4 +1,5 @@
 import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
+import { NexusSlicingShell } from '../../nexus/layout/slicing-shell/slicing-shell';
 import { ViewerControl } from '../../services/viewer-control';
 import { Icon } from '../../shared/icon/icon';
 import { RadioButtonValue } from '../../shared/radio-group/radio-button-value';
@@ -15,9 +16,11 @@ import { Card } from '../card/card';
 })
 export class ThreeDViewToolbar {
   private readonly viewerControl = inject(ViewerControl);
+  protected readonly shell = inject(NexusSlicingShell);
 
   readonly selectedView = this.viewerControl.view;
   readonly selectedCursorMode = this.viewerControl.cursorMode;
+  readonly selectedObjectMode = this.viewerControl.objectMode;
 
   resetView(): void {
     this.viewerControl.reset();

@@ -2,7 +2,19 @@ import { Injectable, signal } from '@angular/core';
 import { Vector3 } from 'three';
 
 export type ViewerView = '3D' | 'Top' | 'Front';
-export type ViewerCursorMode = 'orbit' | 'pan' | 'zoom' | 'rotate' | 'pullToSurface';
+/**
+ * Camera-navigation cursor mode. Controls how left-drag on empty space is
+ * interpreted by OrbitControls. Object manipulation is governed separately
+ * by {@link ObjectMode}.
+ */
+export type ViewerCursorMode = 'orbit' | 'pan' | 'zoom';
+/**
+ * Object-manipulation mode. Drives the on-canvas gizmo for the current
+ * selection. `'none'` is the default — no gizmo is shown, clicks select.
+ * `'pullToFloor'` is a transient face-pick mode that auto-exits to
+ * `'none'` after a single face has been picked.
+ */
+export type ObjectMode = 'none' | 'translate' | 'rotate' | 'scale' | 'pullToFloor';
 
 /**
  * Shared state between the 3D-view toolbar and the viewer component.
@@ -18,6 +30,13 @@ export class ViewerControl {
 
   /** Currently selected pointer interaction mode. */
   readonly cursorMode = signal<ViewerCursorMode>('orbit');
+
+  /**
+   * Currently selected object-manipulation mode. Drives the gizmo shown
+   * over the current selection. Independent of {@link cursorMode} — the
+   * user picks a camera mode and an object mode separately.
+   */
+  readonly objectMode = signal<ObjectMode>('none');
 
   /**
    * Monotonically increasing counter that is bumped every time the user
