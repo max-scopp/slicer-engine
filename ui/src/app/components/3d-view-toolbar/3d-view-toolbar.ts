@@ -20,6 +20,7 @@ export class ThreeDViewToolbar {
 
   readonly selectedView = this.viewerControl.view;
   readonly selectedCursorMode = this.viewerControl.cursorMode;
+  readonly selectedObjectMode = this.viewerControl.objectMode;
 
   resetView(): void {
     this.viewerControl.reset();

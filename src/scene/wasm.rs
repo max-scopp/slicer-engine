@@ -239,6 +239,35 @@ impl SceneHandle {
         Ok(Float32Array::from(m.as_slice()))
     }
 
+    /// Coplanar face groups for the mesh identified by `id`.
+    ///
+    /// Returns a `Uint32Array` of length `face_count` where each element is the
+    /// group id of that face (0-based contiguous integers). Faces with the same
+    /// group id are coplanar and share at least one edge. Adjacent triangles on
+    /// a flat bottom of a model will all share a single group id; the triangles
+    /// of the raised lettering will form distinct groups.
+    ///
+    /// `angle_threshold_deg` (recommended: 1.0) controls how close two normals
+    /// must be for faces to merge. Use a larger value (e.g. 5.0) for slightly
+    /// uneven surfaces; use 0.1 for strict planarity.
+    #[wasm_bindgen(js_name = getFaceGroups)]
+    pub fn get_face_groups(
+        &self,
+        id: u64,
+        angle_threshold_deg: f32,
+    ) -> Result<Uint32Array, JsValue> {
+        let obj = self
+            .inner
+            .get(ObjectId(id))
+            .ok_or_else(|| JsValue::from_str(&format!("object {} not found", id)))?;
+        let groups = crate::mesh::analysis::compute_coplanar_groups(
+            obj.mesh.as_ref(),
+            angle_threshold_deg,
+            0.001, // 1 µm merge tolerance — tight enough for any FDM print mesh
+        );
+        Ok(Uint32Array::from(groups.as_slice()))
+    }
+
     /// Full scene snapshot suitable for driving Angular signals.
     #[wasm_bindgen]
     pub fn snapshot(&self) -> Result<JsValue, JsValue> {

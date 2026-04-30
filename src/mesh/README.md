@@ -100,6 +100,61 @@ A few things worth knowing:
 
 ---
 
+## Analysis functions
+
+`analysis.rs` provides three categories of mesh inspection:
+
+| Function                  | Returns                        | Notes                                                      |
+| ------------------------- | ------------------------------ | ---------------------------------------------------------- |
+| `calculate_aabb`          | `AABB`                         | Scans all vertices; panics on empty mesh                   |
+| `calculate_volume`        | `Result<f64, String>`          | Divergence-theorem signed sum; returns `Err` if no faces   |
+| `calculate_surface_area`  | `f64`                          | Sums `Face::area()` over all triangles                     |
+| `compute_coplanar_groups` | `Vec<u32>` (one id per face)   | Union-find over shared edges; see below                    |
+
+### Coplanar face groups
+
+`compute_coplanar_groups(mesh, angle_threshold_deg, vertex_merge_distance_mm)`
+assigns every triangle to a coplanar group. Two triangles end up in the same
+group when they **share an edge** and their **geometric normals agree** within
+`angle_threshold_deg`. The algorithm runs in three phases:
+
+1. **Normal computation.** Each face gets a unit geometric normal (cross
+   product, then normalised). Degenerate triangles (zero-length cross product)
+   get the zero vector and never merge with anything.
+
+2. **Edge adjacency.** Vertex positions are quantised to a
+   `vertex_merge_distance_mm` grid so floating-point near-duplicates collapse
+   to the same integer key. Every directed half-edge is then hashed to a
+   symmetric key `(min_vert, max_vert)`. Half-edges are sorted by key, giving
+   an O(N log N) pass to collect all faces that share each edge.
+
+3. **Union-find merge.** For every set of faces that share an edge, each pair
+   is tested: if `dot(normalA, normalB) ≥ cos(threshold)`, the two faces are
+   joined. Path-halving and union-by-rank keep the structure nearly flat.
+
+The returned `Vec<u32>` is contiguous — group ids start at 0 and are assigned
+in the order the first face of each group is encountered. The WASM bridge
+exposes this as `SceneHandle.getFaceGroups(id, angleThresholdDeg)`, which the
+UI uses for face-highlight in the `pullToFloor` gizmo mode.
+
+```mermaid
+flowchart LR
+    M[Mesh faces] --> N[Compute unit normals]
+    M --> E[Hash half-edges by quantised vertex key]
+    N & E --> UF[Union-find: merge adjacent coplanar faces]
+    UF --> G[group id per face as u32]
+    G -->|WASM getFaceGroups| UI[Viewer face-highlight]
+```
+
+**Tuning knobs**
+
+| Parameter                  | Recommended value | Effect                                         |
+| -------------------------- | ----------------- | ---------------------------------------------- |
+| `angle_threshold_deg`      | 1.0°              | Larger = merges slightly uneven surfaces       |
+| `vertex_merge_distance_mm` | 0.001 mm          | Larger = tolerates worse vertex welding        |
+
+---
+
 ## File-format catalog
 
 | Format | Variant    | Loader                  | Notes                                                 |
@@ -181,7 +236,7 @@ After step 5 the original `Arc<Mesh>` is still alive and unchanged in
 
 - [types.rs](types.rs) — `Mesh`, `Face`, `Vertex`, `AABB`
 - [io.rs](io.rs) — STL / OBJ / 3MF loaders, `SUPPORTED_EXTENSIONS`
-- [analysis.rs](analysis.rs) — AABB, volume, surface area
+- [analysis.rs](analysis.rs) — AABB, volume, surface area, coplanar face groups
 - [transforms.rs](transforms.rs) — pure translate / scale / rotate helpers
 - [../scene/README.md](../scene/README.md) — how meshes are placed in a scene
 - [../SLICING.md](../SLICING.md) — the triangle-plane intersection algorithm

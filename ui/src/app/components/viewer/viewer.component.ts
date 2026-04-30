@@ -20,6 +20,7 @@ import { SceneEngineService } from '../../services/scene-engine.service';
 import { ViewerControl } from '../../services/viewer-control';
 import { ChunkedLineGeometry } from './chunked-line-geometry';
 import { GcodeSource, loadGcode } from './gcode-loader';
+import type { GizmoDelta } from './gizmo';
 import { ModelSource } from './model-loader';
 import { ViewerScene } from './scene';
 
@@ -164,9 +165,9 @@ export class ViewerComponent implements OnDestroy {
   private selectedWasmIds: bigint[] = [];
   /**
    * Per-axis displacement (mm) already pushed to the engine for the
-   * in-flight drag, indexed by WASM id. Used to convert the cumulative
-   * `(dx, dy)` reported by the scene into per-frame deltas suitable for
-   * `SceneOp::Translate`.
+   * in-flight drag, indexed by WASM id. (Currently unused — the gizmo
+   * already reports per-frame deltas — retained as a stub in case a
+   * cumulative-protocol drag handler is reintroduced later.)
    */
   private dragApplied = new Map<bigint, { dx: number; dy: number }>();
 
@@ -197,6 +198,12 @@ export class ViewerComponent implements OnDestroy {
     effect(() => {
       const mode = this.viewerControl.cursorMode();
       this.scene?.setCursorMode(mode);
+    });
+
+    // React to object-mode (gizmo) changes from the toolbar.
+    effect(() => {
+      const mode = this.viewerControl.objectMode();
+      this.scene?.setObjectMode(mode);
     });
 
     // React to reset requests from the toolbar.
@@ -276,26 +283,27 @@ export class ViewerComponent implements OnDestroy {
   }
 
   // ---------------------------------------------------------------------------
-  // Selection / drag handlers — XY-only translate via the WASM scene engine.
+  // Selection / gizmo handlers
   //
-  // The legacy `ViewerScene` raycast / pointer plumbing already calls these
-  // four hooks, identifying objects by their string id (which we set to
-  // `String(wasmId)` in `loadModelViaSceneEngine`). All we have to do here
-  // is round-trip selection state and dispatch `Translate` ops with the
-  // delta-since-last-move on the bed plane (Z fixed at 0).
+  // The legacy `ViewerScene` raycast pointer plumbing calls `handleSelect` /
+  // `handleClearSelection`; gizmo-driven object manipulation goes through
+  // `handleGizmoDelta` / `handleGizmoEnd` / `handleFacePicked` which
+  // dispatch one WASM op per selected object id.
   // ---------------------------------------------------------------------------
 
-  private handleSelect(stringId: string, additive: boolean): void {
+  private handleSelect(stringId: string, _additive: boolean): void {
     const id = parseWasmId(stringId);
     if (id === null) {
       return;
     }
-    if (additive) {
-      if (!this.selectedWasmIds.includes(id)) {
-        this.selectedWasmIds = [...this.selectedWasmIds, id];
-      }
+    // Multi-select with click-to-toggle: clicking an unselected object
+    // adds it to the selection; clicking an already-selected object
+    // removes it. No modifier keys required.
+    const idx = this.selectedWasmIds.indexOf(id);
+    if (idx === -1) {
+      this.selectedWasmIds = [...this.selectedWasmIds, id];
     } else {
-      this.selectedWasmIds = [id];
+      this.selectedWasmIds = this.selectedWasmIds.filter((existing) => existing !== id);
     }
     this.scene?.setSelectedIds(new Set(this.selectedWasmIds.map(String)));
   }
@@ -305,46 +313,56 @@ export class ViewerComponent implements OnDestroy {
     this.scene?.setSelectedIds(new Set());
   }
 
-  private handleBeginDrag(): boolean {
-    if (this.selectedWasmIds.length === 0) {
-      return false;
+  /** Translate / rotate / scale a delta onto every currently-selected object. */
+  private handleGizmoDelta(stringIds: readonly string[], delta: GizmoDelta): void {
+    for (const stringId of stringIds) {
+      const id = parseWasmId(stringId);
+      if (id === null) {
+        continue;
+      }
+      switch (delta.kind) {
+        case 'translate':
+          this.sceneCommand.apply({
+            op: 'translate',
+            args: { id, delta: delta.delta },
+          });
+          break;
+        case 'rotate':
+          this.sceneCommand.apply({
+            op: 'rotate',
+            args: { id, axis: delta.axis, degrees: delta.degrees },
+          });
+          break;
+        case 'scale':
+          this.sceneCommand.apply({
+            op: 'scale',
+            args: { id, factors: delta.factors },
+          });
+          break;
+      }
     }
-    this.dragApplied.clear();
-    for (const id of this.selectedWasmIds) {
-      this.dragApplied.set(id, { dx: 0, dy: 0 });
-    }
-    return true;
+  }
+
+  /** Flush any in-progress gesture so the history entry is committed. */
+  private handleGizmoEnd(): void {
+    this.sceneCommand.flush();
   }
 
   /**
-   * `dx`/`dy` are the **cumulative** displacement in mm (bed plane) since
-   * drag start. Translate by the per-step delta so the engine state mirrors
-   * exactly what the user has dragged.
+   * Pull-to-floor: align the picked face to Z=0. Stays in pull-to-floor
+   * mode so the user can pick another face on another object without
+   * having to re-enter the mode. Selection is left untouched — picking a
+   * face is a manipulation gesture, not a selection gesture.
    */
-  private handleDragBy(dx: number, dy: number): void {
-    for (const id of this.selectedWasmIds) {
-      const applied = this.dragApplied.get(id);
-      if (!applied) {
-        continue;
-      }
-      const stepX = dx - applied.dx;
-      const stepY = dy - applied.dy;
-      if (stepX === 0 && stepY === 0) {
-        continue;
-      }
-      this.sceneCommand.apply({
-        op: 'translate',
-        args: { id, delta: [stepX, stepY, 0] },
-      });
-      applied.dx = dx;
-      applied.dy = dy;
+  private handleFacePicked(stringId: string, faceIndex: number): void {
+    const id = parseWasmId(stringId);
+    if (id === null) {
+      return;
     }
-  }
-
-  private handleEndDrag(): void {
-    this.dragApplied.clear();
-    // Flush the in-progress gesture immediately on pointer-up so the
-    // history entry is committed without waiting for the idle debounce.
+    this.sceneCommand.apply({
+      op: 'align_face_to_floor',
+      args: { id, face_index: faceIndex },
+    });
     this.sceneCommand.flush();
   }
 
@@ -392,20 +410,22 @@ export class ViewerComponent implements OnDestroy {
     };
     // Allow external gizmos (viewport-cube drag) to orbit the main camera.
     this.viewerControl.orbitSink = (azimuth, polar) => this.scene?.orbitBy(azimuth, polar);
-    // Bridge raycast hits / drag gestures from the scene into the WASM
-    // scene engine. Selection is stored locally (no PrintArea / tracker yet)
-    // and drag deltas are pushed as `Translate` ops constrained to XY.
+    // Bridge raycast hits / gizmo gestures from the scene into the WASM
+    // scene engine. Selection is stored locally; object manipulation is
+    // driven by the gizmo (translate / rotate / scale) and pull-to-floor.
     this.scene.selectionHandlers = {
       select: (id, additive) => this.handleSelect(id, additive),
       clearSelection: () => this.handleClearSelection(),
-      beginDragSelected: () => this.handleBeginDrag(),
-      dragSelectedBy: (dx, dy) => this.handleDragBy(dx, dy),
-      endDrag: () => this.handleEndDrag(),
-      cancelDrag: () => this.handleEndDrag(),
+    };
+    this.scene.gizmoHandlers = {
+      delta: (ids, delta) => this.handleGizmoDelta(ids, delta),
+      end: () => this.handleGizmoEnd(),
+      facePicked: (objectId, faceIndex) => this.handleFacePicked(objectId, faceIndex),
     };
     // Apply the current toolbar selections so the scene starts in sync with
-    // whatever view / cursor mode the user already had selected.
+    // whatever view / cursor / object mode the user already had selected.
     this.scene.setCursorMode(this.viewerControl.cursorMode());
+    this.scene.setObjectMode(this.viewerControl.objectMode());
     this.scene.setView(this.viewerControl.view());
     // Seed the bed grid from the current print-area configuration.
     this.scene.setPrintArea(this.printArea.config());
@@ -443,7 +463,7 @@ export class ViewerComponent implements OnDestroy {
       }
     }
     this.wasmMeshes.clear();
-    this.selectedWasmIds = [];
+    this.handleClearSelection();
     this.dragApplied.clear();
     scene.clearContent();
     this.gcodeGeometry?.dispose();
@@ -529,6 +549,11 @@ export class ViewerComponent implements OnDestroy {
     mesh.matrixWorldNeedsUpdate = true;
     this.scene.contentRoot.add(mesh);
     this.wasmMeshes.set(id, mesh);
+    // Precompute coplanar face groups and store in userData so the
+    // pull-to-floor highlight can light up whole flat regions rather than
+    // individual triangles. Groups are computed once here in WASM (O(F) with
+    // union-find) and read O(1) per hover frame afterwards.
+    mesh.userData['faceGroups'] = this.sceneEngine.getFaceGroups(id);
     // Stamp the same id (stringified) on the legacy scene's selectable
     // registry so the existing raycast / drag pointer plumbing recognises
     // it. The drag handlers translate it back to a bigint.

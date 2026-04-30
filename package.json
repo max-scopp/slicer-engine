@@ -4,8 +4,12 @@
   "private": true,
   "packageManager": "pnpm@10.33.0",
   "scripts": {
-    "ui:dev": "pnpm --filter slicer-ui start",
+    "ui:dev": "pnpm run build:wasm && pnpm --filter slicer-ui start",
     "ui:build": "pnpm --filter slicer-ui build",
+    "build:wasm": "wasm-pack build --target web",
+    "gen-schemas": "cargo run -- gen-schemas --output-dir ui/src/schemas",
+    "gen-types": "pnpm --filter slicer-ui gen-types",
+    "gen": "pnpm run gen-schemas && pnpm run gen-types",
     "docs:dev": "pnpm --filter slicer-engine-docs docs:dev",
     "docs:build": "pnpm --filter slicer-engine-docs docs:build",
     "docs:preview": "pnpm --filter slicer-engine-docs docs:preview"
