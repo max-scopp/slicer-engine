@@ -83,11 +83,11 @@ export class ScopedLogger {
       const avgMs = this.recordSample(label, elapsedMs);
       const window = this.samples.get(label)!;
       const suffix = `(${elapsedMs.toFixed(2)} ms · avg ${avgMs.toFixed(2)} ms over ${window.length})`;
-      if (extra) {
-        this.debug(`${label} ${suffix}`, extra);
-      } else {
-        this.debug(`${label} ${suffix}`);
-      }
+      // if (extra) {
+      //   this.debug(`${label} ${suffix}`, extra);
+      // } else {
+      //   this.debug(`${label} ${suffix}`);
+      // }
       return elapsedMs;
     };
   }

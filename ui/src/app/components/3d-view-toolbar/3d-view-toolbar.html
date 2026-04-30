@@ -32,3 +32,13 @@
     <nexus-icon name="constrained-surface"></nexus-icon>
   </button>
 </nexus-card>
+
+<button
+  class="reset-view-button"
+  type="button"
+  [tooltip]="shell.editorPanelVisible() ? 'Hide operation pipeline' : 'Show operation pipeline'"
+  [class.active]="shell.editorPanelVisible()"
+  (click)="shell.toggleEditorPanel()"
+>
+  <nexus-icon name="filter-list"></nexus-icon>
+</button>

@@ -53,4 +53,9 @@
   &:active {
     transform: scale(0.94);
   }
+
+  &.active {
+    background: var(--color-surface-active, rgba(127, 127, 127, 0.22));
+    border-color: var(--color-border-active, rgba(127, 127, 127, 0.5));
+  }
 }

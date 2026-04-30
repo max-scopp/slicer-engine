@@ -15,6 +15,7 @@ import {
 import { BufferAttribute, BufferGeometry, Matrix4, Mesh, MeshPhongMaterial } from 'three';
 import { ObjectTracker } from '../../services/object-tracker';
 import { PrintArea } from '../../services/print-area';
+import { SceneCommand } from '../../services/scene-command/scene-command';
 import { SceneEngineService } from '../../services/scene-engine.service';
 import { ViewerControl } from '../../services/viewer-control';
 import { ChunkedLineGeometry } from './chunked-line-geometry';
@@ -123,6 +124,7 @@ export class ViewerComponent implements OnDestroy {
   private readonly printArea = inject(PrintArea);
   private readonly objectTracker = inject(ObjectTracker);
   private readonly sceneEngine = inject(SceneEngineService);
+  private readonly sceneCommand = inject(SceneCommand);
 
   /** Current loading status for the optional overlay. */
   readonly status = signal<'idle' | 'loading' | 'streaming' | 'ready' | 'error'>('idle');
@@ -330,7 +332,7 @@ export class ViewerComponent implements OnDestroy {
       if (stepX === 0 && stepY === 0) {
         continue;
       }
-      this.sceneEngine.apply({
+      this.sceneCommand.apply({
         op: 'translate',
         args: { id, delta: [stepX, stepY, 0] },
       });
@@ -341,6 +343,9 @@ export class ViewerComponent implements OnDestroy {
 
   private handleEndDrag(): void {
     this.dragApplied.clear();
+    // Flush the in-progress gesture immediately on pointer-up so the
+    // history entry is committed without waiting for the idle debounce.
+    this.sceneCommand.flush();
   }
 
   ngOnDestroy(): void {

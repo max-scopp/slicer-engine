@@ -23,6 +23,7 @@ import {
   Scene,
   WebGLRenderer,
 } from 'three';
+import { SceneCommand } from '../../services/scene-command/scene-command';
 import { SceneEngineService } from '../../services/scene-engine.service';
 
 interface TrackedObject {
@@ -236,6 +237,7 @@ interface TrackedObject {
 })
 export class SceneDemoComponent implements AfterViewInit, OnDestroy {
   private readonly engine = inject(SceneEngineService);
+  private readonly sceneCommand = inject(SceneCommand);
   private readonly hostRef = viewChild.required<ElementRef<HTMLDivElement>>('host');
 
   readonly ready = signal(false);
@@ -317,30 +319,30 @@ export class SceneDemoComponent implements AfterViewInit, OnDestroy {
   }
 
   translate(delta: [number, number, number]): void {
-    this.withSelected((id) => this.engine.apply({ op: 'translate', args: { id, delta } }));
+    this.withSelected((id) => this.sceneCommand.apply({ op: 'translate', args: { id, delta } }));
   }
   rotateZ(degrees: number): void {
     this.withSelected((id) =>
-      this.engine.apply({ op: 'rotate', args: { id, axis: [0, 0, 1], degrees } }),
+      this.sceneCommand.apply({ op: 'rotate', args: { id, axis: [0, 0, 1], degrees } }),
     );
   }
   scale(factor: number): void {
     this.withSelected((id) =>
-      this.engine.apply({
+      this.sceneCommand.apply({
         op: 'scale',
         args: { id, factors: [factor, factor, factor] },
       }),
     );
   }
   centerOnBed(): void {
-    this.withSelected((id) => this.engine.apply({ op: 'center_on_bed', args: { id } }));
+    this.withSelected((id) => this.sceneCommand.apply({ op: 'center_on_bed', args: { id } }));
   }
   dropToFloor(): void {
-    this.withSelected((id) => this.engine.apply({ op: 'drop_to_floor', args: { id } }));
+    this.withSelected((id) => this.sceneCommand.apply({ op: 'drop_to_floor', args: { id } }));
   }
   remove(): void {
     this.withSelected((id) => {
-      this.engine.apply({ op: 'remove', args: { id } });
+      this.sceneCommand.apply({ op: 'remove', args: { id } });
       this.selectedId.set(null);
     });
   }
