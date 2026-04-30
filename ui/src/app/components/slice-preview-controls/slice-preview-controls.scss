@@ -1,0 +1,253 @@
+:host {
+  display: block;
+  pointer-events: none;
+}
+
+nexus-card {
+  pointer-events: auto;
+  width: clamp(320px, 38vw, 560px);
+  padding: 10px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+
+  color: #c8cdd4;
+  font:
+    12px/1.4 ui-sans-serif,
+    system-ui,
+    sans-serif;
+}
+
+// ── Header ──────────────────────────────────────────────────────────────────
+
+.controls-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.layer-label {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, monospace;
+  color: #9aa4b2;
+  flex: 1;
+}
+
+.z-label {
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  color: #7a8694;
+}
+
+.mode-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: #9aa4b2;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    color 120ms ease,
+    border-color 120ms ease;
+  flex-shrink: 0;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: #c8cdd4;
+  }
+
+  &.active {
+    background: rgba(74, 122, 170, 0.25);
+    border-color: rgba(74, 122, 170, 0.5);
+    color: #7aa4d4;
+  }
+}
+
+// ── Sliders ──────────────────────────────────────────────────────────────────
+
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+// Dual / single-thumb range slider
+.range-slider {
+  position: relative;
+  height: 20px;
+  flex: 1;
+  cursor: pointer;
+
+  // Base track
+  &::before {
+    content: '';
+    position: absolute;
+    top: 8px;
+    left: 0;
+    right: 0;
+    height: 4px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 2px;
+  }
+}
+
+.range-track-fill {
+  position: absolute;
+  top: 8px;
+  height: 4px;
+  background: #4a7aaa;
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+.thumb {
+  position: absolute;
+  width: 100%;
+  height: 4px;
+  top: 8px;
+  pointer-events: none;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  outline: none;
+  margin: 0;
+  padding: 0;
+
+  &::-webkit-slider-thumb {
+    appearance: none;
+    -webkit-appearance: none;
+    pointer-events: all;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #7aa4d4;
+    border: 2px solid var(--color-surface, #101216);
+    cursor: pointer;
+  }
+
+  &::-moz-range-thumb {
+    pointer-events: all;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #7aa4d4;
+    border: 2px solid var(--color-surface, #101216);
+    cursor: pointer;
+  }
+
+  &.thumb-min {
+    &::-webkit-slider-thumb {
+      background: #a0c4e8;
+    }
+
+    &::-moz-range-thumb {
+      background: #a0c4e8;
+    }
+  }
+}
+
+// Segment / nozzle slider
+.segment-row {
+  gap: 8px;
+}
+
+.segment-label {
+  font-size: 10px;
+  color: #7a8694;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.slider {
+  flex: 1;
+  height: 4px;
+  appearance: none;
+  -webkit-appearance: none;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+
+  &::-webkit-slider-thumb {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #e07820;
+    border: 2px solid var(--color-surface, #101216);
+    cursor: pointer;
+  }
+
+  &::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #e07820;
+    border: 2px solid var(--color-surface, #101216);
+    cursor: pointer;
+  }
+}
+
+// ── Role legend ──────────────────────────────────────────────────────────────
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.role-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px 3px 5px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 20px;
+  color: #c8cdd4;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    opacity 120ms ease,
+    border-color 120ms ease;
+  user-select: none;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.12);
+    border-color: rgba(255, 255, 255, 0.18);
+  }
+
+  &.hidden {
+    opacity: 0.35;
+
+    .role-swatch {
+      opacity: 0.3;
+    }
+  }
+}
+
+.role-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--role-color);
+  flex-shrink: 0;
+}
+
+.role-name {
+  white-space: nowrap;
+}

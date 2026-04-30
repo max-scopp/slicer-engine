@@ -4,6 +4,7 @@ import { ThreeDViewToolbar } from '../../../components/3d-view-toolbar/3d-view-t
 import { Card } from '../../../components/card/card';
 import { CodeEditorComponent } from '../../../components/code-editor/code-editor.component';
 import { SettingsPanelComponent } from '../../../components/settings-panel/settings-panel.component';
+import { SlicePreviewControls } from '../../../components/slice-preview-controls/slice-preview-controls';
 import { ViewportCube } from '../../../components/viewport-cube/viewport-cube';
 import { SceneEngineService } from '../../../services/scene-engine.service';
 import { Slicer } from '../../../services/slicer';
@@ -15,6 +16,7 @@ import { SliceControl } from '../../slice-control/slice-control';
   imports: [
     Sidebar,
     SliceControl,
+    SlicePreviewControls,
     ThreeDViewToolbar,
     ViewportCube,
     RouterOutlet,

@@ -2,8 +2,7 @@ import { ChangeDetectionStrategy, Component, computed, effect, inject } from '@a
 import { toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute } from '@angular/router';
 import { map } from 'rxjs';
-import { environment } from '../../../environments/environment';
-import { ViewerComponent, ViewerMode } from '../../components/viewer';
+import { Viewer, ViewerMode } from '../../components/viewer';
 import { NotificationService } from '../../services/notifications';
 import { Slicer } from '../../services/slicer';
 import { SlicerFile } from '../../services/slicer-file';
@@ -11,7 +10,7 @@ import { SlicerFile } from '../../services/slicer-file';
 @Component({
   selector: 'nexus-slice-viewer',
   standalone: true,
-  imports: [ViewerComponent],
+  imports: [Viewer],
   templateUrl: './slice-viewer.component.html',
   styleUrl: './slice-viewer.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -28,15 +27,6 @@ export class SliceViewerComponent {
 
   /** The user-selected STL (when available) is shown in model mode. */
   readonly modelFile = this.#slicerFile.selectedFile;
-
-  /** G-code download URL for the current request, used only in gcode mode. */
-  readonly gcodeUrl = computed<string | null>(() => {
-    const uuid = this.requestUuid();
-    if (!uuid) {
-      return null;
-    }
-    return `${environment.apiUrl}/download/${uuid}`;
-  });
 
   /**
    * Default to the raw-mesh viewer until a slice is finished. We only switch to

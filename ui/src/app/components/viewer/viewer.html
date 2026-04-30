@@ -1,0 +1,24 @@
+<div class="viewer-host" #host></div>
+<div class="viewer-bottom">
+  @if (fps() > 0) {
+    <div class="viewer-fps">{{ fps() }} FPS</div>
+  }
+  @if (wasmRoundtripMs() !== null) {
+    <div class="viewer-fps">
+      WASM ↻ {{ wasmRoundtripMs()!.toFixed(1) }} ms
+      <span class="viewer-fps-aux"
+        >(parse {{ wasmParseMs()!.toFixed(1) }} + render-buf
+        {{ wasmRenderBufMs()!.toFixed(1) }} ms)</span
+      >
+      @if (opStats(); as s) {
+        <span class="viewer-fps-aux"
+          >· {{ s.label }} {{ s.lastMs.toFixed(2) }} ms (avg {{ s.avgMs.toFixed(2) }} ms /
+          {{ s.count }})</span
+        >
+      }
+    </div>
+  }
+  @if (status() !== 'idle') {
+    <div class="viewer-status">{{ statusLabel() }}</div>
+  }
+</div>

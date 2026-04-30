@@ -10,21 +10,24 @@ import {
   input,
   output,
   signal,
+  untracked,
   viewChild,
 } from '@angular/core';
 import { BufferAttribute, BufferGeometry, Matrix4, Mesh, MeshPhongMaterial } from 'three';
+import { GcodePreviewService } from '../../services/gcode-preview.service';
 import { ObjectTracker } from '../../services/object-tracker';
 import { PrintArea } from '../../services/print-area';
 import { SceneCommand } from '../../services/scene-command/scene-command';
 import { SceneEngineService } from '../../services/scene-engine.service';
 import { ViewerControl } from '../../services/viewer-control';
-import { ChunkedLineGeometry } from './chunked-line-geometry';
-import { GcodeSource, loadGcode } from './gcode-loader';
+import { GcodeOrchestrator } from './gcode-orchestrator';
 import type { GizmoDelta } from './gizmo';
-import { ModelSource } from './model-loader';
 import { ViewerScene } from './scene';
 
 export type ViewerMode = 'model' | 'gcode';
+
+/** Input accepted by the model input. */
+export type ModelSource = string | URL | File | Blob | ArrayBuffer;
 
 /**
  * Single-component 3D viewer for both raw meshes and sliced G-code.
@@ -36,84 +39,19 @@ export type ViewerMode = 'model' | 'gcode';
  * Usage:
  * ```html
  * <nexus-viewer [model]="stlFileOrUrl" mode="model"></nexus-viewer>
- * <nexus-viewer [gcodeSource]="gcodeUrl" mode="gcode"></nexus-viewer>
+ * <nexus-viewer mode="gcode"></nexus-viewer>
  * ```
  */
 @Component({
   selector: 'nexus-viewer',
   standalone: true,
-  template: `
-    <div class="viewer-host" #host></div>
-    <div class="viewer-bottom-left">
-      @if (fps() > 0) {
-        <div class="viewer-fps">{{ fps() }} FPS</div>
-      }
-      @if (wasmRoundtripMs() !== null) {
-        <div class="viewer-fps">
-          WASM ↻ {{ wasmRoundtripMs()!.toFixed(1) }} ms
-          <span class="viewer-fps-aux"
-            >(parse {{ wasmParseMs()!.toFixed(1) }} + render-buf
-            {{ wasmRenderBufMs()!.toFixed(1) }} ms)</span
-          >
-          @if (opStats(); as s) {
-            <span class="viewer-fps-aux"
-              >· {{ s.label }} {{ s.lastMs.toFixed(2) }} ms (avg {{ s.avgMs.toFixed(2) }} ms /
-              {{ s.count }})</span
-            >
-          }
-        </div>
-      }
-      @if (status() !== 'idle') {
-        <div class="viewer-status">{{ statusLabel() }}</div>
-      }
-    </div>
-  `,
-  styles: [
-    `
-      :host {
-        display: block;
-        position: relative;
-        width: 100%;
-        height: 100%;
-        background: transparent;
-        overflow: hidden;
-        user-select: none;
-      }
-      .viewer-host {
-        position: absolute;
-        inset: 0;
-      }
-      .viewer-bottom-left {
-        position: absolute;
-        bottom: 12px;
-        left: 12px;
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-        pointer-events: none;
-      }
-      .viewer-fps,
-      .viewer-status {
-        padding: 6px 10px;
-        background: rgba(0, 0, 0, 0.55);
-        color: #e6e6e6;
-        font:
-          12px/1.2 ui-monospace,
-          monospace;
-        border-radius: 4px;
-      }
-      .viewer-fps-aux {
-        color: #9aa4b2;
-        margin-left: 6px;
-      }
-    `,
-  ],
+  templateUrl: './viewer.html',
+  styleUrl: './viewer.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class ViewerComponent implements OnDestroy {
+export class Viewer implements OnDestroy {
   readonly mode = input<ViewerMode>('model');
   readonly model = input<ModelSource | null>(null);
-  readonly gcodeSource = input<GcodeSource | null>(null);
   readonly showTravel = input(false);
 
   readonly loadComplete = output<{ mode: ViewerMode; segments: number }>();
@@ -126,6 +64,7 @@ export class ViewerComponent implements OnDestroy {
   private readonly objectTracker = inject(ObjectTracker);
   private readonly sceneEngine = inject(SceneEngineService);
   private readonly sceneCommand = inject(SceneCommand);
+  private readonly gcodePreview = inject(GcodePreviewService);
 
   /** Current loading status for the optional overlay. */
   readonly status = signal<'idle' | 'loading' | 'streaming' | 'ready' | 'error'>('idle');
@@ -150,7 +89,7 @@ export class ViewerComponent implements OnDestroy {
   private readonly errorMessage = signal<string>('');
 
   private scene: ViewerScene | null = null;
-  private gcodeGeometry: ChunkedLineGeometry | null = null;
+  private gcode: GcodeOrchestrator | null = null;
   private currentAbort: AbortController | null = null;
   private loadToken = 0;
   /** SceneObject ids registered for the currently-loaded source. */
@@ -178,14 +117,11 @@ export class ViewerComponent implements OnDestroy {
     effect(() => {
       const mode = this.mode();
       const model = this.model();
-      const gcode = this.gcodeSource();
-      const showTravel = this.showTravel();
 
       if (!this.scene) {
         return;
       }
-      this.gcodeGeometry?.setTravelVisible(showTravel);
-      this.applySource(mode, model, gcode);
+      this.applySource(mode, model);
     });
 
     // React to view-preset changes from the toolbar.
@@ -280,6 +216,39 @@ export class ViewerComponent implements OnDestroy {
         mesh.matrixWorldNeedsUpdate = true;
       }
     });
+
+    // React to layer-range changes from the GcodePreviewService.
+    effect(() => {
+      const min = this.gcodePreview.layerMin();
+      const max = this.gcodePreview.layerMax();
+      this.gcode?.showRange(min, max);
+    });
+
+    // React to nozzle-progress changes.
+    effect(() => {
+      const progress = this.gcodePreview.segmentProgress();
+      const max = this.gcodePreview.layerMax();
+      this.gcode?.applyProgress(max, progress);
+    });
+
+    // React to role visibility changes.
+    effect(() => {
+      const hidden = this.gcodePreview.hiddenRoles();
+      this.gcode?.applyHiddenRoles(hidden);
+    });
+
+    // Build (or rebuild) the layer graph when the parsed handle becomes
+    // available or is replaced. This is intentionally separate from the
+    // `applySource` effect so that layer-range / role / progress slider ticks
+    // (which `applySource` reads via `untracked`) do not redundantly tear
+    // down and rebuild every layer group.
+    effect(() => {
+      const handle = this.gcodePreview.gcodeHandle();
+      if (!handle || untracked(() => this.mode()) !== 'gcode' || !this.scene) {
+        return;
+      }
+      this.startGcodeFromHandle();
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -368,8 +337,8 @@ export class ViewerComponent implements OnDestroy {
 
   ngOnDestroy(): void {
     this.cancelInFlightLoad();
-    this.gcodeGeometry?.dispose();
-    this.gcodeGeometry = null;
+    this.gcode?.dispose();
+    this.gcode = null;
     this.scene?.dispose();
     this.scene = null;
     this.viewerControl.orbitSink = null;
@@ -427,17 +396,14 @@ export class ViewerComponent implements OnDestroy {
     this.scene.setCursorMode(this.viewerControl.cursorMode());
     this.scene.setObjectMode(this.viewerControl.objectMode());
     this.scene.setView(this.viewerControl.view());
+    this.gcode = new GcodeOrchestrator(this.scene.contentRoot);
     // Seed the bed grid from the current print-area configuration.
     this.scene.setPrintArea(this.printArea.config());
     // Trigger initial source application now that the scene exists.
-    this.applySource(this.mode(), this.model(), this.gcodeSource());
+    this.applySource(this.mode(), this.model());
   }
 
-  private applySource(
-    mode: ViewerMode,
-    model: ModelSource | null,
-    gcode: GcodeSource | null,
-  ): void {
+  private applySource(mode: ViewerMode, model: ModelSource | null): void {
     const scene = this.scene;
     if (!scene) {
       return;
@@ -465,9 +431,8 @@ export class ViewerComponent implements OnDestroy {
     this.wasmMeshes.clear();
     this.handleClearSelection();
     this.dragApplied.clear();
+    this.gcode?.dispose();
     scene.clearContent();
-    this.gcodeGeometry?.dispose();
-    this.gcodeGeometry = null;
     this.progressSegments.set(0);
     this.errorMessage.set('');
 
@@ -478,11 +443,22 @@ export class ViewerComponent implements OnDestroy {
       }
       this.startModelLoad(model);
     } else {
-      if (!gcode) {
-        this.status.set('idle');
-        return;
+      // G-code is rendered exclusively through the WASM GcodeHandle path,
+      // which gives per-layer / per-role geometry. The old TS streaming
+      // fallback (ChunkedLineGeometry / startGcodeLoad) is intentionally
+      // not used: it produced a flat cyan mesh and was only ever a
+      // temporary stand-in before the WASM parser existed.
+      // Read gcodeHandle untracked: layer/role/progress changes flow through
+      // their own dedicated effects, and we must not rebuild the whole layer
+      // graph (and re-fit the camera) on every slider tick.
+      if (untracked(() => this.gcodePreview.gcodeHandle())) {
+        this.startGcodeFromHandle();
+      } else {
+        // Handle not yet available — either loading is in progress or no
+        // source has been dispatched yet. Hold at loading/idle and let the
+        // gcodeHandle effect below call startGcodeFromHandle once ready.
+        this.status.set(untracked(() => this.gcodePreview.loading()) ? 'loading' : 'idle');
       }
-      this.startGcodeLoad(gcode);
     }
   }
 
@@ -563,59 +539,39 @@ export class ViewerComponent implements OnDestroy {
     this.loadComplete.emit({ mode: 'model', segments: 0 });
   }
 
-  private startGcodeLoad(source: GcodeSource): void {
+  /**
+   * Render gcode using the parsed `GcodeHandle` from `GcodePreviewService`.
+   * Delegates geometry construction to `GcodeOrchestrator`; Three.js only
+   * manages layer/segment visibility after this point.
+   */
+  private startGcodeFromHandle(): void {
     const scene = this.scene;
-    if (!scene) {
+    const gcode = this.gcode;
+    // All gcode-preview reads here must be untracked. This method runs from
+    // the `applySource` effect; if any of the layer/role/progress signals
+    // were tracked here, every slider tick would re-enter this path and
+    // rebuild every layer group + re-fit the camera. The dedicated effects
+    // (showRange / applyProgress / applyHiddenRoles) are the sole reactive
+    // consumers of those signals.
+    const handle = untracked(() => this.gcodePreview.gcodeHandle());
+    if (!scene || !gcode || !handle) {
       return;
     }
-    const token = ++this.loadToken;
-    this.status.set('loading');
 
-    const geometry = new ChunkedLineGeometry(this.showTravel());
-    this.gcodeGeometry = geometry;
-    scene.contentRoot.add(geometry.root);
+    this.cancelInFlightLoad();
+    const { totalSegments } = gcode.buildFromHandle(handle);
 
-    const controller = new AbortController();
-    this.currentAbort = controller;
+    const min = untracked(() => this.gcodePreview.layerMin());
+    const max = untracked(() => this.gcodePreview.layerMax());
+    const progress = untracked(() => this.gcodePreview.segmentProgress());
+    const hidden = untracked(() => this.gcodePreview.hiddenRoles());
+    gcode.showRange(min, max);
+    gcode.applyProgress(max, progress);
+    gcode.applyHiddenRoles(hidden);
 
-    loadGcode(source, geometry, {
-      signal: controller.signal,
-      onFirstGeometry: () => {
-        if (token !== this.loadToken || !this.scene) {
-          return;
-        }
-        this.status.set('streaming');
-        this.scene.fitToContent();
-      },
-      onProgress: (total) => {
-        if (token !== this.loadToken) {
-          return;
-        }
-        this.progressSegments.set(total);
-      },
-      onComplete: (total) => {
-        if (token !== this.loadToken || !this.scene) {
-          return;
-        }
-        this.progressSegments.set(total);
-        this.scene.fitToContent();
-        this.status.set('ready');
-        this.loadComplete.emit({ mode: 'gcode', segments: total });
-      },
-    }).catch((error: unknown) => {
-      if (token !== this.loadToken) {
-        return;
-      }
-      if (isAbortError(error)) {
-        return;
-      }
-      this.errorMessage.set(messageOf(error));
-      this.status.set('error');
-      this.loadError.emit({ mode: 'gcode', error });
-    });
-
-    // Silence unused lint for elementRef (kept for future use, e.g. resize).
-    void this.elementRef;
+    scene.fitToContent();
+    this.status.set('ready');
+    this.loadComplete.emit({ mode: 'gcode', segments: totalSegments });
   }
 
   private cancelInFlightLoad(): void {
