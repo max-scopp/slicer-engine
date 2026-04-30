@@ -39,4 +39,13 @@
 
 .code-editor-panel {
   width: 40vw;
+
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+
+  nexus-code-editor {
+    flex: 1;
+    min-height: 0;
+  }
 }
