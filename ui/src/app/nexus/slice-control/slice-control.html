@@ -1,0 +1,60 @@
+<nexus-card visualSize="large">
+  <!-- Controls row — always rendered so buttons are never torn down mid-slice -->
+  <div class="slice-row">
+    <div class="file-info">
+      @if (slicer.selectedFile()) {
+        <nexus-icon name="cube-scan"></nexus-icon>
+        <span class="file-name" [tooltip]="slicer.selectedFile()!.name">
+          {{ slicer.selectedFile()!.name }}
+        </span>
+      } @else {
+        <nexus-icon name="cube-scan" class="muted"></nexus-icon>
+        <span class="no-file">No model loaded</span>
+      }
+    </div>
+
+    <button
+      class="slice-btn"
+      type="button"
+      [disabled]="!canSlice()"
+      [tooltip]="canSlice() ? 'Slice and generate G-code' : 'Upload a model first'"
+      (click)="slice()"
+    >
+      <nexus-icon name="play"></nexus-icon>
+      @if (isDone()) {
+        Re-Slice
+      } @else {
+        Slice
+      }
+    </button>
+
+    @if (slicer.gcodeDownloadUrl()) {
+      <button class="download-btn" type="button" tooltip="Download G-code" (click)="download()">
+        <nexus-icon name="download"></nexus-icon>
+      </button>
+    }
+  </div>
+
+  <!-- Progress row — visible once a slice has been initiated; stays through 'done' -->
+  @if (showProgress()) {
+    <div class="phase-header" [class.done]="isDone()">
+      @if (isActive()) {
+        <nexus-icon name="refresh" class="spin-icon"></nexus-icon>
+      } @else if (isDone()) {
+        <nexus-icon name="check-circle" class="done-icon"></nexus-icon>
+      }
+      <span class="phase-label">{{ phaseLabel() }}</span>
+      <span class="progress-pct">{{ slicer.sliceProgress() }}%</span>
+    </div>
+    <progress
+      class="slice-progress"
+      [class.done]="isDone()"
+      [value]="slicer.sliceProgress()"
+      max="100"
+    ></progress>
+  }
+
+  @if (slicer.status() === 'error') {
+    <p class="error-hint">Slice failed — check the status panel for details.</p>
+  }
+</nexus-card>

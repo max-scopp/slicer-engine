@@ -7,14 +7,14 @@ import { SettingsPanelComponent } from '../../../components/settings-panel/setti
 import { ViewportCube } from '../../../components/viewport-cube/viewport-cube';
 import { SceneEngineService } from '../../../services/scene-engine.service';
 import { Slicer } from '../../../services/slicer';
-import { PrintEstimates } from '../../print-estimates/print-estimates';
 import { Sidebar } from '../../sidebar/sidebar.component';
+import { SliceControl } from '../../slice-control/slice-control';
 
 @Component({
   selector: 'nexus-slicing-shell',
   imports: [
     Sidebar,
-    PrintEstimates,
+    SliceControl,
     ThreeDViewToolbar,
     ViewportCube,
     RouterOutlet,
