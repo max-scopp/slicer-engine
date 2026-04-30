@@ -11,3 +11,9 @@
 
   <nexus-print-estimates class="print-estimates" />
 </main>
+
+@if (editorPanelVisible()) {
+  <nexus-card class="code-editor-panel" visualSize="large">
+    <nexus-code-editor />
+  </nexus-card>
+}

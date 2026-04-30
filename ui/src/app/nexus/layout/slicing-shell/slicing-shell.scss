@@ -8,8 +8,7 @@
   position: relative;
 
   flex: 1;
-  min-width: 0;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .print-estimates {
@@ -36,4 +35,8 @@
   right: var(--spacing-lg, 24px);
   z-index: 90;
   pointer-events: auto;
+}
+
+.code-editor-panel {
+  width: 40vw;
 }
