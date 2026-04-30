@@ -11,6 +11,7 @@ html {
   --color-surface: #ffffff;
   --color-surface-hover: #f0f0f0;
   --color-surface-active: #e6e6e6;
+  --surface-transparency: 92%;
 
   // Text Colors
   --color-text-primary: #111214;
@@ -28,6 +29,20 @@ html {
   --color-primary-active: #444bb8;
   --color-primary-light: #f0f2ff;
   --color-primary-lighter: #f8faff;
+
+  // Secondary (Amber)
+  --color-secondary: #d97706;
+  --color-secondary-hover: #b45309;
+  --color-secondary-active: #92400e;
+  --color-secondary-light: #fffbeb;
+  --color-secondary-lighter: #fefdf7;
+
+  // Tertiary (Violet)
+  --color-tertiary: #9333ea;
+  --color-tertiary-hover: #7e22ce;
+  --color-tertiary-active: #6b21a8;
+  --color-tertiary-light: #faf5ff;
+  --color-tertiary-lighter: #fdf9ff;
 
   // Focus ring
   --color-focus-ring: #6b72e1;

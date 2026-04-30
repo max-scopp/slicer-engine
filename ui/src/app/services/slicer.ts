@@ -1,13 +1,49 @@
 import { HttpClient } from '@angular/common/http';
-import { Injectable, effect, inject, signal } from '@angular/core';
+import { Injectable, computed, effect, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { environment } from '../../environments/environment';
 import { WsSlicingParams } from '../../generated/slicer-engine-ws-client-message-v1';
 import { ServerMessage } from '../../generated/slicer-engine-ws-server-message-v1';
 import { DEFAULT_SETTINGS } from '../models/slice-settings.model';
 import { History } from './history';
+import { NotificationService } from './notifications';
 import { SlicerConnection } from './slicer-connection';
 import { SlicerFile } from './slicer-file';
+
+/** Human-readable label for each pipeline phase. */
+export const PHASE_LABELS: Record<string, string> = {
+  total: 'Slicing',
+  mesh_load: 'Loading mesh',
+  mesh_analysis: 'Analysing mesh',
+  slicing: 'Slicing layers',
+  arachne_walls: 'Generating walls',
+  infill_region_snapshot: 'Mapping infill regions',
+  wall_restrictions: 'Applying wall restrictions',
+  interior_regions: 'Computing interior regions',
+  surfaces: 'Generating surfaces',
+  infill: 'Generating infill',
+  gcode_generation: 'Generating G-code',
+  file_write: 'Writing output',
+};
+
+/**
+ * Proportional weights per phase derived from typical Benchy timings.
+ * `total` is the outer span and excluded from progress accumulation.
+ */
+const PHASE_WEIGHTS: Record<string, number> = {
+  mesh_load: 6,
+  mesh_analysis: 1,
+  slicing: 46,
+  arachne_walls: 11,
+  infill_region_snapshot: 4,
+  wall_restrictions: 7,
+  interior_regions: 4,
+  surfaces: 8,
+  infill: 2,
+  gcode_generation: 13,
+  file_write: 1,
+};
+const PHASE_TOTAL_WEIGHT = Object.values(PHASE_WEIGHTS).reduce((a, b) => a + b, 0);
 
 export type SlicerStatus = 'idle' | 'ready' | 'uploading' | 'slicing' | 'done' | 'error';
 
@@ -24,6 +60,7 @@ export class Slicer {
   private readonly http = inject(HttpClient);
   private readonly slicerFile = inject(SlicerFile);
   private readonly history = inject(History);
+  private readonly notifications = inject(NotificationService);
 
   /**
    * Currently-selected file. Sourced from {@link SlicerFile} so the upload
@@ -34,6 +71,36 @@ export class Slicer {
   readonly status = signal<SlicerStatus>('idle');
   readonly outputLog = signal<string[]>([]);
   readonly phaseTimings = signal<PhaseTimingData[]>([]);
+
+  /** Resolved download URL for the last completed slice, or `null` when none. */
+  readonly gcodeDownloadUrl = signal<string | null>(null);
+
+  /** Name of the pipeline phase currently executing, or `null` when idle. */
+  readonly currentPhase = signal<string | null>(null);
+
+  /**
+   * Overall slice progress 0–100.
+   *
+   * - When `status === 'done'`, always returns 100.
+   * - Each phase has a known proportional weight. Completed phases (those with
+   *   an `endTime`) are stacked in order; their cumulative weight over the
+   *   total determines the percentage.
+   * - Capped at 99 until `SliceComplete` arrives to avoid a premature 100%.
+   */
+  readonly sliceProgress = computed(() => {
+    if (this.status() === 'done') return 100;
+
+    const timings = this.phaseTimings();
+    let completedWeight = 0;
+
+    for (const t of timings) {
+      if (t.endTime != null && t.phase !== 'total' && PHASE_WEIGHTS[t.phase] != null) {
+        completedWeight += PHASE_WEIGHTS[t.phase];
+      }
+    }
+
+    return Math.min(99, Math.round((completedWeight / PHASE_TOTAL_WEIGHT) * 100));
+  });
 
   constructor() {
     // Pipe all WebSocket server messages into local state
@@ -72,15 +139,37 @@ export class Slicer {
           `Progress: ${msg.current_layer} / ${msg.total_layers} layers`,
         ]);
         break;
-      case 'SliceComplete':
+      case 'SliceComplete': {
         this.status.set('done');
+        this.currentPhase.set(null);
+
+        // Log overall phase timings to the browser console
+        const timings = this.phaseTimings();
+        const timingLines = timings
+          .filter((t) => t.elapsedMs != null)
+          .map((t) => `  ${(PHASE_LABELS[t.phase] ?? t.phase).padEnd(28)} ${t.elapsedMs} ms`)
+          .join('\n');
+        console.log(
+          `[slicer] Slice complete — ${msg.layer_count} layers\nPhase timings:\n${timingLines}`,
+        );
+
+        const resolvedUrl = msg.download_url.startsWith('/')
+          ? `${environment.apiUrl}${msg.download_url}`
+          : msg.download_url;
+        this.gcodeDownloadUrl.set(resolvedUrl);
+
+        this.notifications.success(
+          'Slice complete',
+          `${msg.layer_count} layers — click Download to save G-code`,
+          6000,
+        );
+
         this.outputLog.update((l) => [
           ...l,
           `Slice complete — ${msg.layer_count} layers generated.`,
-          'Downloading G-code…',
         ]);
-        this.downloadGcode(msg.download_url);
         break;
+      }
       case 'Error':
         this.status.set('error');
         this.outputLog.update((l) => [...l, `[error] ${msg.message}`]);
@@ -96,7 +185,10 @@ export class Slicer {
     const now = Date.now();
 
     if (msg.event === 'start') {
-      // Phase started - add or update the timing entry
+      // Phase started - track as the current active phase and add timing entry
+      if (msg.phase !== 'total') {
+        this.currentPhase.set(msg.phase);
+      }
       this.phaseTimings.update((timings) => {
         const existing = timings.find((t) => t.phase === msg.phase);
         if (existing) {
@@ -125,14 +217,22 @@ export class Slicer {
           ];
         }
       });
+      // Clear current phase only if it's the one that just ended
+      if (this.currentPhase() === msg.phase) {
+        this.currentPhase.set(null);
+      }
       this.outputLog.update((l) => [...l, `[phase] ${msg.phase} ✓ ${msg.elapsed_ms} ms`]);
     }
   }
 
-  private downloadGcode(downloadUrl: string): void {
+  downloadGcode(): void {
+    const url = this.gcodeDownloadUrl();
+    if (!url) {
+      return;
+    }
     const filename = this.selectedFile()?.name.replace(/\.stl$/i, '.gcode') ?? 'output.gcode';
     const link = document.createElement('a');
-    link.href = downloadUrl.startsWith('/') ? `${environment.apiUrl}${downloadUrl}` : downloadUrl;
+    link.href = url;
     link.download = filename;
     link.click();
   }
@@ -153,6 +253,20 @@ export class Slicer {
   async slice(): Promise<void> {
     const file = this.selectedFile();
     if (!file) {
+      return;
+    }
+
+    // Reset phase state for fresh run
+    this.phaseTimings.set([]);
+    this.currentPhase.set(null);
+    this.gcodeDownloadUrl.set(null);
+
+    // If the file was already uploaded (navigated from slice-new), reuse the UUID
+    const existingUuid = this.slicerFile.requestUuid();
+    if (existingUuid) {
+      this.status.set('slicing');
+      this.outputLog.update((log) => [...log, `Starting slice job (request: ${existingUuid})…`]);
+      this.ws.send({ type: 'Slice', request_uuid: existingUuid, settings: this.settings() });
       return;
     }
 
@@ -201,6 +315,8 @@ export class Slicer {
     this.status.set('idle');
     this.outputLog.set([]);
     this.phaseTimings.set([]);
+    this.currentPhase.set(null);
+    this.gcodeDownloadUrl.set(null);
     this.ws.send({ type: 'Reset' });
   }
 

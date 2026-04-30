@@ -1,3 +1,5 @@
+$default-inset: 40px;
+
 :host {
   position: relative;
   display: flex;
@@ -11,30 +13,50 @@
   overflow: auto;
 }
 
-.print-estimates {
-  $off: 40px;
-
-  position: absolute;
-  bottom: $off;
-  right: $off;
-}
-
-.shell-toolbar {
+.shell-actions-layer {
+  display: grid;
   position: absolute;
   top: 0;
   left: 0;
   width: 100%;
+  height: 100%;
 
-  z-index: 100;
-}
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto 1fr auto;
+  grid-template-areas:
+    'top-bar top-bar'
+    '. top-right'
+    'sub-bar right-bottom';
 
-.viewport-cube {
-  position: absolute;
-  // Slot just below the 60px-tall toolbar.
-  top: calc(60px + var(--spacing-sm, 8px));
-  right: var(--spacing-lg, 24px);
-  z-index: 90;
-  pointer-events: auto;
+  pointer-events: none;
+
+  > * {
+    pointer-events: auto;
+  }
+
+  .shell-toolbar {
+    grid-area: top-bar;
+  }
+
+  .viewport-cube {
+    grid-area: top-right;
+    pointer-events: auto;
+    place-self: start end;
+    margin: calc(var(--main-scene-inset, #{$default-inset}) / 2);
+  }
+
+  .stage-panel {
+    grid-area: right-bottom;
+    align-self: end;
+    margin: var(--main-scene-inset, #{$default-inset});
+  }
+
+  .review-slice-panel {
+    grid-area: sub-bar;
+    justify-self: start;
+    align-self: end;
+    margin: var(--main-scene-inset, #{$default-inset});
+  }
 }
 
 .code-editor-panel {

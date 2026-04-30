@@ -1,43 +1,43 @@
 import { DecimalPipe } from '@angular/common';
 import {
-  AfterViewInit,
-  ChangeDetectionStrategy,
-  Component,
-  ElementRef,
-  OnDestroy,
-  computed,
-  signal,
-  viewChild,
+    AfterViewInit,
+    ChangeDetectionStrategy,
+    Component,
+    ElementRef,
+    OnDestroy,
+    computed,
+    signal,
+    viewChild,
 } from '@angular/core';
 import {
-  AmbientLight,
-  BufferAttribute,
-  BufferGeometry,
-  DirectionalLight,
-  GridHelper,
-  Group,
-  LineBasicMaterial,
-  LineSegments,
-  PerspectiveCamera,
-  Scene,
-  WebGLRenderer,
+    AmbientLight,
+    BufferAttribute,
+    BufferGeometry,
+    DirectionalLight,
+    GridHelper,
+    Group,
+    LineBasicMaterial,
+    LineSegments,
+    PerspectiveCamera,
+    Scene,
+    WebGLRenderer,
 } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import init, {
-  GcodeHandle,
-  type GcodeLayerBuffer,
+    GcodeHandle,
+    type GcodeLayerBuffer,
 } from '../../../generated/scene-wasm/scene_engine';
 
 // ── Role colour palette ──────────────────────────────────────────────────────
 
 const ROLE_COLORS = {
-  outerWall: 0xe0e0e0,
-  innerWall: 0x70b070,
-  infill: 0xe07820,
-  topSurface: 0x4090e0,
-  bottomSurface: 0x9040e0,
-  travel: 0x2a3a3a,
-  other: 0xcccc40,
+  outerWall: 0xff8800,
+  innerWall: 0xffcc00,
+  infill: 0xcc44ff,
+  topSurface: 0xff3355,
+  bottomSurface: 0x00bbff,
+  travel: 0x334466,
+  other: 0x44ffaa,
 } as const;
 
 type RoleName = keyof typeof ROLE_COLORS;
@@ -53,13 +53,13 @@ const ROLE_LABELS: Record<RoleName, string> = {
 };
 
 const ROLE_CSS: Record<RoleName, string> = {
-  outerWall: '#e0e0e0',
-  innerWall: '#70b070',
-  infill: '#e07820',
-  topSurface: '#4090e0',
-  bottomSurface: '#9040e0',
-  travel: '#2a3a3a',
-  other: '#cccc40',
+  outerWall: '#ff8800',
+  innerWall: '#ffcc00',
+  infill: '#cc44ff',
+  topSurface: '#ff3355',
+  bottomSurface: '#00bbff',
+  travel: '#334466',
+  other: '#44ffaa',
 };
 
 // ── Layer metadata ───────────────────────────────────────────────────────────

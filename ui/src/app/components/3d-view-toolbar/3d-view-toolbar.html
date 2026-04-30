@@ -13,6 +13,17 @@
   >
     <nexus-icon name="restart"></nexus-icon>
   </button>
+
+  <button
+    class="reset-view-button"
+    type="button"
+    [class.active]="viewMode() === 'gcode'"
+    [disabled]="!canSlice"
+    [tooltip]="viewMode() === 'gcode' ? 'Switch to model view' : 'Switch to G-code preview'"
+    (click)="toggleViewMode()"
+  >
+    <nexus-icon [name]="viewMode() === 'gcode' ? 'cube' : 'layers'"></nexus-icon>
+  </button>
 </div>
 
 <nexus-card class="button-radio-group icon-group" [(radioGroup)]="selectedCursorMode">

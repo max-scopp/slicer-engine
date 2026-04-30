@@ -1,0 +1,172 @@
+:host {
+  display: block;
+  pointer-events: none;
+}
+
+nexus-card {
+  pointer-events: auto;
+  width: clamp(320px, 38vw, 560px);
+  padding: 10px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+// ── Header ──────────────────────────────────────────────────────────────────
+
+.controls-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.layer-label,
+.z-label {
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-tertiary);
+}
+
+.layer-label {
+  flex: 1;
+}
+
+.mode-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  flex-shrink: 0;
+
+  &.active {
+    background: var(--color-primary-lighter);
+    border-color: var(--color-primary-light);
+    color: var(--color-primary);
+  }
+}
+
+// ── Sliders ──────────────────────────────────────────────────────────────────
+
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.range-slider {
+  position: relative;
+  height: 20px;
+  flex: 1;
+  cursor: pointer;
+
+  &::before {
+    content: '';
+    position: absolute;
+    top: 8px;
+    left: 0;
+    right: 0;
+    height: 4px;
+    background: var(--color-border);
+    border-radius: 2px;
+  }
+}
+
+.range-track-fill {
+  position: absolute;
+  top: 8px;
+  height: 4px;
+  background: var(--color-primary);
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+.thumb {
+  position: absolute;
+  width: 100%;
+  height: 4px;
+  top: 8px;
+  pointer-events: none;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  outline: none;
+  margin: 0;
+  padding: 0;
+
+  &::-webkit-slider-thumb {
+    appearance: none;
+    -webkit-appearance: none;
+    pointer-events: all;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--color-primary-hover);
+    border: 2px solid var(--color-surface);
+    cursor: pointer;
+  }
+
+  &::-moz-range-thumb {
+    pointer-events: all;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--color-primary-hover);
+    border: 2px solid var(--color-surface);
+    cursor: pointer;
+  }
+
+  &.thumb-min {
+    &::-webkit-slider-thumb,
+    &::-moz-range-thumb {
+      opacity: 0.7;
+    }
+  }
+}
+
+// ── Role legend ──────────────────────────────────────────────────────────────
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-xs);
+  margin-top: 2px;
+}
+
+.role-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px 3px 5px;
+  border: 1px solid var(--color-border);
+  border-radius: 20px;
+  font-size: 11px;
+  user-select: none;
+
+  &.hidden {
+    opacity: 0.35;
+
+    .role-swatch {
+      opacity: 0.3;
+    }
+  }
+}
+
+.role-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--role-color);
+  flex-shrink: 0;
+}
+
+.role-name {
+  white-space: nowrap;
+}

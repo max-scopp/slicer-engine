@@ -107,11 +107,11 @@ flooded with no-ops.
 While **Shift** is held, each TransformControls instance snaps to a fixed step
 defined in `GIZMO_SNAP`:
 
-| Mode      | Snap step                                    |
-| --------- | -------------------------------------------- |
-| translate | 1 mm                                         |
-| rotate    | 15°                                          |
-| scale     | 0.1 (±10%)                                   |
+| Mode      | Snap step  |
+| --------- | ---------- |
+| translate | 1 mm       |
+| rotate    | 15°        |
+| scale     | 0.1 (±10%) |
 
 When Shift is released, the snap reverts to continuous free motion (`null`).
 
@@ -198,15 +198,47 @@ raycaster, gizmo), the viewer applies a clear priority order:
 
 ## Anatomy
 
+The viewer is split into focused files so each concern stays under ~300 lines.
+
 ```
 viewer/
-├── viewer.component.ts   Angular component shell; effects wiring; WASM ↔ Three bridge
-├── scene.ts              ViewerScene — Three.js scene, camera, orbit, grid, render loop
-├── gizmo.ts              GizmoManager, computeSelectionCentroid, raycastFace
-├── gcode-loader.ts       Streaming G-code pipeline
-├── chunked-line-geometry.ts   Memory-efficient line buffers for G-code preview
-├── model-loader.ts       Mesh source helpers
-└── index.ts              Public re-exports
+├── viewer.ts                  Angular component — effects wiring, WASM ↔ Three bridge
+├── scene/                     ViewerScene and all Three.js sub-systems
+│   ├── index.ts               ViewerScene — owns renderer, render loop, delegates to sub-modules
+│   ├── camera.ts              SceneCamera — animations, view presets, fit-to-content, near/far
+│   ├── controls.ts            SceneControls — orbit inertia, multi-touch (pinch/pan/roll), autoscroll zoom
+│   ├── grid.ts                SceneGrid — adaptive build-plate grid with cross-fade and fade-on-graze
+│   ├── selection.ts           SceneSelection — selectable registry, emissive highlight, raycasting, face-pick
+│   ├── types.ts               Shared public types (SceneSelectionHandlers, SceneGizmoHandlers, ViewerView, …)
+│   └── utils.ts               disposeObject — recursive Three.js geometry/material cleanup
+├── gizmo.ts                   GizmoManager, computeSelectionCentroid, raycastFace
+├── gcode-orchestrator.ts      GcodeOrchestrator — owns layer groups; Three.js visibility only (no geometry)
+├── gcode-layer-renderer.ts    buildLayerGroup, showLayerRange, applySegmentProgress, applyHiddenRoles
+└── index.ts                   Public re-exports
+```
+
+### ViewerScene sub-module responsibilities
+
+| File                 | Class            | Owns                                                                                        |
+| -------------------- | ---------------- | ------------------------------------------------------------------------------------------- |
+| `scene/camera.ts`    | `SceneCamera`    | `PerspectiveCamera` pose, view animations, `fitToContent`                                   |
+| `scene/controls.ts`  | `SceneControls`  | `OrbitControls` config, orbit inertia, touch gestures, autoscroll zoom                      |
+| `scene/grid.ts`      | `SceneGrid`      | Bed grid `LineSegments`, adaptive spacing, CSS theme integration                            |
+| `scene/selection.ts` | `SceneSelection` | Selectable `Map`, emissive highlight, pointer event plumbing, face-pick overlay             |
+| `scene/index.ts`     | `ViewerScene`    | Three.js primitives (`Scene`, `WebGLRenderer`, `OrbitControls`), `contentRoot`, render loop |
+
+### G-code layer architecture
+
+All G-code geometry is built exclusively inside `GcodeOrchestrator.buildFromHandle()` by
+calling the WASM-side `GcodeSource.getLayer()`. Three.js receives finished `Float32Array`
+buffers and is responsible only for showing/hiding layer groups and scrubbing segment
+draw-ranges. No geometry is constructed in TypeScript.
+
+```mermaid
+flowchart LR
+    WASM[GcodeSource\nWASM handle] -->|getLayer| GO[GcodeOrchestrator\nbuildFromHandle]
+    GO -->|LineSegments| CR[contentRoot\nThree.js scene]
+    GPS[GcodePreviewService\nsignals] -->|showRange\napplyProgress\napplyHiddenRoles| GO
 ```
 
 ---
@@ -216,6 +248,9 @@ viewer/
 - **No scene-state ownership.** Transforms are not stored here. The WASM
   `SceneHandle` is the only truth; Three.js matrices are a read-only mirror of
   it.
+- **No G-code geometry construction.** `GcodeOrchestrator` never builds
+  `BufferGeometry` itself — it only routes the WASM-emitted `Float32Array`
+  buffers into Three.js `LineSegments` via `gcode-layer-renderer`.
 - **No multi-object gizmo.** When multiple objects are selected, the gizmo
   appears at their collective world centroid but each object receives
   independent `Rotate`/`Translate`/`Scale` ops with the same delta. A unified
@@ -227,9 +262,15 @@ viewer/
 
 ## See also
 
-- [scene.ts](scene.ts) — `ViewerScene`, `SceneSelectionHandlers`, `SceneGizmoHandlers`
+- [scene/index.ts](scene/index.ts) — `ViewerScene`, `SceneSelectionHandlers`, `SceneGizmoHandlers`
+- [scene/camera.ts](scene/camera.ts) — `SceneCamera`
+- [scene/controls.ts](scene/controls.ts) — `SceneControls`
+- [scene/grid.ts](scene/grid.ts) — `SceneGrid`
+- [scene/selection.ts](scene/selection.ts) — `SceneSelection`
 - [gizmo.ts](gizmo.ts) — `GizmoManager`, `GizmoDelta`, `FacePickResult`, `raycastFace`, `computeSelectionCentroid`
-- [viewer.component.ts](viewer.component.ts) — Angular component wiring
+- [gcode-orchestrator.ts](gcode-orchestrator.ts) — `GcodeOrchestrator`
+- [gcode-layer-renderer.ts](gcode-layer-renderer.ts) — layer builder and visibility helpers
+- [viewer.ts](viewer.ts) — Angular component wiring
 - [../../services/viewer-control.ts](../../services/viewer-control.ts) — `ObjectMode`, `ViewerControl` signal store
 - [../../services/scene-engine.service.ts](../../services/scene-engine.service.ts) — `SceneEngineService`, `getFaceGroups`
 - [../../../../src/mesh/README.md](../../../../../src/mesh/README.md) — coplanar group algorithm

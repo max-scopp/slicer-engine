@@ -1,5 +1,6 @@
 import { Injectable, signal } from '@angular/core';
 import { Vector3 } from 'three';
+import type { ViewerMode } from '../components/viewer';
 
 export type ViewerView = '3D' | 'Top' | 'Front';
 /**
@@ -27,6 +28,9 @@ export type ObjectMode = 'none' | 'translate' | 'rotate' | 'scale' | 'pullToFloo
 export class ViewerControl {
   /** Currently selected camera view preset. */
   readonly view = signal<ViewerView>('3D');
+
+  /** Whether the viewport shows the raw mesh ('model') or sliced G-code ('gcode'). */
+  readonly viewMode = signal<ViewerMode>('model');
 
   /** Currently selected pointer interaction mode. */
   readonly cursorMode = signal<ViewerCursorMode>('orbit');

@@ -1,0 +1,41 @@
+:host {
+  display: block;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+}
+
+.viewer-host {
+  position: absolute;
+  inset: 0;
+}
+
+.viewer-bottom {
+  position: absolute;
+  bottom: 10px;
+  left: 0;
+  width: 100%;
+  justify-content: center;
+  display: flex;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.viewer-fps,
+.viewer-status {
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #e6e6e6;
+  font:
+    12px/1.2 ui-monospace,
+    monospace;
+  border-radius: 4px;
+}
+
+.viewer-fps-aux {
+  color: #9aa4b2;
+  margin-left: 6px;
+}

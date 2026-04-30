@@ -1,8 +1,10 @@
 :host {
+  position: relative;
   display: grid;
   gap: 2px;
 
-  background: var(--color-surface);
+  background: color-mix(in srgb, var(--color-surface) var(--surface-transparency), transparent);
+  backdrop-filter: blur(8px) contrast(100) blur(2px);
 }
 
 :host(.small) {

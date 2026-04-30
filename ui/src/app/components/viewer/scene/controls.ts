@@ -1,0 +1,617 @@
+import {
+  MOUSE,
+  type PerspectiveCamera,
+  Plane,
+  Quaternion,
+  Raycaster,
+  Spherical,
+  TOUCH,
+  Vector2,
+  Vector3,
+  type WebGLRenderer,
+} from 'three';
+import type { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import type { ViewerCursorMode } from './types';
+
+const TOUCH_DISABLED = -1 as unknown as TOUCH;
+const TWO_FINGER_DOLLY_DEAD_ZONE_PX = 1.5;
+const TWO_FINGER_ROLL_DEAD_ZONE_RAD = 0.01;
+
+const AUTOSCROLL_DEAD_ZONE_PX = 6;
+const AUTOSCROLL_SPEED_PER_PX = 0.012;
+const AUTOSCROLL_ACCEL_REF_PX = 100;
+const AUTOSCROLL_ACCEL_EXPONENT = 1.6;
+const AUTOSCROLL_MAX_FACTOR_PER_FRAME = 4;
+
+interface AutoscrollState {
+  pointerId: number;
+  anchorY: number;
+  currentY: number;
+}
+
+/**
+ * Manages OrbitControls configuration, custom orbit inertia, multi-touch
+ * gestures (pinch/pan/roll), and Windows-style middle-button autoscroll zoom.
+ */
+export class SceneControls {
+  private orbitInteracting = false;
+  private orbitLastSampleTime = 0;
+  private orbitLastAzimuth = 0;
+  private orbitLastPolar = 0;
+  private orbitLastTarget = new Vector3();
+  private orbitVelAzimuth = 0;
+  private orbitVelPolar = 0;
+  private orbitVelTarget = new Vector3();
+  private autoscroll: AutoscrollState | null = null;
+  private readonly raycaster = new Raycaster();
+  private readonly ndcScratch = new Vector2();
+
+  /**
+   * @param cancelDragCallback  Called when a two-finger gesture begins so
+   *   any in-flight single-finger selection drag can be abandoned cleanly.
+   */
+  constructor(
+    private readonly camera: PerspectiveCamera,
+    private readonly controls: OrbitControls,
+    private readonly renderer: WebGLRenderer,
+    private readonly cancelDragCallback: () => void,
+  ) {
+    this.installOrbitInertia();
+    this.installTouchOrbitTuning();
+    this.installCustomTwoFingerControls();
+    this.installAutoscrollZoom();
+  }
+
+  /** Configure mouse-button and touch-gesture mapping for the given mode. */
+  setCursorMode(mode: ViewerCursorMode): void {
+    const c = this.controls;
+    c.enableRotate = true;
+    c.enablePan = true;
+    c.enableZoom = true;
+    // Middle mouse is reserved for autoscroll zoom; disable OrbitControls' drag-dolly.
+    const MIDDLE = null as unknown as MOUSE;
+    switch (mode) {
+      case 'orbit':
+        c.mouseButtons = { LEFT: MOUSE.ROTATE, MIDDLE, RIGHT: MOUSE.PAN };
+        c.touches = { ONE: TOUCH.ROTATE, TWO: TOUCH_DISABLED };
+        break;
+      case 'pan':
+        c.mouseButtons = { LEFT: MOUSE.PAN, MIDDLE, RIGHT: MOUSE.ROTATE };
+        c.touches = { ONE: TOUCH.PAN, TWO: TOUCH_DISABLED };
+        break;
+      case 'zoom':
+        c.mouseButtons = { LEFT: MOUSE.DOLLY, MIDDLE, RIGHT: MOUSE.PAN };
+        c.touches = { ONE: TOUCH.DOLLY_PAN, TWO: TOUCH_DISABLED };
+        break;
+    }
+  }
+
+  hasAutoscroll(): boolean {
+    return this.autoscroll !== null;
+  }
+
+  applyOrbitInertia(dt: number): void {
+    if (this.orbitInteracting || dt <= 0) {
+      return;
+    }
+    const azSpeed = Math.abs(this.orbitVelAzimuth);
+    const polSpeed = Math.abs(this.orbitVelPolar);
+    const panSpeed = this.orbitVelTarget.length();
+    if (azSpeed < 1e-3 && polSpeed < 1e-3 && panSpeed < 1e-2) {
+      this.orbitVelAzimuth = 0;
+      this.orbitVelPolar = 0;
+      this.orbitVelTarget.set(0, 0, 0);
+      return;
+    }
+    if (azSpeed > 0 || polSpeed > 0) {
+      const offset = this.camera.position.clone().sub(this.controls.target);
+      const yUp = new Vector3(0, 1, 0);
+      const q = new Quaternion().setFromUnitVectors(this.camera.up, yUp);
+      const qInv = q.clone().invert();
+      offset.applyQuaternion(q);
+      const sph = new Spherical().setFromVector3(offset);
+      sph.theta += this.orbitVelAzimuth * dt;
+      sph.phi += this.orbitVelPolar * dt;
+      const eps = 1e-3;
+      sph.phi = Math.max(eps, Math.min(Math.PI - eps, sph.phi));
+      offset.setFromSpherical(sph).applyQuaternion(qInv);
+      this.camera.position.copy(this.controls.target).add(offset);
+    }
+    if (panSpeed > 0) {
+      const dT = this.orbitVelTarget.clone().multiplyScalar(dt);
+      this.controls.target.add(dT);
+      this.camera.position.add(dT);
+    }
+    this.camera.lookAt(this.controls.target);
+    const halfLifeSeconds = 0.05;
+    const decay = Math.pow(0.5, dt / halfLifeSeconds);
+    this.orbitVelAzimuth *= decay;
+    this.orbitVelPolar *= decay;
+    this.orbitVelTarget.multiplyScalar(decay);
+  }
+
+  applyAutoscrollZoom(dt: number): void {
+    const state = this.autoscroll;
+    if (!state || dt <= 0) {
+      return;
+    }
+    const offsetPx = state.anchorY - state.currentY;
+    const beyondDeadzone =
+      Math.sign(offsetPx) * Math.max(0, Math.abs(offsetPx) - AUTOSCROLL_DEAD_ZONE_PX);
+    if (beyondDeadzone === 0) {
+      return;
+    }
+    const accel = Math.pow(
+      Math.abs(beyondDeadzone) / AUTOSCROLL_ACCEL_REF_PX,
+      AUTOSCROLL_ACCEL_EXPONENT - 1,
+    );
+    const rate = beyondDeadzone * AUTOSCROLL_SPEED_PER_PX * accel;
+    let scale = Math.exp(-rate * dt);
+    scale = Math.min(
+      AUTOSCROLL_MAX_FACTOR_PER_FRAME,
+      Math.max(1 / AUTOSCROLL_MAX_FACTOR_PER_FRAME, scale),
+    );
+    const target = this.controls.target;
+    const offset = this.camera.position.clone().sub(target);
+    offset.multiplyScalar(scale);
+    const len = offset.length();
+    const minD = (this.controls as unknown as { minDistance?: number }).minDistance ?? 0;
+    const maxD = (this.controls as unknown as { maxDistance?: number }).maxDistance ?? Infinity;
+    if (len < minD && len > 0) {
+      offset.multiplyScalar(minD / len);
+    } else if (len > maxD) {
+      offset.multiplyScalar(maxD / len);
+    }
+    this.camera.position.copy(target).add(offset);
+  }
+
+  private touchOrbitTuningPointerDownHandler: ((event: PointerEvent) => void) | null = null;
+  private touchOrbitTuningPointerMoveHandler: ((event: PointerEvent) => void) | null = null;
+  private touchOrbitTuningPointerUpHandler: ((event: PointerEvent) => void) | null = null;
+  private touchOrbitTuningPointerCancelHandler: ((event: PointerEvent) => void) | null = null;
+  private customTwoFingerPointerDownHandler: ((event: PointerEvent) => void) | null = null;
+  private customTwoFingerPointerMoveHandler: ((event: PointerEvent) => void) | null = null;
+  private customTwoFingerPointerUpHandler: ((event: PointerEvent) => void) | null = null;
+  private customTwoFingerPointerCancelHandler: ((event: PointerEvent) => void) | null = null;
+
+  private uninstallRendererPointerListeners(): void {
+    const domElement = this.renderer.domElement;
+
+    if (this.touchOrbitTuningPointerDownHandler) {
+      domElement.removeEventListener('pointerdown', this.touchOrbitTuningPointerDownHandler);
+      this.touchOrbitTuningPointerDownHandler = null;
+    }
+    if (this.touchOrbitTuningPointerMoveHandler) {
+      domElement.removeEventListener('pointermove', this.touchOrbitTuningPointerMoveHandler);
+      this.touchOrbitTuningPointerMoveHandler = null;
+    }
+    if (this.touchOrbitTuningPointerUpHandler) {
+      domElement.removeEventListener('pointerup', this.touchOrbitTuningPointerUpHandler);
+      this.touchOrbitTuningPointerUpHandler = null;
+    }
+    if (this.touchOrbitTuningPointerCancelHandler) {
+      domElement.removeEventListener('pointercancel', this.touchOrbitTuningPointerCancelHandler);
+      this.touchOrbitTuningPointerCancelHandler = null;
+    }
+
+    if (this.customTwoFingerPointerDownHandler) {
+      domElement.removeEventListener('pointerdown', this.customTwoFingerPointerDownHandler);
+      this.customTwoFingerPointerDownHandler = null;
+    }
+    if (this.customTwoFingerPointerMoveHandler) {
+      domElement.removeEventListener('pointermove', this.customTwoFingerPointerMoveHandler);
+      this.customTwoFingerPointerMoveHandler = null;
+    }
+    if (this.customTwoFingerPointerUpHandler) {
+      domElement.removeEventListener('pointerup', this.customTwoFingerPointerUpHandler);
+      this.customTwoFingerPointerUpHandler = null;
+    }
+    if (this.customTwoFingerPointerCancelHandler) {
+      domElement.removeEventListener('pointercancel', this.customTwoFingerPointerCancelHandler);
+      this.customTwoFingerPointerCancelHandler = null;
+    }
+  }
+
+  dispose(): void {
+    this.uninstallAutoscrollZoom();
+    this.uninstallRendererPointerListeners();
+  }
+
+  // -------------------------------------------------------------------------
+  // Orbit inertia
+  // -------------------------------------------------------------------------
+
+  private installOrbitInertia(): void {
+    this.controls.addEventListener('start', () => {
+      this.orbitInteracting = true;
+      this.orbitLastSampleTime = performance.now();
+      this.orbitLastAzimuth = this.controls.getAzimuthalAngle();
+      this.orbitLastPolar = this.controls.getPolarAngle();
+      this.orbitLastTarget.copy(this.controls.target);
+      this.orbitVelAzimuth = 0;
+      this.orbitVelPolar = 0;
+      this.orbitVelTarget.set(0, 0, 0);
+    });
+    this.controls.addEventListener('change', () => {
+      if (!this.orbitInteracting) {
+        return;
+      }
+      const now = performance.now();
+      const dt = (now - this.orbitLastSampleTime) / 1000;
+      this.orbitLastSampleTime = now;
+      if (dt <= 0 || dt > 0.1) {
+        this.orbitLastAzimuth = this.controls.getAzimuthalAngle();
+        this.orbitLastPolar = this.controls.getPolarAngle();
+        this.orbitLastTarget.copy(this.controls.target);
+        return;
+      }
+      const azNow = this.controls.getAzimuthalAngle();
+      const polNow = this.controls.getPolarAngle();
+      let dAz = azNow - this.orbitLastAzimuth;
+      if (dAz > Math.PI) dAz -= 2 * Math.PI;
+      else if (dAz < -Math.PI) dAz += 2 * Math.PI;
+      const dPol = polNow - this.orbitLastPolar;
+      const dTarget = this.controls.target.clone().sub(this.orbitLastTarget);
+      const smoothing = 0.5;
+      this.orbitVelAzimuth = lerp(this.orbitVelAzimuth, dAz / dt, smoothing);
+      this.orbitVelPolar = lerp(this.orbitVelPolar, dPol / dt, smoothing);
+      this.orbitVelTarget.lerp(dTarget.divideScalar(dt), smoothing);
+      this.orbitLastAzimuth = azNow;
+      this.orbitLastPolar = polNow;
+      this.orbitLastTarget.copy(this.controls.target);
+    });
+    this.controls.addEventListener('end', () => {
+      this.orbitInteracting = false;
+      const sinceLastSample = (performance.now() - this.orbitLastSampleTime) / 1000;
+      if (sinceLastSample > 0.08) {
+        this.orbitVelAzimuth = 0;
+        this.orbitVelPolar = 0;
+        this.orbitVelTarget.set(0, 0, 0);
+        return;
+      }
+      const releaseScale = 0.35;
+      this.orbitVelAzimuth *= releaseScale;
+      this.orbitVelPolar *= releaseScale;
+      this.orbitVelTarget.multiplyScalar(releaseScale);
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Touch tuning
+  // -------------------------------------------------------------------------
+
+  /**
+   * Enable `zoomToCursor` while a touch is active so pinch-zoom converges
+   * on the finger centroid, then restores the default (dolly toward target)
+   * when the gesture ends.
+   */
+  private installTouchOrbitTuning(): void {
+    const el = this.renderer.domElement;
+    const activeTouches = new Set<number>();
+    const onDown = (event: PointerEvent): void => {
+      if (event.pointerType !== 'touch') {
+        return;
+      }
+      activeTouches.add(event.pointerId);
+      this.controls.zoomToCursor = true;
+    };
+    const onEnd = (event: PointerEvent): void => {
+      if (event.pointerType !== 'touch') {
+        return;
+      }
+      activeTouches.delete(event.pointerId);
+      if (activeTouches.size === 0) {
+        this.controls.zoomToCursor = false;
+      }
+    };
+    el.addEventListener('pointerdown', onDown);
+    el.addEventListener('pointerup', onEnd);
+    el.addEventListener('pointercancel', onEnd);
+  }
+
+  /**
+   * Combined pinch-dolly + centroid-pan + twist-roll for two-finger touch.
+   * Bypasses OrbitControls entirely while two or more fingers are down.
+   */
+  private installCustomTwoFingerControls(): void {
+    const el = this.renderer.domElement;
+    const touches = new Map<number, { x: number; y: number }>();
+    const state = {
+      active: false,
+      lastDist: 0,
+      lastAngle: 0,
+      lastCx: 0,
+      lastCy: 0,
+      savedControlsEnabled: true,
+      suppressOwnCancel: false,
+    };
+
+    const recomputeAnchors = (): void => {
+      const pts = [...touches.values()];
+      if (pts.length < 2) {
+        return;
+      }
+      const a = pts[0];
+      const b = pts[1];
+      state.lastDist = Math.hypot(b.x - a.x, b.y - a.y);
+      state.lastAngle = Math.atan2(b.y - a.y, b.x - a.x);
+      state.lastCx = (a.x + b.x) / 2;
+      state.lastCy = (a.y + b.y) / 2;
+    };
+
+    const beginTwoFinger = (): void => {
+      state.active = true;
+      state.savedControlsEnabled = this.controls.enabled;
+      this.controls.enabled = false;
+      this.orbitVelAzimuth = 0;
+      this.orbitVelPolar = 0;
+      this.orbitVelTarget.set(0, 0, 0);
+      this.cancelDragCallback();
+      // Fire synthetic pointercancel events so OrbitControls clears its
+      // internal pointer state before we re-disable it.
+      this.controls.enabled = true;
+      state.suppressOwnCancel = true;
+      for (const id of touches.keys()) {
+        try {
+          el.dispatchEvent(
+            new PointerEvent('pointercancel', { pointerId: id, pointerType: 'touch' }),
+          );
+        } catch {
+          // Older browsers may reject the constructor; harmless.
+        }
+      }
+      state.suppressOwnCancel = false;
+      this.controls.enabled = false;
+      recomputeAnchors();
+    };
+
+    const endTwoFinger = (): void => {
+      if (!state.active) {
+        return;
+      }
+      state.active = false;
+      this.controls.enabled = state.savedControlsEnabled;
+    };
+
+    const onDown = (event: PointerEvent): void => {
+      if (event.pointerType !== 'touch') {
+        return;
+      }
+      touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (touches.size === 2 && !state.active) {
+        beginTwoFinger();
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+      } else if (state.active) {
+        recomputeAnchors();
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+      }
+    };
+
+    const onMove = (event: PointerEvent): void => {
+      if (event.pointerType !== 'touch') {
+        return;
+      }
+      const t = touches.get(event.pointerId);
+      if (!t) {
+        return;
+      }
+      t.x = event.clientX;
+      t.y = event.clientY;
+      if (state.active) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+      }
+      if (!state.active || touches.size < 2) {
+        return;
+      }
+      const pts = [...touches.values()];
+      const a = pts[0];
+      const b = pts[1];
+      const dist = Math.hypot(b.x - a.x, b.y - a.y);
+      const angle = Math.atan2(b.y - a.y, b.x - a.x);
+      const cx = (a.x + b.x) / 2;
+      const cy = (a.y + b.y) / 2;
+
+      if (state.lastDist > 0 && Math.abs(dist - state.lastDist) > TWO_FINGER_DOLLY_DEAD_ZONE_PX) {
+        const factor = state.lastDist / Math.max(dist, 1e-3);
+        this.applyTouchDolly(factor, cx, cy);
+      }
+
+      let dAngle = angle - state.lastAngle;
+      if (dAngle > Math.PI) dAngle -= 2 * Math.PI;
+      else if (dAngle < -Math.PI) dAngle += 2 * Math.PI;
+      if (Math.abs(dAngle) > TWO_FINGER_ROLL_DEAD_ZONE_RAD) {
+        this.applyTouchRoll(-dAngle);
+      }
+
+      const dx = cx - state.lastCx;
+      const dy = cy - state.lastCy;
+      if (dx !== 0 || dy !== 0) {
+        this.applyTouchPan(dx, dy);
+      }
+
+      state.lastDist = dist;
+      state.lastAngle = angle;
+      state.lastCx = cx;
+      state.lastCy = cy;
+    };
+
+    const onUp = (event: PointerEvent): void => {
+      if (event.pointerType !== 'touch') {
+        return;
+      }
+      if (state.suppressOwnCancel) {
+        return;
+      }
+      if (!touches.delete(event.pointerId)) {
+        return;
+      }
+      if (!state.active) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      if (touches.size === 0) {
+        endTwoFinger();
+      } else {
+        recomputeAnchors();
+      }
+    };
+
+    el.addEventListener('pointerdown', onDown, { capture: true });
+    el.addEventListener('pointermove', onMove, { capture: true });
+    el.addEventListener('pointerup', onUp, { capture: true });
+    el.addEventListener('pointercancel', onUp, { capture: true });
+  }
+
+  // -------------------------------------------------------------------------
+  // Touch movement helpers
+  // -------------------------------------------------------------------------
+
+  /**
+   * Dolly toward / away from the world point under the pinch centroid.
+   * `factor < 1` zooms in, `factor > 1` zooms out.
+   */
+  private applyTouchDolly(factor: number, cx: number, cy: number): void {
+    const { camera } = this;
+    const target = this.controls.target;
+    camera.updateMatrixWorld(true);
+    const offset = camera.position.clone().sub(target);
+    const oldDist = offset.length();
+    if (oldDist < 1e-6) {
+      return;
+    }
+    let newDist = oldDist * factor;
+    newDist = Math.max(this.controls.minDistance, Math.min(this.controls.maxDistance, newDist));
+    const f = newDist / oldDist;
+    if (Math.abs(f - 1) < 1e-6) {
+      return;
+    }
+    const viewNormal = offset.clone().normalize();
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ndcX = ((cx - rect.left) / Math.max(rect.width, 1)) * 2 - 1;
+    const ndcY = -(((cy - rect.top) / Math.max(rect.height, 1)) * 2 - 1);
+    this.raycaster.setFromCamera(this.ndcScratch.set(ndcX, ndcY), camera);
+    const plane = new Plane().setFromNormalAndCoplanarPoint(viewNormal, target);
+    const W = new Vector3();
+    const hit = this.raycaster.ray.intersectPlane(plane, W);
+    camera.position.copy(target).add(offset.multiplyScalar(f));
+    if (hit) {
+      const shift = W.sub(target).multiplyScalar(1 - f);
+      camera.position.add(shift);
+      target.add(shift);
+    }
+  }
+
+  /** Translate camera + target by a screen-space pixel delta. */
+  private applyTouchPan(dxPx: number, dyPx: number): void {
+    const { camera } = this;
+    const target = this.controls.target;
+    camera.updateMatrix();
+    const distance = camera.position.distanceTo(target);
+    const fovRad = (camera.fov * Math.PI) / 180;
+    const viewportHeight = Math.max(this.renderer.domElement.clientHeight, 1);
+    const worldPerPixel = (2 * Math.tan(fovRad / 2) * distance) / viewportHeight;
+    const right = new Vector3().setFromMatrixColumn(camera.matrix, 0);
+    const up = new Vector3().setFromMatrixColumn(camera.matrix, 1);
+    const pan = new Vector3();
+    pan.addScaledVector(right, -dxPx * worldPerPixel);
+    pan.addScaledVector(up, dyPx * worldPerPixel);
+    camera.position.add(pan);
+    target.add(pan);
+  }
+
+  /** Roll the camera by `angle` radians around its forward axis. */
+  private applyTouchRoll(angle: number): void {
+    const { camera } = this;
+    const forward = this.controls.target.clone().sub(camera.position).normalize();
+    if (forward.lengthSq() < 1e-12) {
+      return;
+    }
+    const q = new Quaternion().setFromAxisAngle(forward, angle);
+    camera.up.applyQuaternion(q).normalize();
+    camera.lookAt(this.controls.target);
+    camera.updateMatrix();
+  }
+
+  // -------------------------------------------------------------------------
+  // Autoscroll zoom (Windows-style middle-button hold)
+  // -------------------------------------------------------------------------
+
+  private installAutoscrollZoom(): void {
+    const el = this.renderer.domElement;
+    el.addEventListener('pointerdown', this.onAutoscrollPointerDown);
+    el.addEventListener('pointermove', this.onAutoscrollPointerMove);
+    el.addEventListener('pointerup', this.onAutoscrollPointerUp);
+    el.addEventListener('pointercancel', this.onAutoscrollPointerUp);
+    el.addEventListener('contextmenu', this.onAutoscrollContextMenu);
+    el.addEventListener('auxclick', this.onAutoscrollAuxClick);
+  }
+
+  private uninstallAutoscrollZoom(): void {
+    const el = this.renderer.domElement;
+    el.removeEventListener('pointerdown', this.onAutoscrollPointerDown);
+    el.removeEventListener('pointermove', this.onAutoscrollPointerMove);
+    el.removeEventListener('pointerup', this.onAutoscrollPointerUp);
+    el.removeEventListener('pointercancel', this.onAutoscrollPointerUp);
+    el.removeEventListener('contextmenu', this.onAutoscrollContextMenu);
+    el.removeEventListener('auxclick', this.onAutoscrollAuxClick);
+  }
+
+  private onAutoscrollPointerDown = (event: PointerEvent): void => {
+    if (event.button !== 1) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const el = this.renderer.domElement;
+    el.setPointerCapture(event.pointerId);
+    el.style.cursor = 'ns-resize';
+    this.autoscroll = {
+      pointerId: event.pointerId,
+      anchorY: event.clientY,
+      currentY: event.clientY,
+    };
+  };
+
+  private onAutoscrollPointerMove = (event: PointerEvent): void => {
+    if (!this.autoscroll || event.pointerId !== this.autoscroll.pointerId) {
+      return;
+    }
+    this.autoscroll.currentY = event.clientY;
+  };
+
+  private onAutoscrollPointerUp = (event: PointerEvent): void => {
+    if (!this.autoscroll || event.pointerId !== this.autoscroll.pointerId) {
+      return;
+    }
+    const el = this.renderer.domElement;
+    if (el.hasPointerCapture(event.pointerId)) {
+      el.releasePointerCapture(event.pointerId);
+    }
+    el.style.cursor = '';
+    this.autoscroll = null;
+  };
+
+  private onAutoscrollContextMenu = (event: Event): void => {
+    if (this.autoscroll) {
+      event.preventDefault();
+    }
+  };
+
+  private onAutoscrollAuxClick = (event: MouseEvent): void => {
+    if (event.button === 1) {
+      event.preventDefault();
+    }
+  };
+}
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
