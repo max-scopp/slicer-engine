@@ -116,9 +116,8 @@ interface LayerInfo {
           <div class="block">
             <h3>Layers ({{ layerCount() }} total)</h3>
             <p class="layer-z">
-              Layers {{ layerMin() + 1 }}–{{ layerMax() + 1 }} / {{ layerCount() }}
-              &nbsp;·&nbsp;
-              Z {{ minZ() | number: '1.3-3' }}–{{ currentZ() | number: '1.3-3' }} mm
+              Layers {{ layerMin() + 1 }}–{{ layerMax() + 1 }} / {{ layerCount() }} &nbsp;·&nbsp; Z
+              {{ minZ() | number: '1.3-3' }}–{{ currentZ() | number: '1.3-3' }} mm
             </p>
             <div class="range-slider">
               <input
@@ -144,18 +143,10 @@ interface LayerInfo {
               ></div>
             </div>
             <div class="layer-buttons">
-              <button
-                type="button"
-                (click)="stepLayerMin(-1)"
-                [disabled]="layerMin() === 0"
-              >
+              <button type="button" (click)="stepLayerMin(-1)" [disabled]="layerMin() === 0">
                 ◀ Min −
               </button>
-              <button
-                type="button"
-                (click)="stepLayerMin(1)"
-                [disabled]="layerMin() >= layerMax()"
-              >
+              <button type="button" (click)="stepLayerMin(1)" [disabled]="layerMin() >= layerMax()">
                 Min + ▶
               </button>
               <button
@@ -177,9 +168,7 @@ interface LayerInfo {
 
           <div class="block">
             <h3>Layer Progress</h3>
-            <p class="layer-z">
-              Move {{ segmentProgress() }} / {{ currentLayerTotalSegments() }}
-            </p>
+            <p class="layer-z">Move {{ segmentProgress() }} / {{ currentLayerTotalSegments() }}</p>
             <input
               type="range"
               class="slider"
@@ -544,7 +533,10 @@ export class GcodeDemoComponent implements AfterViewInit, OnDestroy {
   }
 
   stepLayerMax(delta: number): void {
-    const next = Math.max(this.layerMin(), Math.min(this.layerCount() - 1, this.layerMax() + delta));
+    const next = Math.max(
+      this.layerMin(),
+      Math.min(this.layerCount() - 1, this.layerMax() + delta),
+    );
     this.showLayerRange(this.layerMin(), next);
   }
 

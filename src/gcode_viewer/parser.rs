@@ -86,7 +86,9 @@ pub(super) fn parse_gcode_bytes(bytes: &[u8]) -> Vec<InternalLayer> {
                         continue;
                     }
                     let (letter, rest) = param.split_at(1);
-                    let Ok(val) = rest.parse::<f32>() else { continue };
+                    let Ok(val) = rest.parse::<f32>() else {
+                        continue;
+                    };
                     match letter.to_ascii_uppercase().as_str() {
                         "X" => new_x = if absolute_xyz { val } else { x + val },
                         "Y" => new_y = if absolute_xyz { val } else { y + val },
@@ -100,10 +102,7 @@ pub(super) fn parse_gcode_bytes(bytes: &[u8]) -> Vec<InternalLayer> {
                 }
 
                 // Z-change layer boundary (fallback when no ;LAYER_CHANGE).
-                if !seen_layer_change_comment
-                    && (new_z - prev_z).abs() > 1e-6
-                    && new_z > prev_z
-                {
+                if !seen_layer_change_comment && (new_z - prev_z).abs() > 1e-6 && new_z > prev_z {
                     let finished = std::mem::replace(&mut current, InternalLayer::new(new_z));
                     layers.push(finished);
                 }
@@ -225,7 +224,10 @@ G1 X20 Y10 Z0.4 E7.0
         assert_eq!(Role::from_type_comment("Infill"), Role::Infill);
         assert_eq!(Role::from_type_comment("Sparse infill"), Role::Infill);
         assert_eq!(Role::from_type_comment("Top surface"), Role::TopSurface);
-        assert_eq!(Role::from_type_comment("Bottom surface"), Role::BottomSurface);
+        assert_eq!(
+            Role::from_type_comment("Bottom surface"),
+            Role::BottomSurface
+        );
     }
 
     #[test]
