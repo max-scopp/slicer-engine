@@ -2,11 +2,15 @@ import { HttpClient } from '@angular/common/http';
 import { Injectable, computed, effect, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { environment } from '../../environments/environment';
-import { WsSlicingParams } from '../../generated/slicer-engine-ws-client-message-v1';
+import {
+  SceneObjectSliceDto,
+  SlicingParams,
+} from '../../generated/slicer-engine-ws-client-message-v1';
 import { ServerMessage } from '../../generated/slicer-engine-ws-server-message-v1';
 import { DEFAULT_SETTINGS } from '../models/slice-settings.model';
 import { History } from './history';
 import { NotificationService } from './notifications';
+import { SceneEngineService } from './scene-engine.service';
 import { SlicerConnection } from './slicer-connection';
 import { SlicerFile } from './slicer-file';
 
@@ -61,13 +65,14 @@ export class Slicer {
   private readonly slicerFile = inject(SlicerFile);
   private readonly history = inject(History);
   private readonly notifications = inject(NotificationService);
+  private readonly sceneEngine = inject(SceneEngineService);
 
   /**
    * Currently-selected file. Sourced from {@link SlicerFile} so the upload
    * page and the viewer page share a single source of truth.
    */
   readonly selectedFile = this.slicerFile.selectedFile;
-  readonly settings = signal<WsSlicingParams>(DEFAULT_SETTINGS);
+  readonly settings = signal<SlicingParams>(DEFAULT_SETTINGS);
   readonly status = signal<SlicerStatus>('idle');
   readonly outputLog = signal<string[]>([]);
   readonly phaseTimings = signal<PhaseTimingData[]>([]);
@@ -246,8 +251,62 @@ export class Slicer {
     ]);
   }
 
-  updateSettings(patch: Partial<WsSlicingParams>): void {
+  updateSettings(patch: Partial<SlicingParams>): void {
     this.settings.update((current) => ({ ...current, ...patch }));
+  }
+
+  /**
+   * Build the wire-format scene that goes alongside a slice request.
+   *
+   * The frontend owns its scene as a signal of {@link SceneObjectSnapshot}s
+   * inside {@link SceneEngineService}. Slicing on the server has to see the
+   * exact same objects with the exact same transforms, otherwise the user's
+   * translate/rotate/scale/center/drop-to-floor edits silently disappear at
+   * slice time. We rebuild the snapshot fresh on every call so transient
+   * sync issues are impossible.
+   *
+   * Each entry references the original upload by `file_id` (the request
+   * UUID returned by `POST /api/upload`). The server reads the bytes from
+   * the work directory, applies the transform via `apply_transform`, and
+   * merges the resulting meshes before `process_mesh`.
+   *
+   * **Single-upload caveat.** Today every scene object is assumed to have
+   * come from the same upload (`uploadFileId`). The wire format already
+   * supports per-object `file_id`s for a true multi-file scene, but the
+   * `SceneObjectSnapshot` produced by the WASM engine doesn't yet carry
+   * the originating upload UUID. When the multi-upload UX lands, replace
+   * the constant `uploadFileId` here with `o.file_id` (or whichever field
+   * the snapshot grows) — the server side already handles per-object
+   * `file_id` correctly.
+   */
+  private buildSceneSnapshot(uploadFileId: string): SceneObjectSliceDto[] {
+    const objects = this.sceneEngine.objects();
+    if (objects.length === 0) {
+      // Scene engine hasn't been populated (e.g. legacy slice-new flow that
+      // hasn't loaded the file into the WASM scene yet). Fall back to a
+      // single identity-transform object so the server still slices the
+      // uploaded file with the user's chosen settings.
+      return [
+        {
+          file_id: uploadFileId,
+          format: 'stl',
+          transform: {
+            translation: [0, 0, 0],
+            euler_xyz_deg: [0, 0, 0],
+            scale: [1, 1, 1],
+          },
+        },
+      ];
+    }
+    return objects.map((o) => ({
+      file_id: uploadFileId,
+      format: 'stl',
+      transform: {
+        translation: o.translation,
+        euler_xyz_deg: o.euler_xyz_deg,
+        scale: o.scale,
+      },
+    }));
   }
 
   async slice(): Promise<void> {
@@ -266,7 +325,12 @@ export class Slicer {
     if (existingUuid) {
       this.status.set('slicing');
       this.outputLog.update((log) => [...log, `Starting slice job (request: ${existingUuid})…`]);
-      this.ws.send({ type: 'Slice', request_uuid: existingUuid, settings: this.settings() });
+      this.ws.send({
+        type: 'Slice',
+        request_uuid: existingUuid,
+        scene: this.buildSceneSnapshot(existingUuid),
+        settings: this.settings(),
+      });
       return;
     }
 
@@ -299,6 +363,7 @@ export class Slicer {
       this.ws.send({
         type: 'Slice',
         request_uuid: requestUuid,
+        scene: this.buildSceneSnapshot(requestUuid),
         settings: this.settings(),
       });
     } catch (error) {

@@ -156,12 +156,14 @@ async fn handle_ws_session(
             AggregatedMessage::Text(text) => match serde_json::from_str::<ClientMessage>(&text) {
                 Ok(ClientMessage::Slice {
                     request_uuid,
+                    scene: scene_objects,
                     settings,
                 }) => {
                     logger.log_debug(&format!("[WS] Processing slice request: {}", request_uuid));
                     handle_slice(
                         &mut session,
                         request_uuid,
+                        scene_objects,
                         settings,
                         db.clone(),
                         work_dir.clone(),
@@ -217,7 +219,8 @@ async fn handle_ws_session(
 async fn handle_slice(
     session: &mut actix_ws::Session,
     request_uuid: String,
-    ws_params: crate::ws_protocol::WsSlicingParams,
+    scene_objects: Option<Vec<crate::ws_protocol::SceneObjectSliceDto>>,
+    params: Box<crate::settings::params::SlicingParams>,
     db: Arc<crate::db::Database>,
     work_dir: std::path::PathBuf,
     base_url: String,
@@ -239,59 +242,104 @@ async fn handle_slice(
         }
     };
 
-    // Fetch session from database
-    let session_result = {
-        let db = db.clone();
-        tokio::task::spawn_blocking(move || db.get_request(uuid)).await
-    };
+    // Build the list of (file_path, format, transform) entries that we will
+    // bake and merge before slicing. When the client supplied a `scene`, we
+    // honour every placed object — including transforms applied in the UI.
+    // Otherwise we fall back to the legacy single-mesh path that just slices
+    // the uploaded file as-is.
+    use crate::scene::Transform;
+    let mut slice_inputs: Vec<(std::path::PathBuf, crate::scene::MeshFormat, Transform, u64)> =
+        Vec::new();
 
-    let session_info = match session_result {
-        Ok(Ok(Some(s))) => s,
-        Ok(Ok(None)) => {
-            send_or_return!(ServerMessage::error("Request not found in database"));
-            return;
-        }
-        Ok(Err(e)) => {
-            send_or_return!(ServerMessage::error(format!("Database error: {e}")));
-            return;
-        }
-        Err(e) => {
-            send_or_return!(ServerMessage::error(format!("Task error: {e}")));
-            return;
-        }
-    };
-
-    let stl_file_path = match session_info.upload_file_path {
-        Some(p) => p,
-        None => {
+    if let Some(scene) = scene_objects {
+        if scene.is_empty() {
             send_or_return!(ServerMessage::error(
-                "No upload file associated with request"
+                "Slice request has an empty `scene` — add at least one object before slicing"
             ));
             return;
         }
-    };
+        for obj in scene {
+            // Resolve `file_id` against the upload work dir. Uploads are
+            // saved as `{uuid}.stl` regardless of the original extension
+            // (see `handlers::upload_handler`).
+            let file_uuid = match Uuid::parse_str(&obj.file_id) {
+                Ok(u) => u,
+                Err(e) => {
+                    send_or_return!(ServerMessage::error(format!(
+                        "Invalid scene file_id '{}': {}",
+                        obj.file_id, e
+                    )));
+                    return;
+                }
+            };
+            let path = work_dir.join(format!("{}.stl", file_uuid));
+            let size = match std::fs::metadata(&path) {
+                Ok(m) => m.len(),
+                Err(e) => {
+                    send_or_return!(ServerMessage::error(format!(
+                        "Scene object references missing upload {}: {}",
+                        path.display(),
+                        e
+                    )));
+                    return;
+                }
+            };
+            let transform = Transform::from_euler_xyz_deg(
+                obj.transform.translation,
+                obj.transform.euler_xyz_deg,
+                obj.transform.scale,
+            );
+            slice_inputs.push((path, obj.format, transform, size));
+        }
+    } else {
+        // Legacy path: look up the upload by request UUID.
+        let session_result = {
+            let db = db.clone();
+            tokio::task::spawn_blocking(move || db.get_request(uuid)).await
+        };
+        let session_info = match session_result {
+            Ok(Ok(Some(s))) => s,
+            Ok(Ok(None)) => {
+                send_or_return!(ServerMessage::error("Request not found in database"));
+                return;
+            }
+            Ok(Err(e)) => {
+                send_or_return!(ServerMessage::error(format!("Database error: {e}")));
+                return;
+            }
+            Err(e) => {
+                send_or_return!(ServerMessage::error(format!("Task error: {e}")));
+                return;
+            }
+        };
 
+        let stl_file_path = match session_info.upload_file_path {
+            Some(p) => p,
+            None => {
+                send_or_return!(ServerMessage::error(
+                    "No upload file associated with request"
+                ));
+                return;
+            }
+        };
+
+        slice_inputs.push((
+            stl_file_path,
+            crate::scene::MeshFormat::Stl,
+            Transform::IDENTITY,
+            session_info.upload_file_size.unwrap_or(0) as u64,
+        ));
+    }
+
+    let total_bytes: u64 = slice_inputs.iter().map(|(_, _, _, sz)| *sz).sum();
     send_or_return!(ServerMessage::log_info(format!(
-        "Loading STL from {}: {} bytes…",
-        stl_file_path.display(),
-        session_info.upload_file_size.unwrap_or(0)
+        "Slicing {} object(s), {} bytes total…",
+        slice_inputs.len(),
+        total_bytes
     )));
 
-    use crate::settings::params::SlicingParams;
-    let params = SlicingParams {
-        layer_height: ws_params.layer_height,
-        print_speed: ws_params.print_speed,
-        nozzle_temp: ws_params.nozzle_temp,
-        bed_temp: ws_params.bed_temp,
-        infill_density: ws_params.infill_density / 100.0,
-        infill_pattern: ws_params.infill_pattern,
-        infill_base_angle: ws_params.infill_angle,
-        surface_infill_angle: ws_params.infill_angle,
-        ..SlicingParams::default()
-    };
-
-    // Run blocking work (mesh parse + slice + G-code gen) on the thread pool.
-    // Messages are forwarded to the WebSocket via an mpsc channel.
+    // Run blocking work (mesh parse + bake + merge + slice + G-code gen) on
+    // the thread pool. Messages are forwarded to the WebSocket via mpsc.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
 
     let gcode_output_path = work_dir.join(format!("{}.gcode", uuid));
@@ -314,29 +362,51 @@ async fn handle_slice(
         // Start overall timing for the entire process
         let t_total = PhaseTimer::start(phases::TOTAL, &logger);
 
-        let stl_bytes = match std::fs::read(&stl_file_path) {
-            Ok(b) => b,
-            Err(e) => {
-                let msg = ServerMessage::error(format!("Failed to read STL file: {e}"));
-                let _ = tx.blocking_send(to_json(&msg));
-                return;
-            }
-        };
-
+        // Load each scene object, bake its transform, and concatenate faces
+        // into a single combined mesh that the slicer pipeline sees.
         let t_load = PhaseTimer::start(phases::MESH_LOAD, &logger);
-        let mesh = match crate::mesh::io::read_stl_from_bytes(&stl_bytes) {
-            Ok(m) => m,
-            Err(e) => {
-                let msg = ServerMessage::error(format!(
-                    "Failed to parse STL (unsupported format or corrupted file): {e}"
-                ));
-                let _ = tx.blocking_send(to_json(&msg));
-                return;
-            }
-        };
+        let mut combined = crate::mesh::types::Mesh::new();
+        for (path, format, transform, _) in &slice_inputs {
+            let bytes = match std::fs::read(path) {
+                Ok(b) => b,
+                Err(e) => {
+                    let msg = ServerMessage::error(format!(
+                        "Failed to read mesh file {}: {}",
+                        path.display(),
+                        e
+                    ));
+                    let _ = tx.blocking_send(to_json(&msg));
+                    return;
+                }
+            };
+            let mesh = match crate::scene::load_bytes(&bytes, *format) {
+                Ok(m) => m,
+                Err(e) => {
+                    let msg = ServerMessage::error(format!(
+                        "Failed to parse mesh {} (unsupported format or corrupted file): {}",
+                        path.display(),
+                        e
+                    ));
+                    let _ = tx.blocking_send(to_json(&msg));
+                    return;
+                }
+            };
+            // Bake the per-object transform exactly once, at the slicer
+            // boundary — see the SSOT contract in src/scene/README.md.
+            let baked = crate::scene::apply_transform(&mesh, transform);
+            combined.vertices.extend(baked.vertices);
+            combined.faces.extend(baked.faces);
+        }
+        if combined.faces.is_empty() {
+            let msg = ServerMessage::error(
+                "Combined scene has no triangles — nothing to slice".to_string(),
+            );
+            let _ = tx.blocking_send(to_json(&msg));
+            return;
+        }
         t_load.finish();
 
-        let layers = crate::core::process_mesh(&mesh, &params, &logger);
+        let layers = crate::core::process_mesh(&combined, &params, &logger);
         let layer_count = layers.len();
 
         let progress = ServerMessage::Progress {
