@@ -131,14 +131,15 @@ export class SlicePreviewControls {
     const layer = handle.getLayer(this.preview.layerMax());
     const floatsPerSegment = 6;
     return (
-      layer.outer_wall.length +
-      layer.inner_wall.length +
-      layer.top_surface.length +
-      layer.bottom_surface.length +
-      layer.infill.length +
-      layer.travel.length +
-      layer.other.length
-    ) / floatsPerSegment;
+      (layer.outer_wall.length +
+        layer.inner_wall.length +
+        layer.top_surface.length +
+        layer.bottom_surface.length +
+        layer.infill.length +
+        layer.travel.length +
+        layer.other.length) /
+      floatsPerSegment
+    );
   });
 
   /** Segment slider integer value derived from the fractional signal and real segment count. */

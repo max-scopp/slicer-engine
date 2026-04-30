@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
-import { GcodePreviewService } from '../../services/gcode-preview.service';
 import { NexusSlicingShell } from '../../nexus/layout/slicing-shell/slicing-shell';
+import { GcodePreviewService } from '../../services/gcode-preview.service';
 import { Slicer } from '../../services/slicer';
 import { ViewerControl } from '../../services/viewer-control';
 import { Icon } from '../../shared/icon/icon';
@@ -51,11 +51,7 @@ export class ThreeDViewToolbar {
 
     // If no slice exists yet and we're not already slicing, kick one off.
     const status = this.slicer.status();
-    if (
-      !this.gcodePreview.gcodeHandle() &&
-      status !== 'slicing' &&
-      status !== 'uploading'
-    ) {
+    if (!this.gcodePreview.gcodeHandle() && status !== 'slicing' && status !== 'uploading') {
       void this.slicer.slice();
     }
   }
