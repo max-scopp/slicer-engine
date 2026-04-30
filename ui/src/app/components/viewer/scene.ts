@@ -9,10 +9,10 @@ import {
   Group,
   LineBasicMaterial,
   LineSegments,
-  MOUSE,
   Material,
   Mesh,
   MeshBasicMaterial,
+  MOUSE,
   Object3D,
   PerspectiveCamera,
   Plane,
@@ -28,33 +28,42 @@ import {
 } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { PrintAreaConfig } from '../../services/print-area';
+import type { ObjectMode } from '../../services/viewer-control';
+import { computeSelectionCentroid, GizmoDelta, GizmoManager, raycastFace } from './gizmo';
 
 /**
  * Callbacks invoked by {@link ViewerScene} when the user interacts with a
  * registered selectable object. The viewer wires these to the application's
  * selection store (see `PrintArea`); the scene itself knows nothing
  * about the store, only the contract.
+ *
+ * Object manipulation (translate / rotate / scale / pull-to-floor) is
+ * routed through {@link SceneGizmoHandlers} instead — the selection
+ * handlers only deal with selection itself.
  */
 export interface SceneSelectionHandlers {
   /** A bare click on a selectable object — `additive` for ctrl/⌘/shift. */
   select(id: string, additive: boolean): void;
-  /** Click landed on empty space (currently unused — orbit takes over). */
+  /** Click landed on empty space (deselect). */
   clearSelection(): void;
-  /**
-   * Drag is about to begin on the current selection. Return `true` if the
-   * drag should proceed (i.e. there is something to drag), `false` to abort.
-   */
-  beginDragSelected(): boolean;
-  /** Pointer moved by `(dx, dy)` mm in machine space relative to drag start. */
-  dragSelectedBy(dx: number, dy: number): void;
-  /** Drag finished (pointer up). */
-  endDrag(): void;
-  /** Drag cancelled (pointer cancel / interrupted). */
-  cancelDrag(): void;
+}
+
+/**
+ * Callbacks invoked by {@link ViewerScene} during gizmo-driven object
+ * manipulation. Each callback receives the **list of currently-selected**
+ * object ids — the host is responsible for dispatching one WASM op per id.
+ */
+export interface SceneGizmoHandlers {
+  /** Fired on each frame's incremental delta during a drag. */
+  delta(ids: readonly string[], delta: GizmoDelta): void;
+  /** Fired when the gesture finishes (pointer-up). Flush history here. */
+  end(): void;
+  /** Fired when a face has been picked in `pullToFloor` mode. */
+  facePicked(objectId: string, faceIndex: number): void;
 }
 
 export type ViewerView = '3D' | 'Top' | 'Front';
-export type ViewerCursorMode = 'orbit' | 'pan' | 'zoom' | 'rotate' | 'pullToSurface';
+export type ViewerCursorMode = 'orbit' | 'pan' | 'zoom';
 
 /** Direction vector (camera → target inverted) of the default 3D framing. */
 const DEFAULT_VIEW_DIR = new Vector3(1, -1, 0.8).normalize();
@@ -286,17 +295,24 @@ export class ViewerScene {
    */
   selectionHandlers: SceneSelectionHandlers | null = null;
 
+  /**
+   * Hook for gizmo-driven object manipulation (translate / rotate / scale)
+   * and the `pullToFloor` face-pick workflow. Set by the viewer.
+   */
+  gizmoHandlers: SceneGizmoHandlers | null = null;
+
   // --- Selection / drag state --------------------------------------------
   private currentCursorMode: ViewerCursorMode = 'orbit';
+  /** Object-manipulation mode driving the gizmo and pull-to-floor pick. */
+  private currentObjectMode: ObjectMode = 'none';
+  /** On-canvas transform gizmo manager (created in the constructor). */
+  private readonly gizmo: GizmoManager;
   private readonly selectables = new Map<string, Object3D>();
   private currentSelectedIds: ReadonlySet<string> = new Set();
   /** Per-mesh original emissive snapshots so highlight is reversible. */
   private readonly originalEmissive = new Map<Mesh, { color: Color; intensity: number }[]>();
   private readonly raycaster = new Raycaster();
-  /** Build-plate plane (Z = 0) used to project pointer rays into mm. */
-  private readonly groundPlane = new Plane(new Vector3(0, 0, 1), 0);
   private readonly ndcScratch = new Vector2();
-  private readonly groundHitScratch = new Vector3();
   private pressState: SelectionPressState | null = null;
   /**
    * Tracks a left-button press that landed on empty space (no selectable
@@ -393,6 +409,19 @@ export class ViewerScene {
     this.controls.maxDistance = 100_000;
     this.installAutoscrollZoom();
     this.installSelectionHandlers();
+    this.gizmo = new GizmoManager(this.scene, this.camera, this.renderer);
+    this.gizmo.onDragStart = () => {
+      // Park OrbitControls so the gizmo gets exclusive pointer ownership.
+      this.controls.enabled = false;
+    };
+    this.gizmo.onDelta = (delta) => {
+      const ids = Array.from(this.currentSelectedIds);
+      this.gizmoHandlers?.delta(ids, delta);
+    };
+    this.gizmo.onDragEnd = () => {
+      this.controls.enabled = true;
+      this.gizmoHandlers?.end();
+    };
     this.scene.add(new AmbientLight(0xffffff, 0.55));
     const dir = new DirectionalLight(0xffffff, 0.9);
     dir.position.set(200, 300, 400);
@@ -514,6 +543,28 @@ export class ViewerScene {
       }
     }
     this.currentSelectedIds = ids;
+    // Refresh the gizmo position whenever the selection changes \u2014 any
+    // currently-active gizmo (translate/rotate/scale) follows the new
+    // centroid, and a now-empty selection hides the gizmo entirely.
+    this.gizmo.setCentroid(this.computeSelectionCentroid());
+  }
+
+  /**
+   * World-space AABB centroid of the currently-selected objects, or `null`
+   * if nothing is selected. Drives gizmo placement.
+   */
+  private computeSelectionCentroid(): Vector3 | null {
+    if (this.currentSelectedIds.size === 0) {
+      return null;
+    }
+    const objects: Object3D[] = [];
+    for (const id of this.currentSelectedIds) {
+      const obj = this.selectables.get(id);
+      if (obj) {
+        objects.push(obj);
+      }
+    }
+    return computeSelectionCentroid(objects);
   }
 
   /**
@@ -691,7 +742,6 @@ export class ViewerScene {
     const MIDDLE = null as unknown as MOUSE;
     switch (mode) {
       case 'orbit':
-      case 'rotate':
         c.mouseButtons = { LEFT: MOUSE.ROTATE, MIDDLE, RIGHT: MOUSE.PAN };
         // Two-finger gestures (pinch-zoom + pan + twist-to-roll) are handled
         // entirely by {@link installCustomTwoFingerControls}; disable the
@@ -706,14 +756,18 @@ export class ViewerScene {
         c.mouseButtons = { LEFT: MOUSE.DOLLY, MIDDLE, RIGHT: MOUSE.PAN };
         c.touches = { ONE: TOUCH.DOLLY_PAN, TWO: TOUCH_DISABLED };
         break;
-      case 'pullToSurface':
-        // Placeholder: surface-pulling is not implemented yet, so we simply
-        // freeze the controls to make the active mode visually distinct.
-        c.enableRotate = false;
-        c.enablePan = false;
-        c.enableZoom = false;
-        break;
     }
+  }
+
+  /**
+   * Switch the on-canvas object-manipulation gizmo. `'none'` and
+   * `'pullToFloor'` hide the handles \u2014 `'pullToFloor'` then waits for
+   * the next pointer-down anywhere on the model and routes it to the
+   * face-pick handler instead.
+   */
+  setObjectMode(mode: ObjectMode): void {
+    this.currentObjectMode = mode;
+    this.gizmo.setMode(mode, this.computeSelectionCentroid());
   }
 
   dispose(): void {
@@ -726,6 +780,7 @@ export class ViewerScene {
     this.themeObserver.disconnect();
     this.uninstallAutoscrollZoom();
     this.uninstallSelectionHandlers();
+    this.gizmo.dispose();
     this.clearContent();
     this.controls.dispose();
     this.renderer.dispose();
@@ -766,7 +821,29 @@ export class ViewerScene {
     if (event.button !== 0 || !this.selectionHandlers) {
       return;
     }
-    if (this.currentCursorMode !== 'orbit' && this.currentCursorMode !== 'rotate') {
+    // The transform gizmo handles its own pointer events on the renderer's
+    // domElement (it was constructed with the same element). When the
+    // cursor is over a handle, TC will claim the gesture; we must not
+    // start a selection raycast on the same frame.
+    if (this.gizmo.isHovering() || this.gizmo.isDragging()) {
+      return;
+    }
+    // Pull-to-floor mode: any click on any face dispatches an
+    // `align_face_to_floor` op via the gizmo handlers, regardless of
+    // current selection. Camera orbit is suppressed for this gesture.
+    if (this.currentObjectMode === 'pullToFloor') {
+      const hit = this.pickFace(event);
+      if (hit) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.gizmoHandlers?.facePicked(hit.objectId, hit.faceIndex);
+      }
+      return;
+    }
+    // Selection requires the camera mode to be `'orbit'` \u2014 in pan/zoom
+    // we don't want left-click to also select, since the user explicitly
+    // chose a navigation mode.
+    if (this.currentCursorMode !== 'orbit') {
       return;
     }
     if (this.selectables.size === 0) {
@@ -774,7 +851,7 @@ export class ViewerScene {
     }
     const hitId = this.raycastSelectable(event);
     if (hitId === null) {
-      // Don't steal empty-bed clicks — let OrbitControls orbit the camera.
+      // Don't steal empty-bed clicks \u2014 let OrbitControls orbit the camera.
       // But remember the press so a clean (non-drag) release can deselect.
       if (this.currentSelectedIds.size > 0) {
         this.emptyPressState = {
@@ -793,8 +870,6 @@ export class ViewerScene {
       downY: event.clientY,
       hitId,
       additive: event.ctrlKey || event.metaKey || event.shiftKey,
-      dragStarted: false,
-      startWorld: null,
     };
   };
 
@@ -804,7 +879,7 @@ export class ViewerScene {
       const dxPx = event.clientX - eps.downX;
       const dyPx = event.clientY - eps.downY;
       if (Math.hypot(dxPx, dyPx) >= SELECTION_DRAG_THRESHOLD_PX) {
-        // Promoted to an orbit drag — abandon the deselect intent.
+        // Promoted to an orbit drag \u2014 abandon the deselect intent.
         this.emptyPressState = null;
       }
     }
@@ -812,50 +887,15 @@ export class ViewerScene {
     if (!ps || event.pointerId !== ps.pointerId || !this.selectionHandlers) {
       return;
     }
-    if (!ps.dragStarted) {
-      const dxPx = event.clientX - ps.downX;
-      const dyPx = event.clientY - ps.downY;
-      if (Math.hypot(dxPx, dyPx) < SELECTION_DRAG_THRESHOLD_PX) {
-        return;
-      }
-      // Promote the press into a drag. If the clicked object isn't already
-      // part of the selection, select it first (respecting the additive
-      // modifier captured at pointerdown) so the drag operates on it.
-      if (!this.currentSelectedIds.has(ps.hitId)) {
-        this.selectionHandlers.select(ps.hitId, ps.additive);
-      }
-      const startWorld = this.intersectGround(event);
-      if (!startWorld) {
-        // Pointer ray is parallel to the bed (extreme grazing angle); abort
-        // the drag and treat the gesture as a click on pointerup.
-        return;
-      }
-      const ok = this.selectionHandlers.beginDragSelected();
-      if (!ok) {
-        return;
-      }
-      ps.startWorld = startWorld.clone();
-      ps.dragStarted = true;
-      this.controls.enabled = false;
-      const el = this.renderer.domElement;
-      try {
-        el.setPointerCapture(event.pointerId);
-      } catch {
-        // Capture can fail if another listener already grabbed it; harmless.
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      return;
+    // The selectable was clicked but the user is now dragging. Object
+    // movement always goes through the gizmo \u2014 a bare drag-on-mesh just
+    // promotes to a camera orbit so the model can be inspected without
+    // a separate mode switch.
+    const dxPx = event.clientX - ps.downX;
+    const dyPx = event.clientY - ps.downY;
+    if (Math.hypot(dxPx, dyPx) >= SELECTION_DRAG_THRESHOLD_PX) {
+      this.pressState = null;
     }
-    const cur = this.intersectGround(event);
-    if (!cur || !ps.startWorld) {
-      return;
-    }
-    const dx = cur.x - ps.startWorld.x;
-    const dy = cur.y - ps.startWorld.y;
-    this.selectionHandlers.dragSelectedBy(dx, dy);
-    event.preventDefault();
-    event.stopPropagation();
   };
 
   private onSelectionPointerUp = (event: PointerEvent): void => {
@@ -873,17 +913,10 @@ export class ViewerScene {
       return;
     }
     this.pressState = null;
-    const el = this.renderer.domElement;
-    if (el.hasPointerCapture(event.pointerId)) {
-      el.releasePointerCapture(event.pointerId);
-    }
-    if (ps.dragStarted) {
-      this.controls.enabled = true;
-      this.selectionHandlers?.endDrag();
-    } else {
-      // Pure click on a selectable — apply selection now.
-      this.selectionHandlers?.select(ps.hitId, ps.additive);
-    }
+    // Pure click on a selectable \u2014 apply selection now. (Drags were
+    // already cleared in `onSelectionPointerMove`, leaving OrbitControls
+    // free to handle the camera orbit.)
+    this.selectionHandlers?.select(ps.hitId, ps.additive);
     event.preventDefault();
     event.stopPropagation();
   };
@@ -898,6 +931,19 @@ export class ViewerScene {
     }
     this.cancelActiveDrag();
   };
+
+  /**
+   * Raycast every selectable for `event` and return the front-most face
+   * (object id + triangle index). Returns `null` if no selectable was hit.
+   */
+  private pickFace(event: PointerEvent): { objectId: string; faceIndex: number } | null {
+    const ndc = this.toNdc(event, this.ndcScratch);
+    const targets = Array.from(this.selectables.values());
+    if (targets.length === 0) {
+      return null;
+    }
+    return raycastFace(this.raycaster, this.camera, ndc, targets);
+  }
 
   /** Convert pointer to NDC and raycast against every registered selectable. */
   private raycastSelectable(event: PointerEvent): string | null {
@@ -927,14 +973,6 @@ export class ViewerScene {
     return null;
   }
 
-  /** Project the pointer's ray onto the bed plane (Z=0) in machine mm. */
-  private intersectGround(event: PointerEvent): Vector3 | null {
-    const ndc = this.toNdc(event, this.ndcScratch);
-    this.raycaster.setFromCamera(ndc, this.camera);
-    const out = this.raycaster.ray.intersectPlane(this.groundPlane, this.groundHitScratch);
-    return out;
-  }
-
   /** Pointer client coords → normalised device coords for the renderer canvas. */
   private toNdc(event: PointerEvent, out: Vector2): Vector2 {
     const rect = this.renderer.domElement.getBoundingClientRect();
@@ -944,24 +982,15 @@ export class ViewerScene {
   }
 
   /**
-   * Cancel any drag currently in flight without committing positions. Called
-   * when the underlying selectable goes away (clearContent), the cursor mode
-   * changes, or the OS cancels the pointer (touch interrupt, etc.).
+   * Cancel any selection press currently in flight without committing
+   * positions. Called when the underlying selectable goes away
+   * (clearContent), the cursor mode changes, or the OS cancels the pointer
+   * (touch interrupt, etc.). Object-manipulation drags are owned by the
+   * gizmo and clean themselves up on `mouseUp`.
    */
   private cancelActiveDrag(): void {
-    const ps = this.pressState;
     this.pressState = null;
-    if (!ps) {
-      return;
-    }
-    const el = this.renderer.domElement;
-    if (el.hasPointerCapture(ps.pointerId)) {
-      el.releasePointerCapture(ps.pointerId);
-    }
-    if (ps.dragStarted) {
-      this.controls.enabled = true;
-      this.selectionHandlers?.cancelDrag();
-    }
+    this.emptyPressState = null;
   }
 
   /**
@@ -1041,6 +1070,13 @@ export class ViewerScene {
     // precision stays tight across the full zoom range without needing the
     // (mobile-hostile) logarithmicDepthBuffer extension.
     this.updateNearFar();
+    // Keep the gizmo glued to the selection centroid (which can drift each
+    // frame if WASM transforms have been updated since the last selection
+    // change) and resize it to a roughly fixed screen size.
+    if (!this.gizmo.isDragging()) {
+      this.gizmo.setCentroid(this.computeSelectionCentroid());
+    }
+    this.gizmo.update();
     this.renderer.render(this.scene, this.camera);
     this.publishCameraState();
     this.publishFps(now, dt);
@@ -2117,10 +2153,6 @@ interface SelectionPressState {
   hitId: string;
   /** Whether ctrl/⌘/shift was held at pointerdown (additive selection). */
   additive: boolean;
-  /** Set once the drag threshold is exceeded and OrbitControls is parked. */
-  dragStarted: boolean;
-  /** World-space hit point on the bed plane at the moment drag started. */
-  startWorld: Vector3 | null;
 }
 
 interface GridTransition {
