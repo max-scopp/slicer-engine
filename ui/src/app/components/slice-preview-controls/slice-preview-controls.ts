@@ -60,9 +60,9 @@ export class SlicePreviewControls {
   }
 
   protected onSegmentInput(event: Event): void {
-    const raw = parseFloat((event.target as HTMLInputElement).value);
-    // Slider goes 0–1000; convert to fraction.
-    this.preview.setSegmentProgress(raw / 1000);
+    const raw = parseInt((event.target as HTMLInputElement).value, 10);
+    const total = this.layerSegmentCount();
+    this.preview.setSegmentProgress(total > 0 ? raw / total : 1);
   }
 
   // ── Scroll-wheel handlers ────────────────────────────────────────────────
@@ -83,10 +83,13 @@ export class SlicePreviewControls {
   /** Wheel over the nozzle/segment slider. */
   protected onWheelSegment(event: WheelEvent): void {
     event.preventDefault();
-    // Scroll up = advance nozzle.
-    const step = event.deltaY < 0 ? 25 : -25;
-    const current = Math.round(this.preview.segmentProgress() * 1000);
-    this.preview.setSegmentProgress((current + step) / 1000);
+    const total = this.layerSegmentCount();
+    if (total === 0) {
+      return;
+    }
+    const step = event.deltaY < 0 ? 1 : -1;
+    const current = Math.round(this.preview.segmentProgress() * total);
+    this.preview.setSegmentProgress((current + step) / total);
   }
 
   // ── Toggle handlers ──────────────────────────────────────────────────────
@@ -119,8 +122,27 @@ export class SlicePreviewControls {
     return ((count - 1 - this.preview.layerMax()) / (count - 1)) * 100;
   });
 
-  /** Segment slider integer value (0–1000) derived from the fractional signal. */
+  /** Total move segments in the current top layer, derived from its geometry buffers. */
+  protected readonly layerSegmentCount = computed(() => {
+    const handle = this.preview.gcodeHandle();
+    if (!handle) {
+      return 0;
+    }
+    const layer = handle.getLayer(this.preview.layerMax());
+    const floatsPerSegment = 6;
+    return (
+      layer.outer_wall.length +
+      layer.inner_wall.length +
+      layer.top_surface.length +
+      layer.bottom_surface.length +
+      layer.infill.length +
+      layer.travel.length +
+      layer.other.length
+    ) / floatsPerSegment;
+  });
+
+  /** Segment slider integer value derived from the fractional signal and real segment count. */
   protected readonly segmentSliderValue = computed(() =>
-    Math.round(this.preview.segmentProgress() * 1000),
+    Math.round(this.preview.segmentProgress() * this.layerSegmentCount()),
   );
 }

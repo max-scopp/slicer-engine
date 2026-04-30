@@ -92,18 +92,14 @@
     </div>
 
     <!-- ── Nozzle scrub slider — always visible ── -->
-    <div class="slider-row segment-row">
-      <span class="segment-label">Nozzle</span>
-      <input
-        type="range"
-        class="slider"
-        min="0"
-        max="1000"
-        [value]="segmentSliderValue()"
-        (input)="onSegmentInput($event)"
-        (wheel)="onWheelSegment($event)"
-      />
-    </div>
+    <input
+      type="range"
+      min="0"
+      [max]="layerSegmentCount()"
+      [value]="segmentSliderValue()"
+      (input)="onSegmentInput($event)"
+      (wheel)="onWheelSegment($event)"
+    />
 
     <!-- ── Role legend ── -->
     <div class="legend">

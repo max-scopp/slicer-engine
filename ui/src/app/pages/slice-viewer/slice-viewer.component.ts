@@ -1,11 +1,12 @@
-import { ChangeDetectionStrategy, Component, computed, effect, inject } from '@angular/core';
+import { ChangeDetectionStrategy, Component, effect, inject } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute } from '@angular/router';
 import { map } from 'rxjs';
-import { Viewer, ViewerMode } from '../../components/viewer';
+import { Viewer } from '../../components/viewer';
 import { NotificationService } from '../../services/notifications';
 import { Slicer } from '../../services/slicer';
 import { SlicerFile } from '../../services/slicer-file';
+import { ViewerControl } from '../../services/viewer-control';
 
 @Component({
   selector: 'nexus-slice-viewer',
@@ -20,6 +21,7 @@ export class SliceViewerComponent {
   readonly #slicer = inject(Slicer);
   readonly #slicerFile = inject(SlicerFile);
   readonly #notifications = inject(NotificationService);
+  readonly #viewerControl = inject(ViewerControl);
 
   readonly requestUuid = toSignal(
     this.#activatedRoute.params.pipe(map((params) => params['requestUuid'] as string | undefined)),
@@ -28,18 +30,19 @@ export class SliceViewerComponent {
   /** The user-selected STL (when available) is shown in model mode. */
   readonly modelFile = this.#slicerFile.selectedFile;
 
-  /**
-   * Default to the raw-mesh viewer until a slice is finished. We only switch to
-   * the G-code preview once the slicer reports `done` for the current session.
-   */
-  readonly viewerMode = computed<ViewerMode>(() => {
-    const status = this.#slicer.status();
-    return status === 'done' ? 'gcode' : 'model';
-  });
+  /** Driven by the toolbar toggle; auto-advances to 'gcode' when a slice completes. */
+  readonly viewerMode = this.#viewerControl.viewMode;
 
   #lastFetchedUuid: string | null = null;
 
   constructor() {
+    // Auto-switch to gcode view as soon as a slice completes.
+    effect(() => {
+      if (this.#slicer.status() === 'done') {
+        this.#viewerControl.viewMode.set('gcode');
+      }
+    });
+
     // Always reload the STL whenever the route UUID changes — the in-memory
     // file may belong to a different request (e.g. navigating between history
     // entries) or may be absent entirely (reload / deep-link).

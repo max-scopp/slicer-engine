@@ -534,7 +534,6 @@ export class Viewer implements OnDestroy {
     // registry so the existing raycast / drag pointer plumbing recognises
     // it. The drag handlers translate it back to a bigint.
     this.scene.registerSelectable(String(id), mesh);
-    this.scene.fitToContent();
     this.status.set('ready');
     this.loadComplete.emit({ mode: 'model', segments: 0 });
   }
@@ -568,8 +567,6 @@ export class Viewer implements OnDestroy {
     gcode.showRange(min, max);
     gcode.applyProgress(max, progress);
     gcode.applyHiddenRoles(hidden);
-
-    scene.fitToContent();
     this.status.set('ready');
     this.loadComplete.emit({ mode: 'gcode', segments: totalSegments });
   }
