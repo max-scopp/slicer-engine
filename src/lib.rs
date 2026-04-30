@@ -15,6 +15,9 @@ pub mod logging;
 pub mod mesh;
 pub mod scene;
 
+#[cfg(target_arch = "wasm32")]
+pub mod gcode_viewer;
+
 #[cfg(not(target_arch = "wasm32"))]
 pub mod config;
 #[cfg(not(target_arch = "wasm32"))]

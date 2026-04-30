@@ -14,6 +14,11 @@ export const APP_ROUTES: Routes = [
       import('./pages/scene-demo/scene-demo.component').then((m) => m.SceneDemoComponent),
   },
   {
+    path: 'gcode-demo',
+    loadComponent: () =>
+      import('./pages/gcode-demo/gcode-demo.component').then((m) => m.GcodeDemoComponent),
+  },
+  {
     path: 'slice',
     component: NexusSlicingShell,
     children: [
