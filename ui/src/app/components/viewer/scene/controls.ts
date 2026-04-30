@@ -165,8 +165,56 @@ export class SceneControls {
     this.camera.position.copy(target).add(offset);
   }
 
+  private touchOrbitTuningPointerDownHandler: ((event: PointerEvent) => void) | null = null;
+  private touchOrbitTuningPointerMoveHandler: ((event: PointerEvent) => void) | null = null;
+  private touchOrbitTuningPointerUpHandler: ((event: PointerEvent) => void) | null = null;
+  private touchOrbitTuningPointerCancelHandler: ((event: PointerEvent) => void) | null = null;
+  private customTwoFingerPointerDownHandler: ((event: PointerEvent) => void) | null = null;
+  private customTwoFingerPointerMoveHandler: ((event: PointerEvent) => void) | null = null;
+  private customTwoFingerPointerUpHandler: ((event: PointerEvent) => void) | null = null;
+  private customTwoFingerPointerCancelHandler: ((event: PointerEvent) => void) | null = null;
+
+  private uninstallRendererPointerListeners(): void {
+    const domElement = this.renderer.domElement;
+
+    if (this.touchOrbitTuningPointerDownHandler) {
+      domElement.removeEventListener('pointerdown', this.touchOrbitTuningPointerDownHandler);
+      this.touchOrbitTuningPointerDownHandler = null;
+    }
+    if (this.touchOrbitTuningPointerMoveHandler) {
+      domElement.removeEventListener('pointermove', this.touchOrbitTuningPointerMoveHandler);
+      this.touchOrbitTuningPointerMoveHandler = null;
+    }
+    if (this.touchOrbitTuningPointerUpHandler) {
+      domElement.removeEventListener('pointerup', this.touchOrbitTuningPointerUpHandler);
+      this.touchOrbitTuningPointerUpHandler = null;
+    }
+    if (this.touchOrbitTuningPointerCancelHandler) {
+      domElement.removeEventListener('pointercancel', this.touchOrbitTuningPointerCancelHandler);
+      this.touchOrbitTuningPointerCancelHandler = null;
+    }
+
+    if (this.customTwoFingerPointerDownHandler) {
+      domElement.removeEventListener('pointerdown', this.customTwoFingerPointerDownHandler);
+      this.customTwoFingerPointerDownHandler = null;
+    }
+    if (this.customTwoFingerPointerMoveHandler) {
+      domElement.removeEventListener('pointermove', this.customTwoFingerPointerMoveHandler);
+      this.customTwoFingerPointerMoveHandler = null;
+    }
+    if (this.customTwoFingerPointerUpHandler) {
+      domElement.removeEventListener('pointerup', this.customTwoFingerPointerUpHandler);
+      this.customTwoFingerPointerUpHandler = null;
+    }
+    if (this.customTwoFingerPointerCancelHandler) {
+      domElement.removeEventListener('pointercancel', this.customTwoFingerPointerCancelHandler);
+      this.customTwoFingerPointerCancelHandler = null;
+    }
+  }
+
   dispose(): void {
     this.uninstallAutoscrollZoom();
+    this.uninstallRendererPointerListeners();
   }
 
   // -------------------------------------------------------------------------
