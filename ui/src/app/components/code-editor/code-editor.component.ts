@@ -1,11 +1,13 @@
 import {
-  ChangeDetectionStrategy,
-  Component,
-  DestroyRef,
-  ElementRef,
-  afterNextRender,
-  inject,
-  viewChild,
+    ChangeDetectionStrategy,
+    Component,
+    DestroyRef,
+    ElementRef,
+    afterNextRender,
+    effect,
+    inject,
+    input,
+    viewChild,
 } from '@angular/core';
 import type * as Monaco from 'monaco-editor';
 
@@ -51,16 +53,33 @@ declare global {
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class CodeEditorComponent {
+  /** Text content to display. Changing this signal updates the editor live. */
+  readonly content = input('');
+  /** Monaco language identifier (default: `'plaintext'`). */
+  readonly language = input('plaintext');
+  /** When true the editor is read-only. */
+  readonly readOnly = input(false);
+
   private readonly mount = viewChild.required<ElementRef<HTMLDivElement>>('mount');
   private editor: Monaco.editor.IStandaloneCodeEditor | null = null;
 
   constructor() {
     const destroyRef = inject(DestroyRef);
 
-    // afterNextRender fires once after the host is in the DOM — safe to
-    // call the imperative Monaco API here.
     afterNextRender(async () => {
       await this.initMonaco();
+    });
+
+    // Push content / readOnly changes into the live editor whenever they change.
+    effect(() => {
+      const value = this.content();
+      const readOnly = this.readOnly();
+      if (this.editor) {
+        if (this.editor.getValue() !== value) {
+          this.editor.setValue(value);
+        }
+        this.editor.updateOptions({ readOnly });
+      }
     });
 
     destroyRef.onDestroy(() => {
@@ -96,8 +115,8 @@ export class CodeEditorComponent {
     const monaco = await import('monaco-editor');
 
     this.editor = monaco.editor.create(this.mount().nativeElement, {
-      value: '',
-      language: 'plaintext',
+      value: this.content(),
+      language: this.language(),
       theme: 'vs-dark',
       automaticLayout: true,
       fontSize: 13,
@@ -105,6 +124,10 @@ export class CodeEditorComponent {
       scrollBeyondLastLine: false,
       wordWrap: 'on',
       lineNumbers: 'on',
+      readOnly: this.readOnly(),
+      folding: true,
+      foldingStrategy: 'indentation',
+      showFoldingControls: 'always',
     });
   }
 }
