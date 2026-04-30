@@ -1,9 +1,10 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
   ElementRef,
-  OnDestroy,
   afterNextRender,
+  inject,
   viewChild,
 } from '@angular/core';
 import type * as Monaco from 'monaco-editor';
@@ -49,26 +50,28 @@ declare global {
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class CodeEditorComponent implements OnDestroy {
+export class CodeEditorComponent {
   private readonly mount = viewChild.required<ElementRef<HTMLDivElement>>('mount');
   private editor: Monaco.editor.IStandaloneCodeEditor | null = null;
 
   constructor() {
-    // afterNextRender fires once after the view is fully initialised and
-    // inserted into the DOM — safe to call the imperative Monaco API here.
+    const destroyRef = inject(DestroyRef);
+
+    // afterNextRender fires once after the host is in the DOM — safe to
+    // call the imperative Monaco API here.
     afterNextRender(async () => {
-      await this.#initMonaco();
+      await this.initMonaco();
+    });
+
+    destroyRef.onDestroy(() => {
+      this.editor?.dispose();
+      this.editor = null;
     });
   }
 
-  ngOnDestroy(): void {
-    this.editor?.dispose();
-    this.editor = null;
-  }
-
-  async #initMonaco(): Promise<void> {
-    // Tell Monaco where to find its web workers. We use blob URLs so the
-    // workers can be spawned without a separate worker bundle entry point.
+  private async initMonaco(): Promise<void> {
+    // Tell Monaco where to find its web workers. Blob URLs allow workers
+    // to be spawned without a separate worker bundle entry point.
     if (!window.MonacoEnvironment) {
       window.MonacoEnvironment = {
         getWorker(_moduleId: string, label: string): Worker {
