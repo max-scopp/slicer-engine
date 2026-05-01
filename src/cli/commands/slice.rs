@@ -328,7 +328,7 @@ impl SliceCommand {
             logger.log_debug(&format!("applied scale: {:?}", factors));
         }
         if let Some(face_index) = self.align_face {
-            scene.apply(SceneOp::AlignFaceToFloor {
+            scene.apply(SceneOp::PlaceFaceOnFloor {
                 id: object_id,
                 face_index,
             })?;

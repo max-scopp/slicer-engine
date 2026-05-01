@@ -181,9 +181,13 @@ async fn handle_ws_session(
                     let _ = send_msg(&mut session, &ServerMessage::log_info("Reset.")).await;
                     let _ = send_msg(&mut session, &snapshot_msg(&scene)).await;
                 }
-                Ok(ClientMessage::Scene { ops }) => {
-                    logger.log_debug(&format!("[WS] Applying {} scene ops", ops.len()));
-                    handle_scene_ops(&mut session, &mut scene, ops, &work_dir, &db).await;
+                Ok(ClientMessage::Scene { ops, options }) => {
+                    logger.log_debug(&format!(
+                        "[WS] Applying {} scene ops (gravity={})",
+                        ops.len(),
+                        options.gravity
+                    ));
+                    handle_scene_ops(&mut session, &mut scene, ops, options, &work_dir, &db).await;
                 }
                 Ok(ClientMessage::SceneSnapshot) => {
                     let _ = send_msg(&mut session, &snapshot_msg(&scene)).await;
@@ -489,9 +493,13 @@ async fn handle_scene_ops(
     session: &mut actix_ws::Session,
     scene: &mut SceneState,
     ops: Vec<SceneOpDto>,
+    options: crate::ws_protocol::SceneOptionsDto,
     work_dir: &std::path::Path,
     db: &Arc<crate::db::Database>,
 ) {
+    let scene_options = crate::scene::SceneOptions {
+        gravity: options.gravity,
+    };
     for dto in ops {
         let op = match dto_to_op(dto, work_dir, db) {
             Ok(op) => op,
@@ -500,7 +508,7 @@ async fn handle_scene_ops(
                 return;
             }
         };
-        if let Err(e) = scene.apply(op) {
+        if let Err(e) = scene.apply_with_options(op, scene_options) {
             let _ = send_msg(session, &ServerMessage::error(e.to_string())).await;
             return;
         }
@@ -572,7 +580,7 @@ fn dto_to_op(
         SceneOpDto::DropToFloor { id } => Ok(SceneOp::DropToFloor {
             id: crate::scene::ObjectId(id),
         }),
-        SceneOpDto::AlignFaceToFloor { id, face_index } => Ok(SceneOp::AlignFaceToFloor {
+        SceneOpDto::PlaceFaceOnFloor { id, face_index } => Ok(SceneOp::PlaceFaceOnFloor {
             id: crate::scene::ObjectId(id),
             face_index,
         }),

@@ -7,7 +7,7 @@
     "hydrate": "pnpm run build:wasm && pnpm run gen",
     "ui:dev": "pnpm --filter slicer-ui start",
     "ui:build": "pnpm --filter slicer-ui build",
-    "build:wasm": "wasm-pack build --target web",
+    "build:wasm": "wasm-pack build --target web --release --out-dir ui/src/generated/scene-wasm --out-name scene_engine",
     "gen-schemas": "cargo run -- gen-schemas --output-dir ui/src/schemas",
     "gen-types": "pnpm --filter slicer-ui gen-types",
     "gen": "pnpm run gen-schemas && pnpm run gen-types",
