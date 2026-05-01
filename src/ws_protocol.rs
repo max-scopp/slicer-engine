@@ -61,27 +61,21 @@ impl Default for TransformDto {
     }
 }
 
-/// One placed object in a slice request: which uploaded mesh to use, what
-/// format it is, and the transform (translation / rotation / scale) the
-/// frontend currently has applied to it.
+/// One placed object in a slice request: which uploaded mesh to use and the
+/// transform (translation / rotation / scale) the frontend currently has
+/// applied to it.
 ///
-/// `file_id` is the upload `request_uuid` returned by `POST /api/upload`.
+/// `file_id` is the **file UUID** returned by `POST /api/upload` in the
+/// `ofids` list — distinct from the workplate's `ruuid`. The server resolves
+/// the file (including its on-disk extension) from the database, so callers
+/// don't need to — and should not — encode the format here.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SceneObjectSliceDto {
-    /// Upload identifier (`request_uuid` from `POST /api/upload`).
+    /// File identifier from `ofids` in the upload response.
     pub file_id: String,
-    /// Source mesh format on disk.
-    #[serde(default = "SceneObjectSliceDto::default_format")]
-    pub format: MeshFormat,
     /// Transform to bake into the mesh before slicing.
     #[serde(default)]
     pub transform: TransformDto,
-}
-
-impl SceneObjectSliceDto {
-    fn default_format() -> MeshFormat {
-        MeshFormat::Stl
-    }
 }
 
 /// Euler-XYZ degrees and a `file_id` reference for `Add` so payloads stay
@@ -154,27 +148,26 @@ pub struct BedConfigDto {
 pub enum ClientMessage {
     /// Start a slice job.
     ///
-    /// Two ways to specify what gets sliced:
+    /// Every slice carries:
     ///
-    /// - **`scene`** (preferred): a list of placed objects with their
-    ///   transforms. Each entry references a previously-uploaded file by
-    ///   `file_id`. The server bakes every object's transform and merges the
-    ///   resulting meshes before slicing. This is the path the UI uses so
-    ///   user-applied translate/rotate/scale/center/drop-to-floor are honoured.
-    /// - **`request_uuid` only**: legacy single-file path that slices the
-    ///   uploaded mesh as-is with no transform. Kept for tooling that hasn't
-    ///   been updated to the scene-based protocol.
+    /// - **`request_uuid`**: the workplate / scene UUID (`ruuid` from the
+    ///   upload response). Used to track the resulting G-code download.
+    /// - **`scene`**: the placed-object scene the user has built up in the
+    ///   viewer. Each entry references an uploaded file by `file_id` (a
+    ///   `file_uuid` from `ofids` — *not* the workplate UUID). The server
+    ///   resolves the file via the DB (so it picks the right loader from the
+    ///   on-disk extension), bakes every transform via `scene::apply_transform`,
+    ///   and merges the results into a single mesh before `process_mesh`.
+    /// - **`settings`**: the full [`SlicingParams`] from the settings panel.
     ///
-    /// `request_uuid` is always required because the server uses it to track
-    /// the resulting G-code download.
+    /// There is no longer a legacy "slice the upload as-is" fallback — the
+    /// scene is the single source of truth for what gets sliced.
     Slice {
-        /// UUID of the uploaded request/session — also the key the resulting
-        /// G-code is stored against.
+        /// Workplate UUID (the `ruuid` from `POST /api/upload`). Also the
+        /// key the resulting G-code is stored against.
         request_uuid: String,
-        /// Optional placed-object scene. When omitted, the server falls back
-        /// to slicing `request_uuid`'s upload with the identity transform.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        scene: Option<Vec<SceneObjectSliceDto>>,
+        /// Placed-object scene. Must contain at least one entry.
+        scene: Vec<SceneObjectSliceDto>,
         settings: Box<SlicingParams>,
     },
     /// Request a list of previously completed slicing sessions.
@@ -253,18 +246,17 @@ impl ServerMessage {
 mod tests {
     use super::*;
 
-    /// The slice request must round-trip through serde with an explicit `scene`
-    /// list so the server can honour user-applied transforms. The legacy
-    /// `request_uuid`-only shape (no `scene`) must still parse for backward
-    /// compatibility with tooling that hasn't been updated.
+    /// The slice request must round-trip through serde with an explicit
+    /// `scene` list so the server can honour user-applied transforms.
+    /// `format` is **not** part of the wire shape — the server resolves the
+    /// loader from the upload's stored extension.
     #[test]
     fn slice_message_with_scene_round_trips() {
         let json = r#"{
             "type": "Slice",
             "request_uuid": "00000000-0000-0000-0000-000000000001",
             "scene": [{
-                "file_id": "00000000-0000-0000-0000-000000000001",
-                "format": "stl",
+                "file_id": "00000000-0000-0000-0000-000000000010",
                 "transform": {
                     "translation": [10.0, 20.0, 0.0],
                     "euler_xyz_deg": [0.0, 0.0, 90.0],
@@ -275,30 +267,26 @@ mod tests {
         }"#;
         let parsed: ClientMessage = serde_json::from_str(json).expect("parse");
         match parsed {
-            ClientMessage::Slice {
-                scene: Some(objs), ..
-            } => {
-                assert_eq!(objs.len(), 1);
-                assert_eq!(objs[0].transform.translation, [10.0, 20.0, 0.0]);
-                assert_eq!(objs[0].transform.euler_xyz_deg, [0.0, 0.0, 90.0]);
+            ClientMessage::Slice { scene, .. } => {
+                assert_eq!(scene.len(), 1);
+                assert_eq!(scene[0].file_id, "00000000-0000-0000-0000-000000000010");
+                assert_eq!(scene[0].transform.translation, [10.0, 20.0, 0.0]);
+                assert_eq!(scene[0].transform.euler_xyz_deg, [0.0, 0.0, 90.0]);
             }
             _ => panic!("expected Slice with scene"),
         }
     }
 
-    /// Legacy single-file `Slice` request (no `scene`) must still parse.
+    /// A `Slice` without `scene` must fail to parse — there is no longer a
+    /// legacy single-upload fallback.
     #[test]
-    fn slice_message_without_scene_round_trips() {
+    fn slice_message_without_scene_is_rejected() {
         let json = r#"{
             "type": "Slice",
             "request_uuid": "00000000-0000-0000-0000-000000000002",
             "settings": {}
         }"#;
-        let parsed: ClientMessage = serde_json::from_str(json).expect("parse");
-        match parsed {
-            ClientMessage::Slice { scene, .. } => assert!(scene.is_none()),
-            _ => panic!("expected Slice"),
-        }
+        assert!(serde_json::from_str::<ClientMessage>(json).is_err());
     }
 
     /// `infill_density` is a fraction (0.0–1.0) at the wire level — nothing
@@ -309,6 +297,7 @@ mod tests {
         let json = r#"{
             "type": "Slice",
             "request_uuid": "00000000-0000-0000-0000-000000000003",
+            "scene": [{ "file_id": "00000000-0000-0000-0000-000000000020" }],
             "settings": { "infill_density": 0.3 }
         }"#;
         let parsed: ClientMessage = serde_json::from_str(json).expect("parse");

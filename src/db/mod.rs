@@ -70,6 +70,22 @@ pub struct RequestSession {
     pub updated_at: DateTime<Utc>,
 }
 
+/// A single uploaded file belonging to a workplate (request).
+///
+/// Files are addressed by their own `file_uuid` (distinct from the workplate's
+/// `request_uuid`). `file_path` retains the original extension so the slicer
+/// can pick the right loader without re-encoding any format hints into the URL
+/// or the wire protocol.
+#[derive(Debug, Clone)]
+pub struct FileEntry {
+    pub file_uuid: Uuid,
+    pub request_uuid: Uuid,
+    pub original_filename: String,
+    pub file_path: PathBuf,
+    pub file_size: i64,
+    pub created_at: DateTime<Utc>,
+}
+
 /// Database connection manager.
 pub struct Database {
     conn: Mutex<Connection>,
@@ -109,6 +125,24 @@ impl Database {
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+
+        -- Per-file rows for a workplate. Each upload (single file today, but
+        -- the protocol is multi-file ready) writes one row here. Files are
+        -- referenced by `file_uuid` in the slice protocol; `file_path` keeps
+        -- the original extension so the slicer can pick the right loader
+        -- without the server having to guess.
+        CREATE TABLE IF NOT EXISTS files (
+            file_uuid TEXT PRIMARY KEY,
+            request_uuid TEXT NOT NULL,
+            original_filename TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            file_size INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (request_uuid) REFERENCES requests(request_uuid)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_files_request_uuid
+            ON files(request_uuid);
 
         -- Index for status lookups (cleanup queries)
         CREATE INDEX IF NOT EXISTS idx_requests_status
@@ -279,6 +313,146 @@ impl Database {
         Ok(())
     }
 
+    /// Add an uploaded file row for a workplate. The single source of truth
+    /// for "which files belong to which request" — slicing references files
+    /// by `file_uuid`, never by `request_uuid` (the legacy "request UUID is
+    /// also the file ID" convention has been removed).
+    pub fn add_upload_file(
+        &self,
+        request_uuid: Uuid,
+        file_uuid: Uuid,
+        original_filename: &str,
+        file_path: impl AsRef<Path>,
+        file_size: u64,
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let path_str = file_path.as_ref().to_string_lossy().to_string();
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("Failed to lock database"))?;
+
+        conn.execute(
+            "INSERT INTO files
+                (file_uuid, request_uuid, original_filename, file_path, file_size, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
+            params![
+                file_uuid.to_string(),
+                request_uuid.to_string(),
+                original_filename,
+                &path_str,
+                file_size as i64,
+                &now,
+            ],
+        )?;
+
+        // Promote the workplate to UploadComplete on first file.
+        conn.execute(
+            "UPDATE requests
+             SET status = ?, updated_at = ?
+             WHERE request_uuid = ?",
+            params![
+                RequestStatus::UploadComplete.to_db(),
+                &now,
+                request_uuid.to_string(),
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Look up a single file row by its `file_uuid`.
+    pub fn get_file(&self, file_uuid: Uuid) -> Result<Option<FileEntry>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("Failed to lock database"))?;
+        let mut stmt = conn.prepare(
+            "SELECT file_uuid, request_uuid, original_filename, file_path, file_size, created_at
+             FROM files
+             WHERE file_uuid = ?",
+        )?;
+        let result = stmt
+            .query_row([file_uuid.to_string()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })
+            .optional()?;
+
+        match result {
+            Some((
+                file_uuid_str,
+                request_uuid_str,
+                original_filename,
+                file_path,
+                file_size,
+                created_at_str,
+            )) => Ok(Some(FileEntry {
+                file_uuid: Uuid::parse_str(&file_uuid_str)?,
+                request_uuid: Uuid::parse_str(&request_uuid_str)?,
+                original_filename,
+                file_path: PathBuf::from(file_path),
+                file_size,
+                created_at: DateTime::parse_from_rfc3339(&created_at_str)?.with_timezone(&Utc),
+            })),
+            None => Ok(None),
+        }
+    }
+
+    /// All files belonging to a workplate, ordered by upload time.
+    pub fn get_files_for_request(&self, request_uuid: Uuid) -> Result<Vec<FileEntry>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("Failed to lock database"))?;
+        let mut stmt = conn.prepare(
+            "SELECT file_uuid, request_uuid, original_filename, file_path, file_size, created_at
+             FROM files
+             WHERE request_uuid = ?
+             ORDER BY created_at ASC",
+        )?;
+
+        let rows = stmt
+            .query_map([request_uuid.to_string()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for (
+            file_uuid_str,
+            request_uuid_str,
+            original_filename,
+            file_path,
+            file_size,
+            created_at_str,
+        ) in rows
+        {
+            out.push(FileEntry {
+                file_uuid: Uuid::parse_str(&file_uuid_str)?,
+                request_uuid: Uuid::parse_str(&request_uuid_str)?,
+                original_filename,
+                file_path: PathBuf::from(file_path),
+                file_size,
+                created_at: DateTime::parse_from_rfc3339(&created_at_str)?.with_timezone(&Utc),
+            });
+        }
+        Ok(out)
+    }
+
     /// Record a downloaded/generated file (G-code).
     pub fn set_download_file(
         &self,
@@ -325,31 +499,51 @@ impl Database {
 
         // Fetch old records before deleting
         let mut stmt = conn.prepare(
-            "SELECT upload_file_path, download_file_path
+            "SELECT request_uuid, upload_file_path, download_file_path
              FROM requests
              WHERE updated_at < ?",
         )?;
 
-        let files_to_delete: Vec<(Option<String>, Option<String>)> = stmt
+        let request_rows: Vec<(String, Option<String>, Option<String>)> = stmt
             .query_map([&cutoff], |row| {
                 Ok((
-                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, String>(0)?,
                     row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
-        // Delete files from disk
-        for (upload_path, download_path) in files_to_delete {
+        // Also collect file rows (new-style uploads) belonging to those requests.
+        let mut files_stmt = conn.prepare("SELECT file_path FROM files WHERE request_uuid = ?")?;
+        let mut on_disk_files: Vec<String> = Vec::new();
+        for (request_uuid, upload_path, download_path) in &request_rows {
             if let Some(path) = upload_path {
-                let _ = std::fs::remove_file(&path);
+                on_disk_files.push(path.clone());
             }
             if let Some(path) = download_path {
-                let _ = std::fs::remove_file(&path);
+                on_disk_files.push(path.clone());
             }
+            let file_paths: Vec<String> = files_stmt
+                .query_map([request_uuid.as_str()], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            on_disk_files.extend(file_paths);
         }
 
-        // Delete database records
+        // Delete files from disk
+        for path in on_disk_files {
+            let _ = std::fs::remove_file(&path);
+        }
+
+        // Delete child rows first to satisfy the foreign key, then the requests.
+        conn.execute(
+            "DELETE FROM files
+             WHERE request_uuid IN (
+                 SELECT request_uuid FROM requests WHERE updated_at < ?
+             )",
+            [&cutoff],
+        )?;
+
         let rows = conn.execute(
             "DELETE FROM requests
              WHERE updated_at < ?",
@@ -494,6 +688,70 @@ mod tests {
                 .to_string()),
             Some("test.stl".to_string())
         );
+
+        Ok(())
+    }
+
+    /// `add_upload_file` should write a row to `files` keyed by file_uuid and
+    /// promote the request to `UploadComplete`. `get_file` and
+    /// `get_files_for_request` should return what we just wrote.
+    #[test]
+    fn test_add_and_get_files() -> Result<()> {
+        let dir = TempDir::new()?;
+        let db = Database::open(dir.path().join("test.db"))?;
+        let request_uuid = Uuid::new_v4();
+        db.create_request(request_uuid)?;
+
+        let file_uuid = Uuid::new_v4();
+        let file_path = dir.path().join(format!("{}.obj", file_uuid));
+        std::fs::write(&file_path, b"dummy")?;
+        db.add_upload_file(request_uuid, file_uuid, "model.obj", &file_path, 5)?;
+
+        let entry = db.get_file(file_uuid)?.expect("file row exists");
+        assert_eq!(entry.file_uuid, file_uuid);
+        assert_eq!(entry.request_uuid, request_uuid);
+        assert_eq!(entry.original_filename, "model.obj");
+        assert_eq!(entry.file_path, file_path);
+        assert_eq!(entry.file_size, 5);
+
+        let files = db.get_files_for_request(request_uuid)?;
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].file_uuid, file_uuid);
+
+        // Status should advance.
+        let session = db.get_request(request_uuid)?.unwrap();
+        assert_eq!(session.status, RequestStatus::UploadComplete);
+
+        Ok(())
+    }
+
+    /// Cleanup must delete files-table rows and their on-disk artifacts in
+    /// addition to the legacy upload/download paths in `requests`.
+    #[test]
+    fn test_cleanup_removes_files_table_rows() -> Result<()> {
+        let dir = TempDir::new()?;
+        let db = Database::open(dir.path().join("test.db"))?;
+        let request_uuid = Uuid::new_v4();
+        db.create_request(request_uuid)?;
+        let file_uuid = Uuid::new_v4();
+        let file_path = dir.path().join(format!("{}.stl", file_uuid));
+        std::fs::write(&file_path, b"dummy")?;
+        db.add_upload_file(request_uuid, file_uuid, "m.stl", &file_path, 5)?;
+
+        // Force the row to be older than the cutoff.
+        {
+            let conn = db.conn.lock().unwrap();
+            let old = (Utc::now() - chrono::Duration::hours(48)).to_rfc3339();
+            conn.execute(
+                "UPDATE requests SET updated_at = ? WHERE request_uuid = ?",
+                params![&old, request_uuid.to_string()],
+            )?;
+        }
+
+        let removed = db.cleanup_old_sessions(24)?;
+        assert_eq!(removed, 1);
+        assert!(db.get_file(file_uuid)?.is_none());
+        assert!(!file_path.exists());
 
         Ok(())
     }
