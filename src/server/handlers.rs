@@ -95,13 +95,11 @@ pub async fn upload_handler(
     let file_uuid = Uuid::new_v4();
 
     // Create database record
-    let db = state.db.clone();
-    let uuid_clone = request_uuid;
-    tokio::task::spawn_blocking(move || {
-        let _ = db.create_request(uuid_clone);
-    })
-    .await
-    .map_err(actix_web::error::ErrorInternalServerError)?;
+    state
+        .db
+        .create_request(request_uuid)
+        .await
+        .map_err(actix_web::error::ErrorInternalServerError)?;
 
     const MAX_FILE_SIZE: u64 = 500 * 1024 * 1024; // 500 MB limit
     let mut file_size: u64 = 0;
@@ -171,20 +169,12 @@ pub async fn upload_handler(
     };
 
     // Update database with file info
-    let db = state.db.clone();
     let filename = original_filename.unwrap_or_else(|| format!("{}.stl", file_uuid));
-    let file_path_clone = file_path.clone();
-    tokio::task::spawn_blocking(move || {
-        let _ = db.add_upload_file(
-            request_uuid,
-            file_uuid,
-            &filename,
-            file_path_clone,
-            file_size,
-        );
-    })
-    .await
-    .map_err(actix_web::error::ErrorInternalServerError)?;
+    state
+        .db
+        .add_upload_file(request_uuid, file_uuid, &filename, &file_path, file_size)
+        .await
+        .map_err(actix_web::error::ErrorInternalServerError)?;
 
     Ok(actix_web::HttpResponse::Ok().json(UploadResponse {
         ruuid: request_uuid.to_string(),
@@ -202,10 +192,10 @@ pub async fn download_handler(
         .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
 
     // Look up session in database
-    let db = state.db.clone();
-    let session = tokio::task::spawn_blocking(move || db.get_request(uuid))
+    let session = state
+        .db
+        .get_request(uuid)
         .await
-        .map_err(actix_web::error::ErrorInternalServerError)?
         .map_err(actix_web::error::ErrorInternalServerError)?
         .ok_or_else(|| actix_web::error::ErrorNotFound("Request not found"))?;
 
@@ -216,10 +206,10 @@ pub async fn download_handler(
     // Generate download filename from the workplate's first uploaded file
     // (replace its extension with `.gcode`). Falls back to a generic name if
     // the request somehow has no associated file row.
-    let db = state.db.clone();
-    let files = tokio::task::spawn_blocking(move || db.get_files_for_request(uuid))
+    let files = state
+        .db
+        .get_files_for_request(uuid)
         .await
-        .map_err(actix_web::error::ErrorInternalServerError)?
         .map_err(actix_web::error::ErrorInternalServerError)?;
     let download_filename = files
         .first()
@@ -275,17 +265,17 @@ pub async fn get_request_handler(
     let uuid = uuid::Uuid::parse_str(&uuid_str)
         .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
 
-    let db = state.db.clone();
-    let session = tokio::task::spawn_blocking(move || db.get_request(uuid))
+    let session = state
+        .db
+        .get_request(uuid)
         .await
-        .map_err(actix_web::error::ErrorInternalServerError)?
         .map_err(actix_web::error::ErrorInternalServerError)?
         .ok_or_else(|| actix_web::error::ErrorNotFound("Request not found"))?;
 
-    let db = state.db.clone();
-    let files = tokio::task::spawn_blocking(move || db.get_files_for_request(uuid))
+    let files = state
+        .db
+        .get_files_for_request(uuid)
         .await
-        .map_err(actix_web::error::ErrorInternalServerError)?
         .map_err(actix_web::error::ErrorInternalServerError)?;
 
     let has_gcode = session
@@ -323,10 +313,10 @@ pub async fn download_file_handler(
     let uuid = uuid::Uuid::parse_str(&uuid_str)
         .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
 
-    let db = state.db.clone();
-    let entry = tokio::task::spawn_blocking(move || db.get_file(uuid))
+    let entry = state
+        .db
+        .get_file(uuid)
         .await
-        .map_err(actix_web::error::ErrorInternalServerError)?
         .map_err(actix_web::error::ErrorInternalServerError)?
         .ok_or_else(|| actix_web::error::ErrorNotFound("File not found"))?;
 

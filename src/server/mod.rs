@@ -124,7 +124,7 @@ async fn run_server(
     // Initialize database
     let db_path = work_path.join("slicer.db");
     eprintln!("Database path:  {}", db_path.display());
-    let db = Arc::new(crate::db::Database::open(&db_path)?);
+    let db = Arc::new(crate::db::Database::open(&db_path).await?);
     eprintln!("Database initialized successfully.");
 
     let app_state = web::Data::new(AppState {

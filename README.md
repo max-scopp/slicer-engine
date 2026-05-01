@@ -127,10 +127,11 @@ make build-release build-windows build-macos build-wasm
 ## Development
 
 ```bash
-cargo build                                                  # fast iteration (debug)
+cargo build                                                 # fast iteration (debug)
 cargo test
 cargo fmt && cargo clippy --all-targets --all-features -- -D warnings
 pnpm --filter slicer-engine-docs docs:dev                   # live docs site
+sea-orm-cli migrate generate "my_migration" -d src/db       # scaffold DB migration
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for workflow, [AGENTS.md](AGENTS.md) for AI-agent guidance, and [ARCHITECTURE.md](ARCHITECTURE.md) for the long-form architecture overview (also rendered on the [docs site](https://max-scopp.github.io/slicer-engine/guide/architecture)).

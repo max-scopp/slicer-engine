@@ -278,25 +278,17 @@ async fn handle_slice(
         // Look the file up in the DB so we know both the on-disk path
         // (extension preserved) and its size. The slicer's loader picks the
         // right format from that extension automatically.
-        let entry_result = {
-            let db = db.clone();
-            tokio::task::spawn_blocking(move || db.get_file(file_uuid)).await
-        };
-        let entry = match entry_result {
-            Ok(Ok(Some(e))) => e,
-            Ok(Ok(None)) => {
+        let entry = match db.get_file(file_uuid).await {
+            Ok(Some(e)) => e,
+            Ok(None) => {
                 send_or_return!(ServerMessage::error(format!(
                     "Scene references unknown file_id {}",
                     file_uuid
                 )));
                 return;
             }
-            Ok(Err(e)) => {
-                send_or_return!(ServerMessage::error(format!("Database error: {e}")));
-                return;
-            }
             Err(e) => {
-                send_or_return!(ServerMessage::error(format!("Task error: {e}")));
+                send_or_return!(ServerMessage::error(format!("Database error: {e}")));
                 return;
             }
         };
@@ -414,11 +406,9 @@ async fn handle_slice(
 
     // Update database with G-code file info
     if let Ok(file_size) = std::fs::metadata(&gcode_output_path).map(|m| m.len()) {
-        let db = db.clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            db.set_download_file(uuid, &gcode_output_path, file_size)
-        })
-        .await;
+        let _ = db
+            .set_download_file(uuid, &gcode_output_path, file_size)
+            .await;
     }
 }
 
@@ -431,23 +421,18 @@ async fn handle_list_sessions(
     // Query database for completed sessions and their files (uploads now live
     // in a separate table — pull the first file's name as the workplate
     // label).
-    let db_clone = db.clone();
-    let sessions_with_files = tokio::task::spawn_blocking(move || {
-        let sessions = db_clone.get_completed_sessions().unwrap_or_default();
-        sessions
-            .into_iter()
-            .map(|s| {
-                let filename = db_clone
-                    .get_files_for_request(s.request_uuid)
-                    .ok()
-                    .and_then(|files| files.into_iter().next())
-                    .map(|f| f.original_filename);
-                (s, filename)
-            })
-            .collect::<Vec<_>>()
-    })
-    .await
-    .unwrap_or_default();
+    let sessions = db.get_completed_sessions().await.unwrap_or_default();
+    let mut sessions_with_files: Vec<(crate::db::RequestSession, Option<String>)> = Vec::new();
+    for session in sessions {
+        let ruuid = session.request_uuid;
+        let filename = db
+            .get_files_for_request(ruuid)
+            .await
+            .ok()
+            .and_then(|files| files.into_iter().next())
+            .map(|f| f.original_filename);
+        sessions_with_files.push((session, filename));
+    }
 
     let summaries = sessions_with_files
         .into_iter()
@@ -501,7 +486,7 @@ async fn handle_scene_ops(
         gravity: options.gravity,
     };
     for dto in ops {
-        let op = match dto_to_op(dto, work_dir, db) {
+        let op = match dto_to_op(dto, work_dir, db).await {
             Ok(op) => op,
             Err(e) => {
                 let _ = send_msg(session, &ServerMessage::error(e)).await;
@@ -521,7 +506,7 @@ async fn handle_scene_ops(
 /// For `Add` the mesh bytes are read from disk based on the upload `file_id`
 /// (a `file_uuid` from `ofids`). The DB lookup gives us the actual on-disk
 /// path including its extension.
-fn dto_to_op(
+async fn dto_to_op(
     dto: SceneOpDto,
     work_dir: &std::path::Path,
     db: &crate::db::Database,
@@ -538,6 +523,7 @@ fn dto_to_op(
                 .map_err(|e| format!("invalid file_id '{}': {}", file_id, e))?;
             let entry = db
                 .get_file(uuid)
+                .await
                 .map_err(|e| format!("database error: {e}"))?
                 .ok_or_else(|| format!("unknown file_id {}", uuid))?;
             let bytes = std::fs::read(&entry.file_path).map_err(|e| {
