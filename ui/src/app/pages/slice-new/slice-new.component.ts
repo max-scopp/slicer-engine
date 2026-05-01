@@ -29,8 +29,11 @@ export class SliceNewComponent {
 
   private async uploadAndNavigate(): Promise<void> {
     try {
-      const uuid = await this.slicerFile.upload();
-      this.router.navigate(['/slice', uuid]);
+      const meta = await this.slicerFile.upload();
+      // Carry the upload response in router state so the slice viewer can
+      // pick up the `ofids` without an extra fetch. On a cold reload the
+      // viewer falls back to `GET /api/request/:ruuid`.
+      this.router.navigate(['/slice', meta.ruuid], { state: { uploadMeta: meta } });
     } catch {
       // Error is tracked in slicerFile.uploadError
     }

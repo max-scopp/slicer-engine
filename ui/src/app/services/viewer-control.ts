@@ -68,6 +68,13 @@ export class ViewerControl {
   };
 
   /**
+   * When `true`, every completed object-manipulation gesture automatically
+   * drops the affected objects to the floor (applies `DropToFloor`) so
+   * objects never float above the bed after being moved or rotated.
+   */
+  readonly gravityEnabled = signal(false);
+
+  /**
    * Pending request for the viewer to animate to a specific look direction
    * (e.g. when the user clicks a face of the viewport-cube). Cleared after
    * the viewer consumes it; the `tick` field disambiguates repeated requests

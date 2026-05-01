@@ -6,45 +6,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::gcode::GcodeFlavor;
-use crate::infill::InfillPattern;
 use crate::scene::MeshFormat;
-
-/// Slicing parameters sent from the browser with a `slice` request.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct WsSlicingParams {
-    /// Layer height in mm (e.g. 0.2).
-    pub layer_height: f64,
-    /// Print speed in mm/s.
-    pub print_speed: f64,
-    /// Nozzle temperature in °C.
-    pub nozzle_temp: f64,
-    /// Heated-bed temperature in °C.
-    pub bed_temp: f64,
-    /// G-code dialect (`"marlin"` or `"klipper"`).
-    pub gcode_flavor: GcodeFlavor,
-    /// Infill density as a percentage (0–100). Converted to a fraction before
-    /// being forwarded to the slicing pipeline (e.g. 20 → 0.2).
-    #[serde(default = "WsSlicingParams::default_infill_density")]
-    pub infill_density: f64,
-    /// Infill pattern name (`"rectilinear"`, `"grid"`, `"honeycomb"`, `"gyroid"`, `"tpms-d"`).
-    #[serde(default)]
-    pub infill_pattern: InfillPattern,
-    /// Base angle in degrees for infill lines (default 45°). Alternating layers
-    /// rotate by +90° on top of this base angle.
-    #[serde(default = "WsSlicingParams::default_infill_angle")]
-    pub infill_angle: f64,
-}
-
-impl WsSlicingParams {
-    fn default_infill_density() -> f64 {
-        20.0
-    }
-
-    fn default_infill_angle() -> f64 {
-        45.0
-    }
-}
+use crate::settings::params::SlicingParams;
 
 /// Summary of a completed slicing session for history/re-download.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -61,7 +24,60 @@ pub struct SessionSummary {
     pub download_url: String,
 }
 
-/// Wire-format scene operation. Mirrors [`crate::scene::SceneOp`] but uses
+/// Affine transform encoded for the protocol boundary using Euler-XYZ degrees.
+///
+/// Mirrors the `from_euler_xyz_deg` view of [`crate::scene::Transform`] so
+/// payloads stay human-readable JSON. Defaults to the identity transform so
+/// callers may omit any field.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TransformDto {
+    /// Translation in millimeters.
+    #[serde(default = "TransformDto::default_zero3")]
+    pub translation: [f32; 3],
+    /// Rotation as intrinsic Euler-XYZ angles in **degrees**.
+    #[serde(default = "TransformDto::default_zero3")]
+    pub euler_xyz_deg: [f32; 3],
+    /// Per-axis scale factors.
+    #[serde(default = "TransformDto::default_one3")]
+    pub scale: [f32; 3],
+}
+
+impl TransformDto {
+    fn default_zero3() -> [f32; 3] {
+        [0.0; 3]
+    }
+    fn default_one3() -> [f32; 3] {
+        [1.0; 3]
+    }
+}
+
+impl Default for TransformDto {
+    fn default() -> Self {
+        Self {
+            translation: Self::default_zero3(),
+            euler_xyz_deg: Self::default_zero3(),
+            scale: Self::default_one3(),
+        }
+    }
+}
+
+/// One placed object in a slice request: which uploaded mesh to use and the
+/// transform (translation / rotation / scale) the frontend currently has
+/// applied to it.
+///
+/// `file_id` is the **file UUID** returned by `POST /api/upload` in the
+/// `ofids` list — distinct from the workplate's `ruuid`. The server resolves
+/// the file (including its on-disk extension) from the database, so callers
+/// don't need to — and should not — encode the format here.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SceneObjectSliceDto {
+    /// File identifier from `ofids` in the upload response.
+    pub file_id: String,
+    /// Transform to bake into the mesh before slicing.
+    #[serde(default)]
+    pub transform: TransformDto,
+}
+
 /// Euler-XYZ degrees and a `file_id` reference for `Add` so payloads stay
 /// human-readable JSON.
 ///
@@ -141,12 +157,29 @@ pub struct BedConfigDto {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
 pub enum ClientMessage {
-    /// Start a slice job. The STL file must be uploaded first via HTTP POST /api/upload,
-    /// which returns a `request_uuid`. This message initiates slicing on that uploaded file.
+    /// Start a slice job.
+    ///
+    /// Every slice carries:
+    ///
+    /// - **`request_uuid`**: the workplate / scene UUID (`ruuid` from the
+    ///   upload response). Used to track the resulting G-code download.
+    /// - **`scene`**: the placed-object scene the user has built up in the
+    ///   viewer. Each entry references an uploaded file by `file_id` (a
+    ///   `file_uuid` from `ofids` — *not* the workplate UUID). The server
+    ///   resolves the file via the DB (so it picks the right loader from the
+    ///   on-disk extension), bakes every transform via `scene::apply_transform`,
+    ///   and merges the results into a single mesh before `process_mesh`.
+    /// - **`settings`**: the full [`SlicingParams`] from the settings panel.
+    ///
+    /// There is no longer a legacy "slice the upload as-is" fallback — the
+    /// scene is the single source of truth for what gets sliced.
     Slice {
-        /// UUID of the uploaded request/session
+        /// Workplate UUID (the `ruuid` from `POST /api/upload`). Also the
+        /// key the resulting G-code is stored against.
         request_uuid: String,
-        settings: WsSlicingParams,
+        /// Placed-object scene. Must contain at least one entry.
+        scene: Vec<SceneObjectSliceDto>,
+        settings: Box<SlicingParams>,
     },
     /// Request a list of previously completed slicing sessions.
     ListSessions,
@@ -221,6 +254,74 @@ impl ServerMessage {
     pub fn error(message: impl Into<String>) -> Self {
         Self::Error {
             message: message.into(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The slice request must round-trip through serde with an explicit
+    /// `scene` list so the server can honour user-applied transforms.
+    /// `format` is **not** part of the wire shape — the server resolves the
+    /// loader from the upload's stored extension.
+    #[test]
+    fn slice_message_with_scene_round_trips() {
+        let json = r#"{
+            "type": "Slice",
+            "request_uuid": "00000000-0000-0000-0000-000000000001",
+            "scene": [{
+                "file_id": "00000000-0000-0000-0000-000000000010",
+                "transform": {
+                    "translation": [10.0, 20.0, 0.0],
+                    "euler_xyz_deg": [0.0, 0.0, 90.0],
+                    "scale": [1.0, 1.0, 1.0]
+                }
+            }],
+            "settings": {}
+        }"#;
+        let parsed: ClientMessage = serde_json::from_str(json).expect("parse");
+        match parsed {
+            ClientMessage::Slice { scene, .. } => {
+                assert_eq!(scene.len(), 1);
+                assert_eq!(scene[0].file_id, "00000000-0000-0000-0000-000000000010");
+                assert_eq!(scene[0].transform.translation, [10.0, 20.0, 0.0]);
+                assert_eq!(scene[0].transform.euler_xyz_deg, [0.0, 0.0, 90.0]);
+            }
+            _ => panic!("expected Slice with scene"),
+        }
+    }
+
+    /// A `Slice` without `scene` must fail to parse — there is no longer a
+    /// legacy single-upload fallback.
+    #[test]
+    fn slice_message_without_scene_is_rejected() {
+        let json = r#"{
+            "type": "Slice",
+            "request_uuid": "00000000-0000-0000-0000-000000000002",
+            "settings": {}
+        }"#;
+        assert!(serde_json::from_str::<ClientMessage>(json).is_err());
+    }
+
+    /// `infill_density` is a fraction (0.0–1.0) at the wire level — nothing
+    /// is divided by 100 server-side. The previous percent-style protocol
+    /// silently produced essentially-zero infill when the UI sent fractions.
+    #[test]
+    fn slicing_params_infill_density_is_a_fraction() {
+        let json = r#"{
+            "type": "Slice",
+            "request_uuid": "00000000-0000-0000-0000-000000000003",
+            "scene": [{ "file_id": "00000000-0000-0000-0000-000000000020" }],
+            "settings": { "infill_density": 0.3 }
+        }"#;
+        let parsed: ClientMessage = serde_json::from_str(json).expect("parse");
+        match parsed {
+            ClientMessage::Slice { settings, .. } => {
+                assert!((settings.infill_density - 0.3).abs() < 1e-9);
+            }
+            _ => panic!("expected Slice"),
         }
     }
 }

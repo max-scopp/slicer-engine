@@ -59,6 +59,20 @@
 <button
   class="reset-view-button"
   type="button"
+  [tooltip]="
+    gravityEnabled()
+      ? 'Gravity on — objects drop to floor after every move'
+      : 'Gravity off — objects stay where placed'
+  "
+  [class.active]="gravityEnabled()"
+  (click)="toggleGravity()"
+>
+  <nexus-icon name="depth"></nexus-icon>
+</button>
+
+<button
+  class="reset-view-button"
+  type="button"
   [tooltip]="shell.editorPanelVisible() ? 'Hide operation pipeline' : 'Show operation pipeline'"
   [class.active]="shell.editorPanelVisible()"
   (click)="shell.toggleEditorPanel()"

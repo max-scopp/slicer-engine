@@ -2,11 +2,15 @@ import { HttpClient } from '@angular/common/http';
 import { Injectable, computed, effect, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { environment } from '../../environments/environment';
-import { WsSlicingParams } from '../../generated/slicer-engine-ws-client-message-v1';
+import {
+  SceneObjectSliceDto,
+  SlicingParams,
+} from '../../generated/slicer-engine-ws-client-message-v1';
 import { ServerMessage } from '../../generated/slicer-engine-ws-server-message-v1';
 import { DEFAULT_SETTINGS } from '../models/slice-settings.model';
 import { History } from './history';
 import { NotificationService } from './notifications';
+import { SceneEngineService } from './scene-engine.service';
 import { SlicerConnection } from './slicer-connection';
 import { SlicerFile } from './slicer-file';
 
@@ -61,13 +65,14 @@ export class Slicer {
   private readonly slicerFile = inject(SlicerFile);
   private readonly history = inject(History);
   private readonly notifications = inject(NotificationService);
+  private readonly sceneEngine = inject(SceneEngineService);
 
   /**
    * Currently-selected file. Sourced from {@link SlicerFile} so the upload
    * page and the viewer page share a single source of truth.
    */
   readonly selectedFile = this.slicerFile.selectedFile;
-  readonly settings = signal<WsSlicingParams>(DEFAULT_SETTINGS);
+  readonly settings = signal<SlicingParams>(DEFAULT_SETTINGS);
   readonly status = signal<SlicerStatus>('idle');
   readonly outputLog = signal<string[]>([]);
   readonly phaseTimings = signal<PhaseTimingData[]>([]);
@@ -246,8 +251,62 @@ export class Slicer {
     ]);
   }
 
-  updateSettings(patch: Partial<WsSlicingParams>): void {
+  updateSettings(patch: Partial<SlicingParams>): void {
     this.settings.update((current) => ({ ...current, ...patch }));
+  }
+
+  /**
+   * Build the wire-format scene that goes alongside a slice request.
+   *
+   * The frontend owns its scene as a signal of {@link SceneObjectSnapshot}s
+   * inside {@link SceneEngineService}. Slicing on the server has to see the
+   * exact same objects with the exact same transforms, otherwise the user's
+   * translate/rotate/scale/center/drop-to-floor edits silently disappear at
+   * slice time. We rebuild the snapshot fresh on every call so transient
+   * sync issues are impossible.
+   *
+   * Each entry references an uploaded file by `file_id` — a `file_uuid`
+   * from the upload response's `ofids`, distinct from the workplate
+   * `ruuid`. The server resolves the file (and its on-disk extension) via
+   * the DB, so the wire format does not carry a format hint. The server
+   * applies each transform via `apply_transform` and merges the resulting
+   * meshes before `process_mesh`.
+   *
+   * **Single-upload caveat.** Today every scene object is assumed to have
+   * come from the same upload (`uploadFileId` = the only entry of `ofids`).
+   * The wire format already supports per-object `file_id`s for a true
+   * multi-file scene, but the `SceneObjectSnapshot` produced by the WASM
+   * engine doesn't yet carry the originating file UUID. When the multi-
+   * upload UX lands, replace the constant `uploadFileId` here with
+   * `o.file_id` (or whichever field the snapshot grows) — the server side
+   * already handles per-object `file_id` correctly.
+   */
+  private buildSceneSnapshot(uploadFileId: string): SceneObjectSliceDto[] {
+    const objects = this.sceneEngine.objects();
+    if (objects.length === 0) {
+      // Scene engine hasn't been populated yet (file uploaded but the
+      // WASM scene hasn't ingested the bytes). Fall back to a single
+      // identity-transform object so the server still slices the
+      // uploaded file with the user's chosen settings.
+      return [
+        {
+          file_id: uploadFileId,
+          transform: {
+            translation: [0, 0, 0],
+            euler_xyz_deg: [0, 0, 0],
+            scale: [1, 1, 1],
+          },
+        },
+      ];
+    }
+    return objects.map((o) => ({
+      file_id: uploadFileId,
+      transform: {
+        translation: o.translation,
+        euler_xyz_deg: o.euler_xyz_deg,
+        scale: o.scale,
+      },
+    }));
   }
 
   async slice(): Promise<void> {
@@ -261,12 +320,21 @@ export class Slicer {
     this.currentPhase.set(null);
     this.gcodeDownloadUrl.set(null);
 
-    // If the file was already uploaded (navigated from slice-new), reuse the UUID
-    const existingUuid = this.slicerFile.requestUuid();
-    if (existingUuid) {
+    // If the file was already uploaded (navigated from slice-new or
+    // restored from `/api/request/:ruuid`), reuse the workplate UUID
+    // (`ruuid`) and the file UUID(s) (`ofids`) — the slice references
+    // files by their own UUID, never by `ruuid`.
+    const existingRuuid = this.slicerFile.requestUuid();
+    const existingFileIds = this.slicerFile.fileIds();
+    if (existingRuuid && existingFileIds.length > 0) {
       this.status.set('slicing');
-      this.outputLog.update((log) => [...log, `Starting slice job (request: ${existingUuid})…`]);
-      this.ws.send({ type: 'Slice', request_uuid: existingUuid, settings: this.settings() });
+      this.outputLog.update((log) => [...log, `Starting slice job (request: ${existingRuuid})…`]);
+      this.ws.send({
+        type: 'Slice',
+        request_uuid: existingRuuid,
+        scene: this.buildSceneSnapshot(existingFileIds[0]),
+        settings: this.settings(),
+      });
       return;
     }
 
@@ -274,31 +342,33 @@ export class Slicer {
     this.outputLog.update((log) => [...log, 'Uploading file…']);
 
     try {
-      // Step 1: Upload file via HTTP
+      // Step 1: Upload file via HTTP. Response: { ruuid, ofids: [...] }.
       const formData = new FormData();
       formData.append('file', file);
 
       const uploadResponse = await this.http
-        .post<{ request_uuid: string }>(`${environment.apiUrl}/upload`, formData)
+        .post<{ ruuid: string; ofids: string[] }>(`${environment.apiUrl}/upload`, formData)
         .toPromise();
 
       if (!uploadResponse) {
         throw new Error('No response from upload');
       }
 
-      const requestUuid = uploadResponse.request_uuid;
+      const { ruuid, ofids } = uploadResponse;
       this.outputLog.update((log) => [
         ...log,
-        `Upload complete. Request ID: ${requestUuid}`,
+        `Upload complete. Workplate: ${ruuid}, files: ${ofids.length}`,
         'Starting slice job…',
       ]);
 
-      // Step 2: Send slice request via WebSocket with request_uuid
+      // Step 2: Send slice request via WebSocket. The scene references the
+      // file by its `file_uuid` (first entry of `ofids`).
       this.status.set('slicing');
 
       this.ws.send({
         type: 'Slice',
-        request_uuid: requestUuid,
+        request_uuid: ruuid,
+        scene: this.buildSceneSnapshot(ofids[0]),
         settings: this.settings(),
       });
     } catch (error) {

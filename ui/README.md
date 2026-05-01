@@ -82,14 +82,14 @@ sequenceDiagram
 
     U->>UI: drop model.stl
     UI->>S: POST /api/upload (multipart, ≤ 500 MB)
-    S-->>UI: { fileId, requestUuid }
-    UI->>W: SceneHandle.applyOp(Add { file_id })
+    S-->>UI: { ruuid, ofids: [file_uuid] }
+    UI->>W: SceneHandle.applyOp(Add { file_id: file_uuid })
     W-->>UI: render buffer (positions, normals, transforms)
     U->>UI: drag / rotate / drop-to-floor
     UI->>W: SceneHandle.applyOp(Translate / Rotate / DropToFloor / …)
     UI->>S: WS Scene { ops }
     U->>UI: click Slice
-    UI->>S: WS Slice { requestUuid, settings }
+    UI->>S: WS Slice { request_uuid: ruuid, scene: [{file_id, transform}], settings }
     S-->>UI: WS Progress · PhaseMarker · SliceComplete
     UI-->>U: layered G-code preview + estimates
 ```

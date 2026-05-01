@@ -4,6 +4,7 @@
   "private": true,
   "packageManager": "pnpm@10.33.0",
   "scripts": {
+    "hydrate": "pnpm run build:wasm && pnpm run gen",
     "ui:dev": "pnpm --filter slicer-ui start",
     "ui:build": "pnpm --filter slicer-ui build",
     "build:wasm": "wasm-pack build --target web --release --out-dir ui/src/generated/scene-wasm --out-name scene_engine",

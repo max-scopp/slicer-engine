@@ -42,6 +42,10 @@ export class SceneSelection {
   private currentCursorMode: ViewerCursorMode = 'orbit';
   private readonly selectables = new Map<string, Object3D>();
   private currentSelectedIds: ReadonlySet<string> = new Set();
+
+  get selectedIds(): ReadonlySet<string> {
+    return this.currentSelectedIds;
+  }
   private readonly originalEmissive = new Map<Mesh, { color: Color; intensity: number }[]>();
   private readonly raycaster = new Raycaster();
   private readonly ndcScratch = new Vector2();
