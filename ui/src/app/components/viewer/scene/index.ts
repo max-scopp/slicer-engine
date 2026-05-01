@@ -61,6 +61,7 @@ export class ViewerScene {
   private readonly _grid: SceneGrid;
   private readonly _selection: SceneSelection;
   private readonly gizmo: GizmoManager;
+  private readonly axesGizmo: Group;
 
   private rafHandle = 0;
   private disposed = false;
@@ -164,7 +165,9 @@ export class ViewerScene {
     const dir = new DirectionalLight(0xffffff, 0.9);
     dir.position.set(200, 300, 400);
     this.scene.add(dir);
-    this.scene.add(buildAxesGizmo(40, 0.6));
+
+    this.axesGizmo = buildAxesGizmo(40, 0.6);
+    this.scene.add(this.axesGizmo);
 
     this.resizeObserver = new ResizeObserver(() => this.handleResize());
     this.resizeObserver.observe(host);
@@ -298,6 +301,17 @@ export class ViewerScene {
     }
     this.gizmo.update();
 
+    const dist = this.camera.position.distanceTo(this.axesGizmo.position);
+    // opacity between 60 (alpha 0) and 140 (alpha 1)
+    const opacity = Math.max(0, Math.min(1, (dist - 60) / 80));
+    this.axesGizmo.traverse((c) => {
+      const mesh = c as Mesh;
+      if (mesh.material && (mesh.material as MeshBasicMaterial).transparent !== undefined) {
+        (mesh.material as MeshBasicMaterial).opacity = opacity;
+        mesh.visible = opacity > 0;
+      }
+    });
+
     this.renderer.render(this.scene, this.camera);
     this.publishCameraState();
     this.publishFps(now, dt);
@@ -367,10 +381,9 @@ function buildAxesGizmo(length: number, thickness: number): Group {
 
   const halfT = thickness / 2;
   const originGeo = new BoxGeometry(thickness, thickness, thickness);
-  const originMat = new MeshBasicMaterial({ color: 0xdddddd });
+  const originMat = new MeshBasicMaterial({ color: 0xdddddd, transparent: true, opacity: 1 });
   const originMesh = new Mesh(originGeo, originMat);
   originMesh.position.set(halfT, halfT, halfT);
-  originMesh.renderOrder = 1;
   group.add(originMesh);
 
   const axes: Array<{ color: number; axis: 'x' | 'y' | 'z' }> = [
@@ -387,7 +400,7 @@ function buildAxesGizmo(length: number, thickness: number): Group {
           ? [thickness, rodLength, thickness]
           : [thickness, thickness, rodLength];
     const geo = new BoxGeometry(...dims);
-    const mat = new MeshBasicMaterial({ color });
+    const mat = new MeshBasicMaterial({ color, transparent: true, opacity: 1 });
     const mesh = new Mesh(geo, mat);
     mesh.position.set(halfT, halfT, halfT);
     mesh.position[axis] = thickness + rodLength / 2;

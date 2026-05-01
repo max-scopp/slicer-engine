@@ -2,11 +2,11 @@ import type { Group } from 'three';
 import type { GcodeLayerBuffer } from '../../../generated/scene-wasm/scene_engine';
 import type { RoleName } from '../../services/gcode-preview.service';
 import {
-    applyHiddenRoles,
-    applySegmentProgress,
-    buildLayerGroup,
-    disposeLayerGroup,
-    type LayerInfo,
+  applyHiddenRoles,
+  applySegmentProgress,
+  buildLayerGroup,
+  disposeLayerGroup,
+  type LayerInfo,
 } from './gcode-layer-renderer';
 
 /**
@@ -122,8 +122,10 @@ export class GcodeOrchestrator {
 function showLayerRange(layers: LayerInfo[], min: number, max: number, prevMax: number): void {
   const prevInfo = layers[prevMax];
   if (prevInfo && prevMax !== max) {
-    for (const { lines } of prevInfo.roleSegments) {
-      lines.geometry.setDrawRange(0, Infinity);
+    for (const rs of prevInfo.roleSegments) {
+      if (rs.mesh) rs.mesh.count = rs.count;
+      if (rs.joints) rs.joints.count = rs.count * 2;
+      if (rs.lines) rs.lines.geometry.setDrawRange(0, Infinity);
     }
   }
   for (const info of layers) {

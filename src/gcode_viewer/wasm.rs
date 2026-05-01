@@ -8,8 +8,8 @@ use super::types::InternalLayer;
 
 /// Per-layer geometry buffers, one `Float32Array` per extrusion role.
 ///
-/// Each array contains flat line-segment pairs:
-/// `[x0, y0, z0,  x1, y1, z1,  …]`  (6 floats per segment).
+/// Each array contains flat line-segment pairs with dimensions:
+/// `[x0, y0, z0,  x1, y1, z1,  width, height, …]`  (8 floats per segment).
 #[wasm_bindgen]
 pub struct GcodeLayerBuffer {
     z: f32,

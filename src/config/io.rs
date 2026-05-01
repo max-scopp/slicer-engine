@@ -217,11 +217,13 @@ mod tests {
 
     #[test]
     fn test_round_trip_toml() {
-        let mut config = AppConfig::default();
-        config.slicing = Some(SlicingParams {
-            layer_height: 0.15,
-            ..SlicingParams::default()
-        });
+        let mut config = AppConfig {
+            slicing: Some(SlicingParams {
+                layer_height: 0.15,
+                ..SlicingParams::default()
+            }),
+            ..Default::default()
+        };
         config.server.port = 5300;
 
         let dir = tempfile::tempdir().expect("temp dir");

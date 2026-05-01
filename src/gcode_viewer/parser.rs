@@ -13,6 +13,8 @@ pub(super) fn parse_gcode_bytes(bytes: &[u8]) -> Vec<InternalLayer> {
     let mut y: f32 = 0.0;
     let mut z: f32 = 0.0;
     let mut e: f32 = 0.0;
+    let mut width: f32 = 0.4;
+    let mut height: f32 = 0.2;
     let mut absolute_xyz = true;
     let mut absolute_e = true;
     let mut role = Role::Travel;
@@ -32,6 +34,8 @@ pub(super) fn parse_gcode_bytes(bytes: &[u8]) -> Vec<InternalLayer> {
                     &mut layers,
                     &mut current,
                     &mut seen_layer_change_comment,
+                    &mut width,
+                    &mut height,
                     z,
                 );
                 raw_line[..pos].trim()
@@ -119,7 +123,7 @@ pub(super) fn parse_gcode_bytes(bytes: &[u8]) -> Vec<InternalLayer> {
                     || (y - prev_y).abs() > 1e-6
                     || (z - prev_z).abs() > 1e-6;
                 if moved {
-                    current.push_segment(seg_role, prev_x, prev_y, prev_z, x, y, z);
+                    current.push_segment(seg_role, prev_x, prev_y, prev_z, x, y, z, width, height);
                 }
             }
             _ => {} // G28, G4, M104, M109, T0, etc. — ignore
@@ -137,6 +141,8 @@ pub(super) fn process_comment(
     layers: &mut Vec<InternalLayer>,
     current: &mut InternalLayer,
     seen_layer_change_comment: &mut bool,
+    width: &mut f32,
+    height: &mut f32,
     current_z: f32,
 ) {
     let trimmed = comment.trim();
@@ -150,6 +156,18 @@ pub(super) fn process_comment(
         *role = Role::Travel;
     } else if let Some(type_val) = trimmed.strip_prefix("TYPE:") {
         *role = Role::from_type_comment(type_val);
+    } else if let Some(width_val) = trimmed.strip_prefix("WIDTH:") {
+        if let Ok(w) = width_val.parse::<f32>() {
+            *width = w;
+        }
+    } else if let Some(height_val) = trimmed.strip_prefix("HEIGHT:") {
+        if let Ok(h) = height_val.parse::<f32>() {
+            *height = h;
+        }
+    } else if let Some(height_val) = trimmed.strip_prefix("LAYER_HEIGHT:") {
+        if let Ok(h) = height_val.parse::<f32>() {
+            *height = h;
+        }
     }
 }
 

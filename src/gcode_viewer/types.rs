@@ -39,7 +39,7 @@ impl Role {
 
 /// One layer's geometry, bucketed by extrusion role.
 ///
-/// Each `Vec<f32>` holds flat segment pairs `[x0,y0,z0, x1,y1,z1, …]`.
+/// Each `Vec<f32>` holds flat segment pairs `[x0,y0,z0, x1,y1,z1, width,height, …]`.
 #[derive(Debug, Default)]
 pub(super) struct InternalLayer {
     pub(super) z: f32,
@@ -69,6 +69,8 @@ impl InternalLayer {
         x1: f32,
         y1: f32,
         z1: f32,
+        width: f32,
+        height: f32,
     ) {
         let buf = match role {
             Role::OuterWall => &mut self.outer_wall,
@@ -79,6 +81,6 @@ impl InternalLayer {
             Role::Travel => &mut self.travel,
             Role::Other => &mut self.other,
         };
-        buf.extend_from_slice(&[x0, y0, z0, x1, y1, z1]);
+        buf.extend_from_slice(&[x0, y0, z0, x1, y1, z1, width, height]);
     }
 }
