@@ -9,8 +9,7 @@
     "test": "ng test",
     "gen-schemas": "cd .. && cargo run -- gen-schemas --output-dir ui/src/schemas",
     "gen-types": "pnpm exec json2ts --declareExternallyReferenced -i \"src/schemas/*.json\" -o src/generated",
-    "gen": "pnpm run gen-schemas && pnpm run gen-types",
-    "postinstall": "pnpm run gen"
+    "gen": "pnpm run gen-schemas && pnpm run gen-types"
   },
   "private": true,
   "dependencies": {
