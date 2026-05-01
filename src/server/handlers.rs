@@ -3,10 +3,16 @@
 use actix_web::web;
 use std::sync::Arc;
 
-/// Handle file upload: save STL and return request UUID
+/// Response from `POST /api/upload`.
+///
+/// `ruuid` is the workplate / scene identifier; `ofids` is the list of file
+/// identifiers that have been placed in that scene. Today there is exactly
+/// one file per upload, but the protocol intentionally supports multiple so
+/// the slice path doesn't have to change when multi-file UX lands.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct UploadResponse {
-    pub request_uuid: String,
+    pub ruuid: String,
+    pub ofids: Vec<String>,
 }
 
 pub struct AppState {
@@ -72,7 +78,11 @@ pub async fn patch_config_handler(body: web::Json<PatchConfigRequest>) -> actix_
     }))
 }
 
-/// Handle file upload: save STL and return request UUID
+/// Handle file upload: save the file with its original extension and return
+/// `{ ruuid, ofids: [file_uuid] }`. The workplate UUID and the file UUID are
+/// distinct — the slice protocol references files by `file_uuid` and never by
+/// `request_uuid` (the legacy "request UUID is also the file ID" convention
+/// is gone).
 pub async fn upload_handler(
     state: web::Data<AppState>,
     mut multipart: actix_multipart::Multipart,
@@ -80,8 +90,9 @@ pub async fn upload_handler(
     use futures_util::StreamExt as _;
     use uuid::Uuid;
 
-    // Generate request UUID
+    // Generate workplate UUID and a separate file UUID.
     let request_uuid = Uuid::new_v4();
+    let file_uuid = Uuid::new_v4();
 
     // Create database record
     let db = state.db.clone();
@@ -92,12 +103,10 @@ pub async fn upload_handler(
     .await
     .map_err(actix_web::error::ErrorInternalServerError)?;
 
-    // Save uploaded file
-    let file_path = state.work_dir.join(format!("{}.stl", request_uuid));
-
     const MAX_FILE_SIZE: u64 = 500 * 1024 * 1024; // 500 MB limit
     let mut file_size: u64 = 0;
     let mut original_filename: Option<String> = None;
+    let mut file_path: Option<std::path::PathBuf> = None;
 
     // Process multipart fields
     while let Some(field_result) = multipart.next().await {
@@ -116,7 +125,19 @@ pub async fn upload_handler(
             original_filename = Some(filename);
         }
 
-        let mut file = tokio::fs::File::create(&file_path)
+        // Preserve the original extension on disk so the slicer can pick the
+        // right loader without anyone having to re-encode the format hint
+        // into the URL or the wire protocol.
+        let ext = original_filename
+            .as_deref()
+            .and_then(|f| std::path::Path::new(f).extension())
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .unwrap_or_else(|| "stl".to_string());
+        let path = state.work_dir.join(format!("{}.{}", file_uuid, ext));
+        file_path = Some(path.clone());
+
+        let mut file = tokio::fs::File::create(&path)
             .await
             .map_err(actix_web::error::ErrorInternalServerError)?;
 
@@ -126,7 +147,7 @@ pub async fn upload_handler(
             file_size += chunk.len() as u64;
 
             if file_size > MAX_FILE_SIZE {
-                let _ = tokio::fs::remove_file(&file_path).await;
+                let _ = tokio::fs::remove_file(&path).await;
                 return Err(actix_web::error::ErrorPayloadTooLarge(
                     "File exceeds 500 MB limit",
                 ));
@@ -140,24 +161,34 @@ pub async fn upload_handler(
         break; // Only process first file field
     }
 
-    if file_size == 0 {
-        let _ = tokio::fs::remove_file(&file_path).await;
-        return Err(actix_web::error::ErrorBadRequest("No file uploaded"));
-    }
+    let file_path = match file_path {
+        Some(p) if file_size > 0 => p,
+        Some(p) => {
+            let _ = tokio::fs::remove_file(&p).await;
+            return Err(actix_web::error::ErrorBadRequest("No file uploaded"));
+        }
+        None => return Err(actix_web::error::ErrorBadRequest("No file uploaded")),
+    };
 
     // Update database with file info
     let db = state.db.clone();
-    let uuid_clone = request_uuid;
+    let filename = original_filename.unwrap_or_else(|| format!("{}.stl", file_uuid));
     let file_path_clone = file_path.clone();
-    let filename = original_filename.unwrap_or_else(|| "unknown.stl".to_string());
     tokio::task::spawn_blocking(move || {
-        let _ = db.set_upload_file(uuid_clone, filename, file_path_clone, file_size);
+        let _ = db.add_upload_file(
+            request_uuid,
+            file_uuid,
+            &filename,
+            file_path_clone,
+            file_size,
+        );
     })
     .await
     .map_err(actix_web::error::ErrorInternalServerError)?;
 
     Ok(actix_web::HttpResponse::Ok().json(UploadResponse {
-        request_uuid: request_uuid.to_string(),
+        ruuid: request_uuid.to_string(),
+        ofids: vec![file_uuid.to_string()],
     }))
 }
 
@@ -203,17 +234,27 @@ pub async fn download_handler(
         .body(content))
 }
 
-/// Response body for `GET /api/request/:request_uuid`.
+/// One file entry returned by `GET /api/request/:request_uuid`.
 #[derive(serde::Serialize)]
-pub struct RequestMetaResponse {
-    pub request_uuid: String,
-    pub status: String,
-    pub original_filename: Option<String>,
-    pub has_stl: bool,
-    pub has_gcode: bool,
+pub struct RequestFileSummary {
+    pub file_uuid: String,
+    pub original_filename: String,
 }
 
-/// `GET /api/request/:request_uuid` — return metadata for a request session.
+/// Response body for `GET /api/request/:request_uuid`.
+///
+/// Returns the workplate's status, the G-code download status, and the list
+/// of file IDs (`ofids`-style) so the UI can rebuild a slice payload after a
+/// page reload without having to re-upload anything.
+#[derive(serde::Serialize)]
+pub struct RequestMetaResponse {
+    pub ruuid: String,
+    pub status: String,
+    pub has_gcode: bool,
+    pub ofids: Vec<RequestFileSummary>,
+}
+
+/// `GET /api/request/:request_uuid` — return metadata for a workplate.
 pub async fn get_request_handler(
     state: web::Data<AppState>,
     request_uuid: web::Path<String>,
@@ -229,11 +270,11 @@ pub async fn get_request_handler(
         .map_err(actix_web::error::ErrorInternalServerError)?
         .ok_or_else(|| actix_web::error::ErrorNotFound("Request not found"))?;
 
-    let has_stl = session
-        .upload_file_path
-        .as_ref()
-        .map(|p| p.exists())
-        .unwrap_or(false);
+    let db = state.db.clone();
+    let files = tokio::task::spawn_blocking(move || db.get_files_for_request(uuid))
+        .await
+        .map_err(actix_web::error::ErrorInternalServerError)?
+        .map_err(actix_web::error::ErrorInternalServerError)?;
 
     let has_gcode = session
         .download_file_path
@@ -244,53 +285,52 @@ pub async fn get_request_handler(
     let status_str = format!("{:?}", session.status).to_lowercase();
 
     Ok(actix_web::HttpResponse::Ok().json(RequestMetaResponse {
-        request_uuid: session.request_uuid.to_string(),
+        ruuid: session.request_uuid.to_string(),
         status: status_str,
-        original_filename: session.original_filename,
-        has_stl,
         has_gcode,
+        ofids: files
+            .into_iter()
+            .map(|f| RequestFileSummary {
+                file_uuid: f.file_uuid.to_string(),
+                original_filename: f.original_filename,
+            })
+            .collect(),
     }))
 }
 
-/// `GET /api/stl/:request_uuid` — stream the uploaded STL file back to the browser.
-pub async fn download_stl_handler(
+/// `GET /api/file/:file_uuid` — stream an uploaded file back to the browser.
+///
+/// Replaces the legacy `/api/stl/:request_uuid` endpoint. The file's actual
+/// extension is preserved in `original_filename` so the browser sees the
+/// right name regardless of format.
+pub async fn download_file_handler(
     state: web::Data<AppState>,
-    request_uuid: web::Path<String>,
+    file_uuid: web::Path<String>,
 ) -> Result<actix_web::HttpResponse, actix_web::Error> {
-    let uuid_str = request_uuid.into_inner();
+    let uuid_str = file_uuid.into_inner();
     let uuid = uuid::Uuid::parse_str(&uuid_str)
         .map_err(|_| actix_web::error::ErrorBadRequest("Invalid UUID"))?;
 
     let db = state.db.clone();
-    let session = tokio::task::spawn_blocking(move || db.get_request(uuid))
+    let entry = tokio::task::spawn_blocking(move || db.get_file(uuid))
         .await
         .map_err(actix_web::error::ErrorInternalServerError)?
         .map_err(actix_web::error::ErrorInternalServerError)?
-        .ok_or_else(|| actix_web::error::ErrorNotFound("Request not found"))?;
+        .ok_or_else(|| actix_web::error::ErrorNotFound("File not found"))?;
 
-    let upload_path = session
-        .upload_file_path
-        .ok_or_else(|| actix_web::error::ErrorNotFound("STL file not available"))?;
-
-    if !upload_path.exists() {
-        return Err(actix_web::error::ErrorNotFound(
-            "STL file not found on disk",
-        ));
+    if !entry.file_path.exists() {
+        return Err(actix_web::error::ErrorNotFound("File not found on disk"));
     }
 
-    let filename = session
-        .original_filename
-        .unwrap_or_else(|| "model.stl".to_string());
-
-    let content = tokio::fs::read(&upload_path)
+    let content = tokio::fs::read(&entry.file_path)
         .await
-        .map_err(|_| actix_web::error::ErrorNotFound("STL file could not be read"))?;
+        .map_err(|_| actix_web::error::ErrorNotFound("File could not be read"))?;
 
     Ok(actix_web::HttpResponse::Ok()
         .content_type("application/octet-stream")
         .insert_header((
             "Content-Disposition",
-            format!("attachment; filename=\"{}\"", filename),
+            format!("attachment; filename=\"{}\"", entry.original_filename),
         ))
         .body(content))
 }

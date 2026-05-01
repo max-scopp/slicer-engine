@@ -7,11 +7,15 @@
 //!
 //! Files are handled via HTTP (not WebSocket) for efficient streaming:
 //!
-//! 1. Browser uploads STL: `POST /api/upload` → returns `request_uuid`
-//! 2. Browser sends slice request: WebSocket with `request_uuid` + settings
-//! 3. Server processes file from disk
+//! 1. Browser uploads file: `POST /api/upload` → returns `{ ruuid, ofids: [...] }`
+//!    where `ruuid` is the workplate / scene identifier and `ofids` are the
+//!    file identifiers placed in that scene.
+//! 2. Browser sends slice request: WebSocket with `request_uuid` (= `ruuid`),
+//!    a `scene` referencing files by `file_uuid` (from `ofids`), and settings.
+//! 3. Server processes files from disk (extension preserved from upload)
 //! 4. Server saves G-code to disk
 //! 5. Browser downloads G-code: `GET /api/download/:request_uuid`
+//! 6. Browser fetches an uploaded file by id: `GET /api/file/:file_uuid`
 
 pub mod handlers;
 pub mod ws_session;
@@ -165,8 +169,8 @@ async fn run_server(
                         web::get().to(handlers::get_request_handler),
                     )
                     .route(
-                        "/stl/{request_uuid}",
-                        web::get().to(handlers::download_stl_handler),
+                        "/file/{file_uuid}",
+                        web::get().to(handlers::download_file_handler),
                     )
                     .route("/config", web::get().to(handlers::get_config_handler))
                     .route("/config", web::patch().to(handlers::patch_config_handler)),
