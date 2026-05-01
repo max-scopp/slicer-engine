@@ -54,11 +54,8 @@ impl MeshFormat {
 pub fn load_bytes(bytes: &[u8], format: MeshFormat) -> Result<Mesh, String> {
     match format {
         MeshFormat::Stl => io::read_stl_from_bytes(bytes).map_err(|e| e.to_string()),
-        MeshFormat::Obj => Err("OBJ loading from raw bytes is not yet supported".to_string()),
-        #[cfg(not(target_arch = "wasm32"))]
+        MeshFormat::Obj => io::read_obj_from_bytes(bytes).map_err(|e| e.to_string()),
         MeshFormat::Threemf => io::read_3mf_from_bytes(bytes).map_err(|e| e.to_string()),
-        #[cfg(target_arch = "wasm32")]
-        MeshFormat::Threemf => Err("3MF loading is not supported in wasm builds".to_string()),
     }
 }
 

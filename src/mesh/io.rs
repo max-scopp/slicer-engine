@@ -145,7 +145,6 @@ pub fn read_stl_from_bytes(bytes: &[u8]) -> Result<Mesh, Box<dyn std::error::Err
 /// use slicer_engine::mesh::io::read_obj;
 /// let mesh = read_obj(Path::new("model.obj")).unwrap();
 /// ```
-#[cfg(not(target_arch = "wasm32"))]
 pub fn read_obj(path: &Path) -> Result<Mesh, Box<dyn std::error::Error>> {
     let (models, _materials) = tobj::load_obj(
         path,
@@ -192,6 +191,59 @@ pub fn read_obj(path: &Path) -> Result<Mesh, Box<dyn std::error::Error>> {
     })
 }
 
+/// Load a mesh from raw OBJ bytes.
+///
+/// # Errors
+/// Returns an error if the bytes are not a valid OBJ file or cannot be
+/// converted to the internal mesh representation.
+pub fn read_obj_from_bytes(bytes: &[u8]) -> Result<Mesh, Box<dyn std::error::Error>> {
+    let mut cursor = std::io::Cursor::new(bytes);
+    let mut buf_reader = std::io::BufReader::new(&mut cursor);
+
+    let (models, _materials) = tobj::load_obj_buf(
+        &mut buf_reader,
+        &tobj::LoadOptions {
+            triangulate: true,
+            single_index: true,
+            ..Default::default()
+        },
+        |_| tobj::load_mtl_buf(&mut std::io::BufReader::new(std::io::Cursor::new([]))),
+    )
+    .map_err(|e| format!("Failed to parse OBJ from bytes: {}", e))?;
+
+    let mut all_vertices: Vec<Vertex> = Vec::new();
+    let mut all_faces: Vec<Face> = Vec::new();
+
+    for model in &models {
+        let mesh = &model.mesh;
+        let base = all_vertices.len();
+
+        for chunk in mesh.positions.chunks_exact(3) {
+            all_vertices.push(Vertex::new(
+                chunk[0] as f64,
+                chunk[1] as f64,
+                chunk[2] as f64,
+            ));
+        }
+
+        for tri in mesh.indices.chunks_exact(3) {
+            let v0 = all_vertices[base + tri[0] as usize];
+            let v1 = all_vertices[base + tri[1] as usize];
+            let v2 = all_vertices[base + tri[2] as usize];
+            all_faces.push(Face {
+                vertices: [v0, v1, v2],
+                normal: None,
+            });
+        }
+    }
+
+    Ok(Mesh {
+        vertices: all_vertices,
+        faces: all_faces,
+        aabb: None,
+    })
+}
+
 /// Load a mesh from a 3MF file.
 ///
 /// 3MF is a ZIP archive containing an XML model descriptor at `3D/3dmodel.model`.
@@ -208,7 +260,6 @@ pub fn read_obj(path: &Path) -> Result<Mesh, Box<dyn std::error::Error>> {
 /// use slicer_engine::mesh::io::read_3mf;
 /// let mesh = read_3mf(Path::new("model.3mf")).unwrap();
 /// ```
-#[cfg(not(target_arch = "wasm32"))]
 pub fn read_3mf(path: &Path) -> Result<Mesh, Box<dyn std::error::Error>> {
     let file = OpenOptions::new()
         .read(true)
@@ -228,7 +279,6 @@ pub fn read_3mf(path: &Path) -> Result<Mesh, Box<dyn std::error::Error>> {
 /// # Errors
 /// Returns an error if the bytes are not a valid 3MF archive or the embedded
 /// XML cannot be parsed.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn read_3mf_from_bytes(bytes: &[u8]) -> Result<Mesh, Box<dyn std::error::Error>> {
     use quick_xml::events::Event;
     use quick_xml::Reader;
@@ -366,14 +416,8 @@ pub fn read_mesh(path: &Path) -> Result<Mesh, Box<dyn std::error::Error>> {
 
     match ext.as_str() {
         "stl" => read_stl(path),
-        #[cfg(not(target_arch = "wasm32"))]
         "obj" => read_obj(path),
-        #[cfg(target_arch = "wasm32")]
-        "obj" => Err("OBJ format not supported in wasm builds".into()),
-        #[cfg(not(target_arch = "wasm32"))]
         "3mf" => read_3mf(path),
-        #[cfg(target_arch = "wasm32")]
-        "3mf" => Err("3MF format not supported in wasm builds".into()),
         other => Err(format!(
             "Unsupported file format '.{}'. Supported: {}",
             other,
