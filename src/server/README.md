@@ -22,12 +22,15 @@ fighting it the other way. The server uses each for what it's good at:
 ```mermaid
 flowchart LR
     UI[Angular UI] -- POST /api/upload (multipart) --> H[handlers::upload_handler]
-    H -- request_uuid --> UI
+    H -- &#123; ruuid, ofids &#125; --> UI
     UI <-- WebSocket /ws --> WS[ws_session::handle_ws_session]
     WS -- ServerMessage --> UI
     UI -- ClientMessage<br/>(Scene, Slice, …) --> WS
-    UI -- GET /api/download/:uuid --> H2[handlers::download_handler]
+    UI -- GET /api/file/:file_uuid --> H3[handlers::file_handler]
+    UI -- GET /api/request/:ruuid --> H4[handlers::request_meta_handler]
+    UI -- GET /api/download/:ruuid --> H2[handlers::download_handler]
     H2 -- G-code stream --> UI
+    H3 -- model bytes --> UI
 ```
 
 ---
@@ -39,13 +42,20 @@ flowchart LR
    gone. Persistence is the UI's problem.
 2. **All bytes go via HTTP.** Mesh uploads are multipart POSTs; G-code
    downloads are streamed responses. The WebSocket carries only JSON.
-3. **`request_uuid` ties the two together.** The browser uploads first,
-   gets a `request_uuid`, then sends a `Slice` WS message referencing it.
-   The server looks up the file on disk and slices it.
-4. **Every log line and phase timing is mirrored to the WS client.** The
+3. **Workplate UUID and file UUID are distinct.** `POST /api/upload`
+   returns `{ ruuid, ofids: [file_uuid, ...] }`. The workplate `ruuid`
+   is the slicing job key; each `file_uuid` in `ofids` is one uploaded
+   model the user can place in the scene. Slicing references files by
+   `file_uuid` exclusively — there is no "request UUID is also the file
+   ID" shortcut.
+4. **The on-disk extension is the format hint.** Uploads are stored as
+   `{file_uuid}.{ext}` (e.g. `.stl`, `.obj`, `.3mf`); the slicer
+   dispatches to the right loader from the extension. The wire protocol
+   carries no `format` field.
+5. **Every log line and phase timing is mirrored to the WS client.** The
    `WsLogger` plugs into the same `ProcessLogger` interface the CLI uses,
    so verbose output is identical across both transports.
-5. **The protocol is the source of truth, not the transport.** Message
+6. **The protocol is the source of truth, not the transport.** Message
    shapes live in [`crate::ws_protocol`](../ws_protocol.rs) with `JsonSchema`
    derives so the UI generates types from them.
 
@@ -97,28 +107,32 @@ classDiagram
 
 ### HTTP
 
-| Route                 | Method | Purpose                                           |
-| --------------------- | ------ | ------------------------------------------------- |
-| `/api/upload`         | POST   | Multipart STL/OBJ/3MF upload → `{ request_uuid }` |
-| `/api/download/:uuid` | GET    | Stream the G-code produced for that UUID          |
-| `/api/config`         | GET    | Return the fully-merged `AppConfig`               |
-| `/api/config`         | PATCH  | Update one config key, persist to `slicer.toml`   |
-| `/*` (anything else)  | GET    | Serve the Angular bundle from `ui_dir`            |
+| Route                  | Method | Purpose                                                                       |
+| ---------------------- | ------ | ----------------------------------------------------------------------------- |
+| `/api/upload`          | POST   | Multipart `STL` / `OBJ` / `3MF` upload → `{ ruuid, ofids: [file_uuid, ...] }` |
+| `/api/file/:file_uuid` | GET    | Stream an uploaded model back (used by the viewer on cold reload)             |
+| `/api/request/:ruuid`  | GET    | Workplate metadata: `{ ruuid, status, has_gcode, ofids: [{file_uuid, name}] }` |
+| `/api/download/:ruuid` | GET    | Stream the G-code produced for that workplate                                 |
+| `/api/config`          | GET    | Return the fully-merged `AppConfig`                                           |
+| `/api/config`          | PATCH  | Update one config key, persist to `slicer.toml`                               |
+| `/*` (anything else)   | GET    | Serve the Angular bundle from `ui_dir`                                        |
 
-`POST /api/upload` enforces a 500 MB file-size cap and only reads the
-field named `"file"` from the multipart payload.
+`POST /api/upload` enforces a 500 MB file-size cap, only reads the
+field named `"file"` from the multipart payload, and preserves the
+original extension on disk so the slicer can pick the right loader
+without anyone having to re-encode the format hint.
 
 ### WebSocket (`/ws`)
 
 `ClientMessage` (browser → server):
 
-| `type`          | Purpose                                                     |
-| --------------- | ----------------------------------------------------------- |
-| `Slice`         | Slice a previously-uploaded file (`request_uuid` + params)  |
-| `ListSessions`  | Replay history from the SQLite database                     |
-| `Reset`         | Acknowledge / clear current state                           |
-| `Scene`         | Apply a list of `SceneOpDto`s to the session's `SceneState` |
-| `SceneSnapshot` | Request the current scene state                             |
+| `type`          | Purpose                                                                           |
+| --------------- | --------------------------------------------------------------------------------- |
+| `Slice`         | Slice a workplate: `request_uuid` + `scene: [SceneObjectSliceDto]` + `settings`   |
+| `ListSessions`  | Replay history from the SQLite database                                           |
+| `Reset`         | Acknowledge / clear current state                                                 |
+| `Scene`         | Apply a list of `SceneOpDto`s to the session's `SceneState`                       |
+| `SceneSnapshot` | Request the current scene state                                                   |
 
 `ServerMessage` (server → browser):
 
@@ -148,34 +162,34 @@ sequenceDiagram
     participant P as core::process_mesh
     participant FS as work_dir on disk
 
-    U->>H: POST /api/upload (STL bytes)
-    H->>D: create_request(uuid, AwaitingUpload)
-    H->>FS: write {uuid}.stl
-    H->>D: update Uploading → UploadComplete
-    H-->>U: { request_uuid }
+    U->>H: POST /api/upload (model bytes)
+    H->>D: create_request(ruuid, AwaitingUpload)
+    H->>FS: write {file_uuid}.{ext}
+    H->>D: add_upload_file(ruuid, file_uuid, name, path, size)
+    H-->>U: { ruuid, ofids: [file_uuid] }
 
     U->>W: WS open /ws
     W-->>U: Connected { version }
 
-    U->>W: Scene { ops: [Add{file_id: uuid}, …] }
-    W->>FS: read {uuid}.stl
-    W->>W: SceneState::apply(ops)
-    W-->>U: SceneState { objects, bed }
-
-    U->>W: Slice { request_uuid, settings }
+    U->>W: Slice { request_uuid: ruuid, scene: [{ file_id, transform }], settings }
     W->>D: status = Slicing
-    W->>P: process_mesh(baked, params, WsLogger)
+    loop per scene object
+        W->>D: get_file(file_id)
+        W->>FS: read file_path, parse via scene::load_path
+        W->>W: apply_transform (bake once, per SSOT contract)
+    end
+    W->>P: process_mesh(merged, params, WsLogger)
     loop per phase
         P-->>W: log_phase_start / log_phase_end
         W-->>U: Log + PhaseMarker
     end
     P-->>W: Vec~SliceLayer~
-    W->>FS: write {uuid}.gcode
+    W->>FS: write {ruuid}.gcode
     W->>D: status = SliceComplete
     W-->>U: SliceComplete { layer_count, download_url }
 
-    U->>H: GET /api/download/{uuid}
-    H->>FS: stream {uuid}.gcode
+    U->>H: GET /api/download/{ruuid}
+    H->>FS: stream {ruuid}.gcode
     H-->>U: G-code body
 ```
 

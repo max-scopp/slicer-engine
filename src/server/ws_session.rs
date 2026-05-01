@@ -437,8 +437,7 @@ async fn handle_list_sessions(
                     .get_files_for_request(s.request_uuid)
                     .ok()
                     .and_then(|files| files.into_iter().next())
-                    .map(|f| f.original_filename)
-                    .or(s.original_filename.clone());
+                    .map(|f| f.original_filename);
                 (s, filename)
             })
             .collect::<Vec<_>>()

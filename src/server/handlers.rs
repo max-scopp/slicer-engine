@@ -213,11 +213,23 @@ pub async fn download_handler(
         .download_file_path
         .ok_or_else(|| actix_web::error::ErrorNotFound("G-code not ready"))?;
 
-    // Generate download filename: replace .stl with .gcode
-    let download_filename = session
-        .original_filename
-        .as_ref()
-        .map(|f| f.replace(".stl", ".gcode").replace(".STL", ".gcode"))
+    // Generate download filename from the workplate's first uploaded file
+    // (replace its extension with `.gcode`). Falls back to a generic name if
+    // the request somehow has no associated file row.
+    let db = state.db.clone();
+    let files = tokio::task::spawn_blocking(move || db.get_files_for_request(uuid))
+        .await
+        .map_err(actix_web::error::ErrorInternalServerError)?
+        .map_err(actix_web::error::ErrorInternalServerError)?;
+    let download_filename = files
+        .first()
+        .map(|f| {
+            let stem = std::path::Path::new(&f.original_filename)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("output");
+            format!("{}.gcode", stem)
+        })
         .unwrap_or_else(|| "output.gcode".to_string());
 
     // Read file and stream as response

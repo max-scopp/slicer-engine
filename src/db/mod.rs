@@ -56,14 +56,16 @@ impl RequestStatus {
     }
 }
 
-/// A single request session with associated upload/download files.
+/// A workplate session.
+///
+/// Per-file metadata (uploaded model paths, original filenames, sizes) lives
+/// on the [`FileEntry`] rows in the `files` table. The `requests` table only
+/// tracks the workplate's lifecycle and the single G-code output produced
+/// when the slice completes.
 #[derive(Debug, Clone)]
 pub struct RequestSession {
     pub request_uuid: Uuid,
     pub status: RequestStatus,
-    pub original_filename: Option<String>,
-    pub upload_file_path: Option<PathBuf>,
-    pub upload_file_size: Option<i64>,
     pub download_file_path: Option<PathBuf>,
     pub download_file_size: Option<i64>,
     pub created_at: DateTime<Utc>,
@@ -117,9 +119,6 @@ impl Database {
         CREATE TABLE IF NOT EXISTS requests (
             request_uuid TEXT PRIMARY KEY,
             status TEXT NOT NULL,
-            original_filename TEXT,
-            upload_file_path TEXT,
-            upload_file_size INTEGER,
             download_file_path TEXT,
             download_file_size INTEGER,
             created_at TEXT NOT NULL,
@@ -184,9 +183,6 @@ impl Database {
         Ok(RequestSession {
             request_uuid,
             status: RequestStatus::AwaitingUpload,
-            original_filename: None,
-            upload_file_path: None,
-            upload_file_size: None,
             download_file_path: None,
             download_file_size: None,
             created_at: now,
@@ -202,8 +198,7 @@ impl Database {
             .map_err(|_| anyhow!("Failed to lock database"))?;
         let mut stmt = conn.prepare(
             "SELECT
-                request_uuid, status, original_filename,
-                upload_file_path, upload_file_size,
+                request_uuid, status,
                 download_file_path, download_file_size,
                 created_at, updated_at
              FROM requests
@@ -212,21 +207,13 @@ impl Database {
 
         let result = stmt
             .query_row([request_uuid.to_string()], |row| {
-                let uuid_str: String = row.get(0)?;
-                let status_str: String = row.get(1)?;
-                let created_at_str: String = row.get(7)?;
-                let updated_at_str: String = row.get(8)?;
-
                 Ok((
-                    uuid_str,
-                    status_str,
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
                     row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, Option<i64>>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, Option<i64>>(6)?,
-                    created_at_str,
-                    updated_at_str,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
                 ))
             })
             .optional()?;
@@ -234,27 +221,20 @@ impl Database {
         if let Some((
             uuid_str,
             status_str,
-            original_filename,
-            upload_path,
-            upload_size,
             download_path,
             download_size,
             created_at_str,
             updated_at_str,
         )) = result
         {
-            let parsed_session = RequestSession {
+            Ok(Some(RequestSession {
                 request_uuid: Uuid::parse_str(&uuid_str)?,
                 status: RequestStatus::from_db(&status_str)?,
-                original_filename,
-                upload_file_path: upload_path.map(PathBuf::from),
-                upload_file_size: upload_size,
                 download_file_path: download_path.map(PathBuf::from),
                 download_file_size: download_size,
                 created_at: DateTime::parse_from_rfc3339(&created_at_str)?.with_timezone(&Utc),
                 updated_at: DateTime::parse_from_rfc3339(&updated_at_str)?.with_timezone(&Utc),
-            };
-            Ok(Some(parsed_session))
+            }))
         } else {
             Ok(None)
         }
@@ -280,43 +260,9 @@ impl Database {
         Ok(())
     }
 
-    /// Record an uploaded file (STL).
-    pub fn set_upload_file(
-        &self,
-        request_uuid: Uuid,
-        original_filename: String,
-        file_path: impl AsRef<Path>,
-        file_size: u64,
-    ) -> Result<()> {
-        let now = Utc::now().to_rfc3339();
-        let path_str = file_path.as_ref().to_string_lossy().to_string();
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| anyhow!("Failed to lock database"))?;
-
-        conn.execute(
-            "UPDATE requests
-             SET original_filename = ?, upload_file_path = ?, upload_file_size = ?,
-                 status = ?, updated_at = ?
-             WHERE request_uuid = ?",
-            params![
-                &original_filename,
-                &path_str,
-                file_size as i64,
-                RequestStatus::UploadComplete.to_db(),
-                &now,
-                request_uuid.to_string(),
-            ],
-        )?;
-
-        Ok(())
-    }
-
     /// Add an uploaded file row for a workplate. The single source of truth
     /// for "which files belong to which request" — slicing references files
-    /// by `file_uuid`, never by `request_uuid` (the legacy "request UUID is
-    /// also the file ID" convention has been removed).
+    /// by `file_uuid`, never by `request_uuid`.
     pub fn add_upload_file(
         &self,
         request_uuid: Uuid,
@@ -497,40 +443,29 @@ impl Database {
             .lock()
             .map_err(|_| anyhow!("Failed to lock database"))?;
 
-        // Fetch old records before deleting
-        let mut stmt = conn.prepare(
-            "SELECT request_uuid, upload_file_path, download_file_path
-             FROM requests
-             WHERE updated_at < ?",
-        )?;
-
-        let request_rows: Vec<(String, Option<String>, Option<String>)> = stmt
-            .query_map([&cutoff], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        // Also collect file rows (new-style uploads) belonging to those requests.
-        let mut files_stmt = conn.prepare("SELECT file_path FROM files WHERE request_uuid = ?")?;
+        // Collect every on-disk artifact tied to expired requests so we can
+        // delete them after the rows are gone: each request's G-code output
+        // (if any) plus every uploaded file row that points at it.
         let mut on_disk_files: Vec<String> = Vec::new();
-        for (request_uuid, upload_path, download_path) in &request_rows {
-            if let Some(path) = upload_path {
-                on_disk_files.push(path.clone());
-            }
-            if let Some(path) = download_path {
-                on_disk_files.push(path.clone());
-            }
-            let file_paths: Vec<String> = files_stmt
-                .query_map([request_uuid.as_str()], |row| row.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()?;
-            on_disk_files.extend(file_paths);
-        }
 
-        // Delete files from disk
+        let mut req_stmt =
+            conn.prepare("SELECT download_file_path FROM requests WHERE updated_at < ?")?;
+        let download_paths: Vec<Option<String>> = req_stmt
+            .query_map([&cutoff], |row| row.get::<_, Option<String>>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        on_disk_files.extend(download_paths.into_iter().flatten());
+
+        let mut files_stmt = conn.prepare(
+            "SELECT file_path FROM files
+             WHERE request_uuid IN (
+                 SELECT request_uuid FROM requests WHERE updated_at < ?
+             )",
+        )?;
+        let upload_paths: Vec<String> = files_stmt
+            .query_map([&cutoff], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        on_disk_files.extend(upload_paths);
+
         for path in on_disk_files {
             let _ = std::fs::remove_file(&path);
         }
@@ -561,8 +496,7 @@ impl Database {
             .map_err(|_| anyhow!("Failed to lock database"))?;
         let mut stmt = conn.prepare(
             "SELECT
-                request_uuid, status, original_filename,
-                upload_file_path, upload_file_size,
+                request_uuid, status,
                 download_file_path, download_file_size,
                 created_at, updated_at
              FROM requests
@@ -571,21 +505,13 @@ impl Database {
         )?;
 
         let sessions_iter = stmt.query_map([status.to_db()], |row| {
-            let uuid_str: String = row.get(0)?;
-            let status_str: String = row.get(1)?;
-            let created_at_str: String = row.get(7)?;
-            let updated_at_str: String = row.get(8)?;
-
             Ok((
-                uuid_str,
-                status_str,
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
                 row.get::<_, Option<String>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<i64>>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, Option<i64>>(6)?,
-                created_at_str,
-                updated_at_str,
+                row.get::<_, Option<i64>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
             ))
         })?;
 
@@ -594,9 +520,6 @@ impl Database {
             let (
                 uuid_str,
                 status_str,
-                original_filename,
-                upload_path,
-                upload_size,
                 download_path,
                 download_size,
                 created_at_str,
@@ -605,9 +528,6 @@ impl Database {
             sessions.push(RequestSession {
                 request_uuid: Uuid::parse_str(&uuid_str)?,
                 status: RequestStatus::from_db(&status_str)?,
-                original_filename,
-                upload_file_path: upload_path.map(PathBuf::from),
-                upload_file_size: upload_size,
                 download_file_path: download_path.map(PathBuf::from),
                 download_file_size: download_size,
                 created_at: DateTime::parse_from_rfc3339(&created_at_str)?.with_timezone(&Utc),
@@ -664,34 +584,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_set_upload_file() -> Result<()> {
-        let dir = TempDir::new()?;
-        let db_path = dir.path().join("test.db");
-        let db = Database::open(&db_path)?;
-
-        let uuid = Uuid::new_v4();
-        db.create_request(uuid)?;
-
-        let upload_path = dir.path().join("test.stl");
-        std::fs::write(&upload_path, b"test")?;
-
-        db.set_upload_file(uuid, "test.stl".to_string(), &upload_path, 1024)?;
-
-        let retrieved = db.get_request(uuid)?.unwrap();
-        assert_eq!(retrieved.upload_file_size, Some(1024));
-        assert_eq!(
-            retrieved.upload_file_path.as_ref().map(|p| p
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .to_string()),
-            Some("test.stl".to_string())
-        );
-
-        Ok(())
-    }
-
     /// `add_upload_file` should write a row to `files` keyed by file_uuid and
     /// promote the request to `UploadComplete`. `get_file` and
     /// `get_files_for_request` should return what we just wrote.
@@ -725,8 +617,8 @@ mod tests {
         Ok(())
     }
 
-    /// Cleanup must delete files-table rows and their on-disk artifacts in
-    /// addition to the legacy upload/download paths in `requests`.
+    /// Cleanup must delete `files` rows and their on-disk artifacts together
+    /// with the workplate's G-code download (if any).
     #[test]
     fn test_cleanup_removes_files_table_rows() -> Result<()> {
         let dir = TempDir::new()?;
