@@ -96,6 +96,12 @@ export class Viewer implements OnDestroy {
   private trackedObjectIds: string[] = [];
   /** Live mapping from WASM scene id to the Three.js mesh that mirrors it. */
   private readonly wasmMeshes = new Map<bigint, Mesh>();
+  /**
+   * The model source that is currently loaded into the WASM scene engine.
+   * Used to detect whether a source change is a new model (full teardown)
+   * or just a mode switch (WASM state preserved, transforms kept).
+   */
+  private activeModelSource: ModelSource | null = null;
   private readonly tmpMatrix = new Matrix4();
   /**
    * Currently selected WASM object ids (as bigint), kept in sync with the
@@ -314,6 +320,14 @@ export class Viewer implements OnDestroy {
 
   /** Flush any in-progress gesture so the history entry is committed. */
   private handleGizmoEnd(): void {
+    // When gravity is enabled, drop every selected object to the floor before
+    // committing the history entry. This keeps the drop part of the same
+    // gesture so undo reverts the entire move + drop as one unit.
+    if (this.viewerControl.gravityEnabled()) {
+      for (const id of this.selectedWasmIds) {
+        this.sceneCommand.apply({ op: 'drop_to_floor', args: { id } });
+      }
+    }
     this.sceneCommand.flush();
   }
 
@@ -409,39 +423,62 @@ export class Viewer implements OnDestroy {
       return;
     }
     this.cancelInFlightLoad();
-    // Drop any tracked SceneObjects we registered for the previous source
-    // so the tracker / selection / drag stores stay a faithful mirror of
-    // what is actually on the bed.
-    for (const id of this.trackedObjectIds) {
-      this.printArea.forgetObject(id);
-      this.objectTracker.remove(id);
-    }
-    this.trackedObjectIds = [];
-    // Drop any WASM-scene meshes from the previous source. The scene engine
-    // is the source of truth, so we also fire `Remove` ops to free the
-    // backing Rust state — otherwise ids would accumulate across reloads.
-    for (const id of this.wasmMeshes.keys()) {
-      this.scene?.unregisterSelectable(String(id));
-      try {
-        this.sceneEngine.apply({ op: 'remove', args: { id } });
-      } catch {
-        // Object may already be gone if the engine reset; safe to ignore.
-      }
-    }
-    this.wasmMeshes.clear();
-    this.handleClearSelection();
-    this.dragApplied.clear();
+
+    const modelChanged = model !== this.activeModelSource;
+
+    // Always tear down the G-code orchestrator and clear Three.js content —
+    // the display layer is rebuilt for every mode/source transition.
     this.gcode?.dispose();
     scene.clearContent();
     this.progressSegments.set(0);
     this.errorMessage.set('');
+
+    if (modelChanged) {
+      // New model source — full teardown of WASM engine objects so ids do
+      // not accumulate and the old mesh's transforms are discarded cleanly.
+      for (const id of this.trackedObjectIds) {
+        this.printArea.forgetObject(id);
+        this.objectTracker.remove(id);
+      }
+      this.trackedObjectIds = [];
+      for (const id of this.wasmMeshes.keys()) {
+        this.scene?.unregisterSelectable(String(id));
+        try {
+          this.sceneEngine.apply({ op: 'remove', args: { id } });
+        } catch {
+          // Object may already be gone if the engine reset; safe to ignore.
+        }
+      }
+      this.wasmMeshes.clear();
+      this.handleClearSelection();
+      this.dragApplied.clear();
+      this.activeModelSource = model;
+    } else {
+      // Mode switch only (e.g. model → gcode → model). The WASM scene engine
+      // still holds the object with its current transforms intact. Unregister
+      // the now-disposed Three.js selectables so raycasts do not hit stale
+      // nodes, but do NOT issue Remove ops — that would wipe the transforms.
+      for (const id of this.wasmMeshes.keys()) {
+        this.scene?.unregisterSelectable(String(id));
+      }
+      this.wasmMeshes.clear();
+      this.handleClearSelection();
+    }
 
     if (mode === 'model') {
       if (!model) {
         this.status.set('idle');
         return;
       }
-      this.startModelLoad(model);
+      // If the WASM engine already holds objects for this source (mode switch,
+      // not a new file), re-render directly from engine state so transforms
+      // are preserved without a second parse round-trip.
+      const existingObjects = untracked(() => this.sceneEngine.objects());
+      if (!modelChanged && existingObjects.length > 0) {
+        void this.rebuildThreeJsMeshes();
+      } else {
+        this.startModelLoad(model);
+      }
     } else {
       // G-code is rendered exclusively through the WASM GcodeHandle path,
       // which gives per-layer / per-role geometry. The old TS streaming
@@ -460,6 +497,45 @@ export class Viewer implements OnDestroy {
         this.status.set(untracked(() => this.gcodePreview.loading()) ? 'loading' : 'idle');
       }
     }
+  }
+
+  /**
+   * Re-render Three.js display meshes from objects already held by the WASM
+   * scene engine. Called when switching back to model view after a mode switch
+   * (e.g. model → gcode → model) so that user-applied transforms are not lost.
+   */
+  private async rebuildThreeJsMeshes(): Promise<void> {
+    await this.sceneEngine.ready();
+    if (!this.scene) {
+      return;
+    }
+    const objects = untracked(() => this.sceneEngine.objects());
+    for (const obj of objects) {
+      const buf = this.sceneEngine.getRenderBuffer(obj.id);
+      const geometry = new BufferGeometry();
+      geometry.setAttribute('position', new BufferAttribute(buf.positions, 3));
+      geometry.setAttribute('normal', new BufferAttribute(buf.normals, 3));
+      geometry.setIndex(new BufferAttribute(buf.indices, 1));
+      geometry.computeBoundingBox();
+      geometry.computeBoundingSphere();
+      const material = new MeshPhongMaterial({
+        color: 0xa9b4c2,
+        flatShading: true,
+        shininess: 16,
+      });
+      const mesh = new Mesh(geometry, material);
+      mesh.name = obj.name;
+      mesh.matrixAutoUpdate = false;
+      this.tmpMatrix.fromArray(this.sceneEngine.getMatrix(obj.id));
+      mesh.matrix.copy(this.tmpMatrix);
+      mesh.matrixWorldNeedsUpdate = true;
+      this.scene.contentRoot.add(mesh);
+      this.wasmMeshes.set(obj.id, mesh);
+      mesh.userData['faceGroups'] = this.sceneEngine.getFaceGroups(obj.id);
+      this.scene.registerSelectable(String(obj.id), mesh);
+    }
+    this.status.set('ready');
+    this.loadComplete.emit({ mode: 'model', segments: 0 });
   }
 
   private startModelLoad(source: ModelSource): void {

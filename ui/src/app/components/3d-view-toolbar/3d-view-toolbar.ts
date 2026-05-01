@@ -26,6 +26,11 @@ export class ThreeDViewToolbar {
   readonly selectedCursorMode = this.viewerControl.cursorMode;
   readonly selectedObjectMode = this.viewerControl.objectMode;
   readonly viewMode = this.viewerControl.viewMode;
+  readonly gravityEnabled = this.viewerControl.gravityEnabled;
+
+  toggleGravity(): void {
+    this.gravityEnabled.update((v) => !v);
+  }
 
   /** True once a slice result is available (either loading or fully parsed). */
   protected get hasSliceResult(): boolean {

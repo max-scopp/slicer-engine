@@ -156,12 +156,14 @@ async fn handle_ws_session(
             AggregatedMessage::Text(text) => match serde_json::from_str::<ClientMessage>(&text) {
                 Ok(ClientMessage::Slice {
                     request_uuid,
+                    scene: scene_objects,
                     settings,
                 }) => {
                     logger.log_debug(&format!("[WS] Processing slice request: {}", request_uuid));
                     handle_slice(
                         &mut session,
                         request_uuid,
+                        scene_objects,
                         settings,
                         db.clone(),
                         work_dir.clone(),
@@ -181,7 +183,7 @@ async fn handle_ws_session(
                 }
                 Ok(ClientMessage::Scene { ops }) => {
                     logger.log_debug(&format!("[WS] Applying {} scene ops", ops.len()));
-                    handle_scene_ops(&mut session, &mut scene, ops, &work_dir).await;
+                    handle_scene_ops(&mut session, &mut scene, ops, &work_dir, &db).await;
                 }
                 Ok(ClientMessage::SceneSnapshot) => {
                     let _ = send_msg(&mut session, &snapshot_msg(&scene)).await;
@@ -207,17 +209,20 @@ async fn handle_ws_session(
     let _ = session.close(None).await;
 }
 
-/// Process a slice request from the browser:
+/// Process a slice request from the browser.
 ///
-/// 1. Retrieve uploaded STL file from disk.
-/// 2. Parse the mesh in a blocking thread-pool task.
-/// 3. Slice and generate G-code in that same task.
-/// 4. Save G-code to disk.
-/// 5. Stream log / progress / result messages back over the WebSocket.
+/// The slice path is now fully scene-driven: the client sends the workplate
+/// `request_uuid` plus a non-empty `scene` of placed objects (each
+/// referencing an uploaded file by `file_uuid`). The server resolves every
+/// file via the database (so it picks the right loader from the on-disk
+/// extension), bakes each transform exactly once, merges the results into a
+/// single mesh, and runs the slicer pipeline. The legacy "slice the upload
+/// as-is" fallback has been removed.
 async fn handle_slice(
     session: &mut actix_ws::Session,
     request_uuid: String,
-    ws_params: crate::ws_protocol::WsSlicingParams,
+    scene_objects: Vec<crate::ws_protocol::SceneObjectSliceDto>,
+    params: Box<crate::settings::params::SlicingParams>,
     db: Arc<crate::db::Database>,
     work_dir: std::path::PathBuf,
     base_url: String,
@@ -239,59 +244,76 @@ async fn handle_slice(
         }
     };
 
-    // Fetch session from database
-    let session_result = {
-        let db = db.clone();
-        tokio::task::spawn_blocking(move || db.get_request(uuid)).await
-    };
+    // Build the list of (file_path, format, transform, size) entries we will
+    // bake and merge before slicing. Every file is resolved via the DB so we
+    // get the correct on-disk extension — no `.stl` assumption, no format
+    // hint baked into the wire protocol.
+    use crate::scene::Transform;
+    if scene_objects.is_empty() {
+        send_or_return!(ServerMessage::error(
+            "Slice request has an empty `scene` — add at least one object before slicing"
+        ));
+        return;
+    }
 
-    let session_info = match session_result {
-        Ok(Ok(Some(s))) => s,
-        Ok(Ok(None)) => {
-            send_or_return!(ServerMessage::error("Request not found in database"));
-            return;
-        }
-        Ok(Err(e)) => {
-            send_or_return!(ServerMessage::error(format!("Database error: {e}")));
-            return;
-        }
-        Err(e) => {
-            send_or_return!(ServerMessage::error(format!("Task error: {e}")));
-            return;
-        }
-    };
+    let mut slice_inputs: Vec<(std::path::PathBuf, Transform, u64)> =
+        Vec::with_capacity(scene_objects.len());
 
-    let stl_file_path = match session_info.upload_file_path {
-        Some(p) => p,
-        None => {
-            send_or_return!(ServerMessage::error(
-                "No upload file associated with request"
-            ));
-            return;
-        }
-    };
+    for obj in scene_objects {
+        let file_uuid = match Uuid::parse_str(&obj.file_id) {
+            Ok(u) => u,
+            Err(e) => {
+                send_or_return!(ServerMessage::error(format!(
+                    "Invalid scene file_id '{}': {}",
+                    obj.file_id, e
+                )));
+                return;
+            }
+        };
 
+        // Look the file up in the DB so we know both the on-disk path
+        // (extension preserved) and its size. The slicer's loader picks the
+        // right format from that extension automatically.
+        let entry_result = {
+            let db = db.clone();
+            tokio::task::spawn_blocking(move || db.get_file(file_uuid)).await
+        };
+        let entry = match entry_result {
+            Ok(Ok(Some(e))) => e,
+            Ok(Ok(None)) => {
+                send_or_return!(ServerMessage::error(format!(
+                    "Scene references unknown file_id {}",
+                    file_uuid
+                )));
+                return;
+            }
+            Ok(Err(e)) => {
+                send_or_return!(ServerMessage::error(format!("Database error: {e}")));
+                return;
+            }
+            Err(e) => {
+                send_or_return!(ServerMessage::error(format!("Task error: {e}")));
+                return;
+            }
+        };
+
+        let transform = Transform::from_euler_xyz_deg(
+            obj.transform.translation,
+            obj.transform.euler_xyz_deg,
+            obj.transform.scale,
+        );
+        slice_inputs.push((entry.file_path, transform, entry.file_size as u64));
+    }
+
+    let total_bytes: u64 = slice_inputs.iter().map(|(_, _, sz)| *sz).sum();
     send_or_return!(ServerMessage::log_info(format!(
-        "Loading STL from {}: {} bytes…",
-        stl_file_path.display(),
-        session_info.upload_file_size.unwrap_or(0)
+        "Slicing {} object(s), {} bytes total…",
+        slice_inputs.len(),
+        total_bytes
     )));
 
-    use crate::settings::params::SlicingParams;
-    let params = SlicingParams {
-        layer_height: ws_params.layer_height,
-        print_speed: ws_params.print_speed,
-        nozzle_temp: ws_params.nozzle_temp,
-        bed_temp: ws_params.bed_temp,
-        infill_density: ws_params.infill_density / 100.0,
-        infill_pattern: ws_params.infill_pattern,
-        infill_base_angle: ws_params.infill_angle,
-        surface_infill_angle: ws_params.infill_angle,
-        ..SlicingParams::default()
-    };
-
-    // Run blocking work (mesh parse + slice + G-code gen) on the thread pool.
-    // Messages are forwarded to the WebSocket via an mpsc channel.
+    // Run blocking work (mesh parse + bake + merge + slice + G-code gen) on
+    // the thread pool. Messages are forwarded to the WebSocket via mpsc.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
 
     let gcode_output_path = work_dir.join(format!("{}.gcode", uuid));
@@ -314,29 +336,40 @@ async fn handle_slice(
         // Start overall timing for the entire process
         let t_total = PhaseTimer::start(phases::TOTAL, &logger);
 
-        let stl_bytes = match std::fs::read(&stl_file_path) {
-            Ok(b) => b,
-            Err(e) => {
-                let msg = ServerMessage::error(format!("Failed to read STL file: {e}"));
-                let _ = tx.blocking_send(to_json(&msg));
-                return;
-            }
-        };
-
+        // Load each scene object (auto-detecting format from its extension),
+        // bake its transform, and concatenate faces into a single combined
+        // mesh that the slicer pipeline sees.
         let t_load = PhaseTimer::start(phases::MESH_LOAD, &logger);
-        let mesh = match crate::mesh::io::read_stl_from_bytes(&stl_bytes) {
-            Ok(m) => m,
-            Err(e) => {
-                let msg = ServerMessage::error(format!(
-                    "Failed to parse STL (unsupported format or corrupted file): {e}"
-                ));
-                let _ = tx.blocking_send(to_json(&msg));
-                return;
-            }
-        };
+        let mut combined = crate::mesh::types::Mesh::new();
+        for (path, transform, _) in &slice_inputs {
+            let mesh = match crate::scene::load_path(path) {
+                Ok(m) => m,
+                Err(e) => {
+                    let msg = ServerMessage::error(format!(
+                        "Failed to load mesh {}: {}",
+                        path.display(),
+                        e
+                    ));
+                    let _ = tx.blocking_send(to_json(&msg));
+                    return;
+                }
+            };
+            // Bake the per-object transform exactly once, at the slicer
+            // boundary — see the SSOT contract in src/scene/README.md.
+            let baked = crate::scene::apply_transform(&mesh, transform);
+            combined.vertices.extend(baked.vertices);
+            combined.faces.extend(baked.faces);
+        }
+        if combined.faces.is_empty() {
+            let msg = ServerMessage::error(
+                "Combined scene has no triangles — nothing to slice".to_string(),
+            );
+            let _ = tx.blocking_send(to_json(&msg));
+            return;
+        }
         t_load.finish();
 
-        let layers = crate::core::process_mesh(&mesh, &params, &logger);
+        let layers = crate::core::process_mesh(&combined, &params, &logger);
         let layer_count = layers.len();
 
         let progress = ServerMessage::Progress {
@@ -391,21 +424,34 @@ async fn handle_list_sessions(
     db: std::sync::Arc<crate::db::Database>,
     base_url: String,
 ) {
-    // Query database for completed sessions
-    let sessions = tokio::task::spawn_blocking(move || db.get_completed_sessions())
-        .await
-        .ok()
-        .and_then(|result| result.ok())
-        .unwrap_or_default();
+    // Query database for completed sessions and their files (uploads now live
+    // in a separate table — pull the first file's name as the workplate
+    // label).
+    let db_clone = db.clone();
+    let sessions_with_files = tokio::task::spawn_blocking(move || {
+        let sessions = db_clone.get_completed_sessions().unwrap_or_default();
+        sessions
+            .into_iter()
+            .map(|s| {
+                let filename = db_clone
+                    .get_files_for_request(s.request_uuid)
+                    .ok()
+                    .and_then(|files| files.into_iter().next())
+                    .map(|f| f.original_filename);
+                (s, filename)
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap_or_default();
 
-    // Convert RequestSession to SessionSummary
-    let summaries = sessions
+    let summaries = sessions_with_files
         .into_iter()
-        .map(|session| {
+        .map(|(session, filename)| {
             use crate::ws_protocol::SessionSummary;
             SessionSummary {
                 request_uuid: session.request_uuid.to_string(),
-                original_filename: session.original_filename,
+                original_filename: filename,
                 layer_count: session.download_file_size.map(|size| size as usize),
                 created_at: session.created_at.to_rfc3339(),
                 download_url: format!("{}/api/download/{}", base_url, session.request_uuid),
@@ -437,16 +483,17 @@ async fn send_msg(
 /// Apply a sequence of [`SceneOpDto`]s to the per-session scene and send back
 /// the resulting [`ServerMessage::SceneState`] snapshot.
 ///
-/// Mesh data for `Add` is sourced from the upload work directory by `file_id`
-/// (the `request_uuid` returned by `POST /api/upload`).
+/// Mesh data for `Add` is sourced from the DB by `file_id` — the `file_uuid`
+/// returned in `ofids` from `POST /api/upload`.
 async fn handle_scene_ops(
     session: &mut actix_ws::Session,
     scene: &mut SceneState,
     ops: Vec<SceneOpDto>,
     work_dir: &std::path::Path,
+    db: &Arc<crate::db::Database>,
 ) {
     for dto in ops {
-        let op = match dto_to_op(dto, work_dir) {
+        let op = match dto_to_op(dto, work_dir, db) {
             Ok(op) => op,
             Err(e) => {
                 let _ = send_msg(session, &ServerMessage::error(e)).await;
@@ -463,9 +510,16 @@ async fn handle_scene_ops(
 
 /// Translate a wire-format [`SceneOpDto`] into the internal [`SceneOp`].
 ///
-/// For `Add` the mesh bytes are read from disk based on the upload `file_id`.
-fn dto_to_op(dto: SceneOpDto, work_dir: &std::path::Path) -> Result<SceneOp, String> {
+/// For `Add` the mesh bytes are read from disk based on the upload `file_id`
+/// (a `file_uuid` from `ofids`). The DB lookup gives us the actual on-disk
+/// path including its extension.
+fn dto_to_op(
+    dto: SceneOpDto,
+    work_dir: &std::path::Path,
+    db: &crate::db::Database,
+) -> Result<SceneOp, String> {
     use crate::scene::Transform;
+    let _ = work_dir; // path now comes from the DB; arg kept for signature symmetry
     match dto {
         SceneOpDto::Add {
             name,
@@ -474,9 +528,13 @@ fn dto_to_op(dto: SceneOpDto, work_dir: &std::path::Path) -> Result<SceneOp, Str
         } => {
             let uuid = Uuid::parse_str(&file_id)
                 .map_err(|e| format!("invalid file_id '{}': {}", file_id, e))?;
-            let path = work_dir.join(uuid.to_string());
-            let bytes = std::fs::read(&path)
-                .map_err(|e| format!("failed to read upload {}: {}", path.display(), e))?;
+            let entry = db
+                .get_file(uuid)
+                .map_err(|e| format!("database error: {e}"))?
+                .ok_or_else(|| format!("unknown file_id {}", uuid))?;
+            let bytes = std::fs::read(&entry.file_path).map_err(|e| {
+                format!("failed to read upload {}: {}", entry.file_path.display(), e)
+            })?;
             Ok(SceneOp::Add {
                 name,
                 format,

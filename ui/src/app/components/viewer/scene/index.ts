@@ -151,7 +151,7 @@ export class ViewerScene {
       this.controls.enabled = false;
     };
     this.gizmo.onDelta = (delta) => {
-      const ids = Array.from(this._selection.getSelectedIds());
+      const ids = Array.from(this._selection.selectedIds) as string[];
       this._selection.gizmoHandlers?.delta(ids, delta);
     };
     this.gizmo.onDragEnd = () => {
