@@ -33,40 +33,44 @@ impl Role {
         }
         Self::Other
     }
+
+    pub(super) fn id(self) -> u8 {
+        match self {
+            Role::OuterWall => 0,
+            Role::InnerWall => 1,
+            Role::Infill => 2,
+            Role::TopSurface => 3,
+            Role::BottomSurface => 4,
+            Role::Travel => 5,
+            Role::Other => 6,
+        }
+    }
 }
 
 // ── Internal layer representation ──────────────────────────────────────────
 
-/// One layer's geometry, bucketed by extrusion role.
-///
-/// Each `Vec<f32>` holds flat segment pairs `[x0,y0,z0, x1,y1,z1, width,height, …]`.
+#[derive(Debug, Clone)]
+pub(super) struct Block {
+    pub(super) role: Role,
+    pub(super) data: Vec<f32>,
+}
+
+/// One layer's geometry, composed of sequential segment blocks to preserve timeline order.
 #[derive(Debug, Default)]
 pub(super) struct InternalLayer {
     pub(super) z: f32,
-    pub(super) outer_wall: Vec<f32>,
-    pub(super) inner_wall: Vec<f32>,
-    pub(super) infill: Vec<f32>,
-    pub(super) top_surface: Vec<f32>,
-    pub(super) bottom_surface: Vec<f32>,
-    pub(super) travel: Vec<f32>,
-    pub(super) other: Vec<f32>,
+    pub(super) blocks: Vec<Block>,
 }
 
 impl InternalLayer {
     pub(super) fn is_empty(&self) -> bool {
-        self.outer_wall.is_empty()
-            && self.inner_wall.is_empty()
-            && self.infill.is_empty()
-            && self.top_surface.is_empty()
-            && self.bottom_surface.is_empty()
-            && self.travel.is_empty()
-            && self.other.is_empty()
+        self.blocks.is_empty()
     }
 
     pub(super) fn new(z: f32) -> Self {
         Self {
             z,
-            ..Default::default()
+            blocks: Vec::new(),
         }
     }
 
@@ -82,15 +86,16 @@ impl InternalLayer {
         width: f32,
         height: f32,
     ) {
-        let buf = match role {
-            Role::OuterWall => &mut self.outer_wall,
-            Role::InnerWall => &mut self.inner_wall,
-            Role::Infill => &mut self.infill,
-            Role::TopSurface => &mut self.top_surface,
-            Role::BottomSurface => &mut self.bottom_surface,
-            Role::Travel => &mut self.travel,
-            Role::Other => &mut self.other,
-        };
-        buf.extend_from_slice(&[x0, y0, z0, x1, y1, z1, width, height]);
+        let segment_data = [x0, y0, z0, x1, y1, z1, width, height];
+        if let Some(last) = self.blocks.last_mut() {
+            if last.role == role {
+                last.data.extend_from_slice(&segment_data);
+                return;
+            }
+        }
+        self.blocks.push(Block {
+            role,
+            data: segment_data.to_vec(),
+        });
     }
 }

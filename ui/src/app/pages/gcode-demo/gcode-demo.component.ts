@@ -1,31 +1,31 @@
 import { DecimalPipe } from '@angular/common';
 import {
-    AfterViewInit,
-    ChangeDetectionStrategy,
-    Component,
-    ElementRef,
-    OnDestroy,
-    computed,
-    signal,
-    viewChild,
+  AfterViewInit,
+  ChangeDetectionStrategy,
+  Component,
+  ElementRef,
+  OnDestroy,
+  computed,
+  signal,
+  viewChild,
 } from '@angular/core';
 import {
-    AmbientLight,
-    BufferAttribute,
-    BufferGeometry,
-    DirectionalLight,
-    GridHelper,
-    Group,
-    LineBasicMaterial,
-    LineSegments,
-    PerspectiveCamera,
-    Scene,
-    WebGLRenderer,
+  AmbientLight,
+  BufferAttribute,
+  BufferGeometry,
+  DirectionalLight,
+  GridHelper,
+  Group,
+  LineBasicMaterial,
+  LineSegments,
+  PerspectiveCamera,
+  Scene,
+  WebGLRenderer,
 } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import init, {
-    GcodeHandle,
-    type GcodeLayerBuffer,
+  GcodeHandle,
+  type GcodeLayerBuffer,
 } from '../../../generated/scene-wasm/scene_engine';
 
 // ── Role colour palette ──────────────────────────────────────────────────────
@@ -446,15 +446,19 @@ export class GcodeDemoComponent implements AfterViewInit, OnDestroy {
     if (!buf) {
       return '';
     }
-    const seg = (arr: Float32Array) => arr.length / 6;
+    const counts: Record<number, number> = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 };
+    const numBlocks = buf.blocksCount();
+    for (let i = 0; i < numBlocks; i++) {
+      counts[buf.blockRole(i)] += buf.blockData(i).length / 8;
+    }
     return [
-      `outer wall   : ${seg(buf.outer_wall)}`,
-      `inner wall   : ${seg(buf.inner_wall)}`,
-      `infill       : ${seg(buf.infill)}`,
-      `top surface  : ${seg(buf.top_surface)}`,
-      `bottom surf. : ${seg(buf.bottom_surface)}`,
-      `travel       : ${seg(buf.travel)}`,
-      `other        : ${seg(buf.other)}`,
+      `outer wall   : ${counts[0]}`,
+      `inner wall   : ${counts[1]}`,
+      `infill       : ${counts[2]}`,
+      `top surface  : ${counts[3]}`,
+      `bottom surf. : ${counts[4]}`,
+      `travel       : ${counts[5]}`,
+      `other        : ${counts[6]}`,
     ].join('\n');
   });
 
@@ -730,29 +734,40 @@ function buildLayerGroup(buf: GcodeLayerBuffer): LayerBuild {
   // Store the buffer reference on the group for stats display.
   group.userData['handle'] = buf;
 
-  const ROLE_ORDER: Array<{ role: RoleName; data: Float32Array; color: number }> = [
-    { role: 'outerWall', data: buf.outer_wall, color: ROLE_COLORS.outerWall },
-    { role: 'innerWall', data: buf.inner_wall, color: ROLE_COLORS.innerWall },
-    { role: 'infill', data: buf.infill, color: ROLE_COLORS.infill },
-    { role: 'topSurface', data: buf.top_surface, color: ROLE_COLORS.topSurface },
-    { role: 'bottomSurface', data: buf.bottom_surface, color: ROLE_COLORS.bottomSurface },
-    { role: 'travel', data: buf.travel, color: ROLE_COLORS.travel },
-    { role: 'other', data: buf.other, color: ROLE_COLORS.other },
-  ];
-
   const roleSegments: RoleSegments[] = [];
   let totalSegments = 0;
 
-  for (const { role, data, color } of ROLE_ORDER) {
-    if (data.length === 0) {
-      continue;
+  const numBlocks = buf.blocksCount();
+  for (let b = 0; b < numBlocks; b++) {
+    const roleId = buf.blockRole(b);
+    const rawData = buf.blockData(b);
+    if (rawData.length === 0) continue;
+
+    const count = rawData.length / 8;
+    const role: RoleName =
+      (['outerWall', 'innerWall', 'infill', 'topSurface', 'bottomSurface', 'travel', 'other'][
+        roleId
+      ] as RoleName) || 'other';
+
+    const color = ROLE_COLORS[role];
+
+    const pts = new Float32Array(count * 6);
+    for (let i = 0; i < count; i++) {
+      const off = i * 8;
+      const pOff = i * 6;
+      pts[pOff] = rawData[off];
+      pts[pOff + 1] = rawData[off + 1];
+      pts[pOff + 2] = rawData[off + 2];
+      pts[pOff + 3] = rawData[off + 3];
+      pts[pOff + 4] = rawData[off + 4];
+      pts[pOff + 5] = rawData[off + 5];
     }
+
     const geometry = new BufferGeometry();
-    geometry.setAttribute('position', new BufferAttribute(data, 3));
+    geometry.setAttribute('position', new BufferAttribute(pts, 3));
     const material = new LineBasicMaterial({ color });
     const lines = new LineSegments(geometry, material);
     group.add(lines);
-    const count = data.length / 6;
     roleSegments.push({ role, lines, count });
     totalSegments += count;
   }

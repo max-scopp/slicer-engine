@@ -339,6 +339,7 @@ impl GcodeGenerator {
 
             let mut last_role: Option<crate::core::ExtrusionRole> = None;
             let mut last_width: Option<f64> = None;
+            let mut last_pos: Option<(f64, f64)> = None;
 
             for (path_idx, path) in layer.paths.iter().enumerate() {
                 let raw_points: Vec<(f64, f64)> = path.iter().map(|p| (p.x(), p.y())).collect();
@@ -415,31 +416,51 @@ impl GcodeGenerator {
 
                 let (start_x, start_y) = points[0];
 
-                // Retract, z-hop, travel, lower, prime
-                e_total -= params.retract_mm;
-                out.push_str(&format!(
-                    "{} ; retract\n",
-                    self.dialect.set_extruder_pos(e_total, 3000.0)
-                ));
-                out.push_str(&format!(
-                    "{} ; z-hop\n",
-                    self.dialect
-                        .move_z(layer.z + params.z_hop_mm, params.travel_speed_mm_min)
-                ));
-                out.push_str(&format!(
-                    "{} ; travel\n",
-                    self.dialect
-                        .travel_xy(start_x, start_y, params.travel_speed_mm_min)
-                ));
-                out.push_str(&format!(
-                    "{} ; lower\n",
-                    self.dialect.move_z(layer.z, params.travel_speed_mm_min)
-                ));
-                e_total += params.retract_mm;
-                out.push_str(&format!(
-                    "{} ; un-retract\n",
-                    self.dialect.set_extruder_pos(e_total, 3000.0)
-                ));
+                let travel_dist = if let Some((lx, ly)) = last_pos {
+                    let dx = start_x - lx;
+                    let dy = start_y - ly;
+                    (dx * dx + dy * dy).sqrt()
+                } else {
+                    f64::MAX
+                };
+
+                let role_changed = last_role != Some(role);
+                let needs_retract = travel_dist > 2.0 || role_changed;
+
+                if needs_retract {
+                    // Retract, z-hop, travel, lower, prime
+                    e_total -= params.retract_mm;
+                    out.push_str(&format!(
+                        "{} ; retract\n",
+                        self.dialect.set_extruder_pos(e_total, 3000.0)
+                    ));
+                    out.push_str(&format!(
+                        "{} ; z-hop\n",
+                        self.dialect
+                            .move_z(layer.z + params.z_hop_mm, params.travel_speed_mm_min)
+                    ));
+                    out.push_str(&format!(
+                        "{} ; travel\n",
+                        self.dialect
+                            .travel_xy(start_x, start_y, params.travel_speed_mm_min)
+                    ));
+                    out.push_str(&format!(
+                        "{} ; lower\n",
+                        self.dialect.move_z(layer.z, params.travel_speed_mm_min)
+                    ));
+                    e_total += params.retract_mm;
+                    out.push_str(&format!(
+                        "{} ; un-retract\n",
+                        self.dialect.set_extruder_pos(e_total, 3000.0)
+                    ));
+                } else if travel_dist > 1e-6 {
+                    // Short travel without stringing mitigation
+                    out.push_str(&format!(
+                        "{} ; short travel\n",
+                        self.dialect
+                            .travel_xy(start_x, start_y, params.travel_speed_mm_min)
+                    ));
+                }
 
                 // Print the contour segments
                 let mut prev = points[0];
@@ -496,6 +517,9 @@ impl GcodeGenerator {
                             )
                         ));
                     }
+                    last_pos = Some((start_x, start_y));
+                } else {
+                    last_pos = Some(prev);
                 }
             }
         }

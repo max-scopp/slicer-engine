@@ -215,5 +215,118 @@ pub fn process_mesh(
         logger.log_debug("infill generation complete");
     }
 
+    // Optimize path order (Greedy TSP within role groups)
+    let t_tsp = PhaseTimer::start("Path Ordering", logger);
+    for layer in layers.iter_mut() {
+        let path_count = layer.paths.len();
+        if path_count <= 1 {
+            continue;
+        }
+
+        let paths_vec: Vec<_> = layer.paths.iter().cloned().collect();
+        let mut ordered_paths = clipper2::Paths::default();
+        let mut ordered_roles = Vec::with_capacity(path_count);
+        let mut ordered_widths = Vec::with_capacity(path_count);
+
+        let mut current_pos = (0.0, 0.0);
+
+        // Group into contiguous ranges of the same role to preserve wall/infill print order
+        let mut groups = Vec::new();
+        let mut current_group = Vec::new();
+        let mut current_group_role = layer.role_for_path(0);
+
+        for (i, _) in paths_vec.iter().enumerate() {
+            let role = layer.role_for_path(i);
+            if role != current_group_role && !current_group.is_empty() {
+                groups.push((current_group_role, current_group.clone()));
+                current_group.clear();
+                current_group_role = role;
+            }
+            current_group.push(i);
+        }
+        if !current_group.is_empty() {
+            groups.push((current_group_role, current_group));
+        }
+
+        for (role, mut remaining) in groups {
+            let is_closed = matches!(
+                role,
+                crate::core::ExtrusionRole::OuterWall
+                    | crate::core::ExtrusionRole::InnerWall
+                    | crate::core::ExtrusionRole::Skirt
+            );
+
+            while !remaining.is_empty() {
+                let mut best_i = 0;
+                let mut min_dist_sq = std::f64::MAX;
+                let mut best_reverse = false;
+
+                for (i, &path_idx) in remaining.iter().enumerate() {
+                    let path = &paths_vec[path_idx];
+                    if path.is_empty() {
+                        continue;
+                    }
+
+                    let p_start = path.iter().next().unwrap();
+                    let dx1 = p_start.x() - current_pos.0;
+                    let dy1 = p_start.y() - current_pos.1;
+                    let dist1 = dx1 * dx1 + dy1 * dy1;
+
+                    if dist1 < min_dist_sq {
+                        min_dist_sq = dist1;
+                        best_i = i;
+                        best_reverse = false;
+                    }
+
+                    // For open paths, we could also print them backwards!
+                    if !is_closed {
+                        let p_end = path.iter().last().unwrap();
+                        let dx2 = p_end.x() - current_pos.0;
+                        let dy2 = p_end.y() - current_pos.1;
+                        let dist2 = dx2 * dx2 + dy2 * dy2;
+                        if dist2 < min_dist_sq {
+                            min_dist_sq = dist2;
+                            best_i = i;
+                            best_reverse = true;
+                        }
+                    }
+                }
+
+                let best_path_idx = remaining.remove(best_i);
+                let path = &paths_vec[best_path_idx];
+
+                let mut final_path = clipper2::Path::default();
+                if best_reverse {
+                    for p in path.iter().rev() {
+                        final_path.push(*p);
+                    }
+                } else {
+                    for p in path.iter() {
+                        final_path.push(*p);
+                    }
+                }
+
+                if !final_path.is_empty() {
+                    if is_closed {
+                        let p = final_path.iter().next().unwrap();
+                        current_pos = (p.x(), p.y());
+                    } else {
+                        let p = final_path.iter().last().unwrap();
+                        current_pos = (p.x(), p.y());
+                    }
+                }
+
+                ordered_paths.push(final_path);
+                ordered_roles.push(layer.role_for_path(best_path_idx));
+                ordered_widths.push(layer.width_for_path(best_path_idx));
+            }
+        }
+
+        layer.paths = ordered_paths;
+        layer.path_roles = ordered_roles;
+        layer.path_widths = ordered_widths;
+    }
+    t_tsp.finish();
+
     layers
 }

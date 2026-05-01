@@ -31,6 +31,7 @@ export interface LayerInfo {
   group: Group;
   totalSegments: number;
   roleSegments: RoleSegments[];
+  blockLayout: { role: RoleName; count: number }[];
 }
 
 // -- Layer builder ------------------------------------------------------------
@@ -39,16 +40,17 @@ interface LayerBuild {
   group: Group;
   totalSegments: number;
   roleSegments: RoleSegments[];
+  blockLayout: { role: RoleName; count: number }[];
 }
 
-const ROLE_DATA_KEY: Record<RoleName, keyof GcodeLayerBuffer> = {
-  outerWall: 'outer_wall',
-  innerWall: 'inner_wall',
-  infill: 'infill',
-  topSurface: 'top_surface',
-  bottomSurface: 'bottom_surface',
-  travel: 'travel',
-  other: 'other',
+const ROLE_ID_TO_NAME: Record<number, RoleName> = {
+  0: 'outerWall',
+  1: 'innerWall',
+  2: 'infill',
+  3: 'topSurface',
+  4: 'bottomSurface',
+  5: 'travel',
+  6: 'other',
 };
 
 const _dummy = new Object3D();
@@ -65,35 +67,51 @@ export function buildLayerGroup(buf: GcodeLayerBuffer): LayerBuild {
   const group = new Group();
   group.userData['handle'] = buf;
 
-  const roleSegments: RoleSegments[] = [];
+  const numBlocks = buf.blocksCount();
+  const roleTotals: Record<RoleName, number> = {
+    outerWall: 0,
+    innerWall: 0,
+    infill: 0,
+    topSurface: 0,
+    bottomSurface: 0,
+    travel: 0,
+    other: 0,
+  };
+
+  const blockLayout: { role: RoleName; count: number }[] = [];
   let totalSegments = 0;
 
+  // Pass 1: Tally counts to allocate exactly one buffer/mesh per role
+  for (let b = 0; b < numBlocks; b++) {
+    const roleId = buf.blockRole(b);
+    const dataLen = buf.blockData(b).length;
+    if (dataLen === 0) continue;
+
+    const count = dataLen / 8;
+    const role = ROLE_ID_TO_NAME[roleId] || 'other';
+
+    roleTotals[role] += count;
+    blockLayout.push({ role, count });
+    totalSegments += count;
+  }
+
+  const roleSegmentsMap: Partial<Record<RoleName, RoleSegments>> = {};
+
+  // Pass 2: Allocate Three.js instances
   for (const role of ROLE_ORDER) {
-    const data = buf[ROLE_DATA_KEY[role]] as Float32Array;
-    if (data.length === 0) {
-      continue;
-    }
-    const count = data.length / 8;
+    const count = roleTotals[role];
+    if (count === 0) continue;
+
     const color = ROLE_COLORS[role];
 
     if (role === 'travel') {
       const pts = new Float32Array(count * 6);
-      for (let i = 0; i < count; i++) {
-        const off = i * 8;
-        const pOff = i * 6;
-        pts[pOff] = data[off];
-        pts[pOff + 1] = data[off + 1];
-        pts[pOff + 2] = data[off + 2];
-        pts[pOff + 3] = data[off + 3];
-        pts[pOff + 4] = data[off + 4];
-        pts[pOff + 5] = data[off + 5];
-      }
       const geometry = new BufferGeometry();
       geometry.setAttribute('position', new BufferAttribute(pts, 3));
       const material = new LineBasicMaterial({ color });
       const lines = new LineSegments(geometry, material);
       group.add(lines);
-      roleSegments.push({ role, lines, count });
+      roleSegmentsMap[role] = { role, lines, count };
     } else {
       const material = new MeshStandardMaterial({ color, roughness: 0.6 });
       const mesh = new InstancedMesh(segmentGeometry, material, count);
@@ -101,8 +119,61 @@ export function buildLayerGroup(buf: GcodeLayerBuffer): LayerBuild {
       mesh.instanceMatrix.setUsage(35044 /* THREE.DynamicDrawUsage */);
       joints.instanceMatrix.setUsage(35044 /* THREE.DynamicDrawUsage */);
 
+      mesh.count = count;
+      joints.count = count * 2;
+      group.add(mesh);
+      group.add(joints);
+
+      roleSegmentsMap[role] = { role, mesh, joints, count };
+    }
+  }
+
+  // Pass 3: Fill matrices and buffers sequentially per role
+  const roleOffsets: Record<RoleName, number> = {
+    outerWall: 0,
+    innerWall: 0,
+    infill: 0,
+    topSurface: 0,
+    bottomSurface: 0,
+    travel: 0,
+    other: 0,
+  };
+
+  for (let b = 0; b < numBlocks; b++) {
+    const data = buf.blockData(b);
+    if (data.length === 0) continue;
+
+    const count = data.length / 8;
+    const roleId = buf.blockRole(b);
+    const role = ROLE_ID_TO_NAME[roleId] || 'other';
+
+    const rs = roleSegmentsMap[role];
+    if (!rs) continue;
+
+    const baseOffset = roleOffsets[role];
+
+    if (role === 'travel') {
+      const pts = (rs.lines!.geometry.getAttribute('position') as BufferAttribute)
+        .array as Float32Array;
       for (let i = 0; i < count; i++) {
+        const off = i * 8;
+        const pOff = (baseOffset + i) * 6;
+        pts[pOff] = data[off];
+        pts[pOff + 1] = data[off + 1];
+        pts[pOff + 2] = data[off + 2];
+        pts[pOff + 3] = data[off + 3];
+        pts[pOff + 4] = data[off + 4];
+        pts[pOff + 5] = data[off + 5];
+      }
+      rs.lines!.geometry.attributes['position'].needsUpdate = true;
+    } else {
+      const mesh = rs.mesh!;
+      const joints = rs.joints!;
+
+      for (let i = 0; i < count; i++) {
+        const globalI = baseOffset + i;
         const offset = i * 8;
+
         _p0.set(data[offset], data[offset + 1], data[offset + 2]);
         _p1.set(data[offset + 3], data[offset + 4], data[offset + 5]);
         const width = data[offset + 6] || 0.4;
@@ -113,36 +184,32 @@ export function buildLayerGroup(buf: GcodeLayerBuffer): LayerBuild {
 
         _dummy.position.copy(_mid);
         _dummy.up.set(0, 0, 1);
-        // LookAt sets up Z axis pointing towards _p1, Y axis towards UP, X is right
         _dummy.lookAt(_p1);
 
         _dummy.scale.set(width, height, length || 0.001);
         _dummy.updateMatrix();
-        mesh.setMatrixAt(i, _dummy.matrix);
+        mesh.setMatrixAt(globalI, _dummy.matrix);
 
         _dummy.scale.set(width, height, width);
 
         _dummy.position.copy(_p0);
         _dummy.updateMatrix();
-        joints.setMatrixAt(i * 2, _dummy.matrix);
+        joints.setMatrixAt(globalI * 2, _dummy.matrix);
 
         _dummy.position.copy(_p1);
         _dummy.updateMatrix();
-        joints.setMatrixAt(i * 2 + 1, _dummy.matrix);
+        joints.setMatrixAt(globalI * 2 + 1, _dummy.matrix);
       }
-
-      mesh.count = count;
-      joints.count = count * 2;
-      group.add(mesh);
-      group.add(joints);
-
-      roleSegments.push({ role, mesh, joints, count });
+      mesh.instanceMatrix.needsUpdate = true;
+      joints.instanceMatrix.needsUpdate = true;
     }
 
-    totalSegments += count;
+    roleOffsets[role] += count;
   }
 
-  return { group, totalSegments, roleSegments };
+  const roleSegments: RoleSegments[] = Object.values(roleSegmentsMap) as RoleSegments[];
+
+  return { group, totalSegments, roleSegments, blockLayout };
 }
 
 export function disposeLayerGroup(group: Group): void {
@@ -187,13 +254,30 @@ export function applySegmentProgress(
   if (!info) return;
 
   const target = Math.round(progress * info.totalSegments);
+
+  const visibleCounts: Record<RoleName, number> = {
+    outerWall: 0,
+    innerWall: 0,
+    infill: 0,
+    topSurface: 0,
+    bottomSurface: 0,
+    travel: 0,
+    other: 0,
+  };
+
   let remaining = target;
+  for (const block of info.blockLayout) {
+    const show = Math.min(remaining, block.count);
+    visibleCounts[block.role] += show;
+    remaining -= show;
+    if (remaining <= 0) break;
+  }
+
   for (const rs of info.roleSegments) {
-    const show = Math.min(remaining, rs.count);
+    const show = visibleCounts[rs.role] || 0;
     if (rs.mesh) rs.mesh.count = show;
     if (rs.joints) rs.joints.count = show * 2;
     if (rs.lines) rs.lines.geometry.setDrawRange(0, show * 2);
-    remaining = Math.max(0, remaining - rs.count);
   }
 }
 

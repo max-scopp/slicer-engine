@@ -1,11 +1,11 @@
 import { DecimalPipe } from '@angular/common';
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
 import {
-  GcodePreviewService,
-  ROLE_CSS,
-  ROLE_LABELS,
-  ROLE_ORDER,
-  type RoleName,
+    GcodePreviewService,
+    ROLE_CSS,
+    ROLE_LABELS,
+    ROLE_ORDER,
+    type RoleName,
 } from '../../services/gcode-preview.service';
 import { Card } from '../card/card';
 
@@ -129,17 +129,13 @@ export class SlicePreviewControls {
       return 0;
     }
     const layer = handle.getLayer(this.preview.layerMax());
-    const floatsPerSegment = 6;
-    return (
-      (layer.outer_wall.length +
-        layer.inner_wall.length +
-        layer.top_surface.length +
-        layer.bottom_surface.length +
-        layer.infill.length +
-        layer.travel.length +
-        layer.other.length) /
-      floatsPerSegment
-    );
+    const floatsPerSegment = 8;
+    let totalFloats = 0;
+    const blocksCount = layer.blocksCount();
+    for (let i = 0; i < blocksCount; i++) {
+      totalFloats += layer.blockData(i).length;
+    }
+    return totalFloats / floatsPerSegment;
   });
 
   /** Segment slider integer value derived from the fractional signal and real segment count. */

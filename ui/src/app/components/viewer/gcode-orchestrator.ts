@@ -61,6 +61,7 @@ export class GcodeOrchestrator {
         group: built.group,
         totalSegments: built.totalSegments,
         roleSegments: built.roleSegments,
+        blockLayout: built.blockLayout,
       };
       this.layers.push(info);
       this.contentRoot.add(built.group);

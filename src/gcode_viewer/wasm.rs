@@ -6,20 +6,11 @@ use super::types::InternalLayer;
 
 // ── GcodeLayerBuffer ────────────────────────────────────────────────────────
 
-/// Per-layer geometry buffers, one `Float32Array` per extrusion role.
-///
-/// Each array contains flat line-segment pairs with dimensions:
-/// `[x0, y0, z0,  x1, y1, z1,  width, height, …]`  (8 floats per segment).
 #[wasm_bindgen]
 pub struct GcodeLayerBuffer {
     z: f32,
-    outer_wall: Float32Array,
-    inner_wall: Float32Array,
-    infill: Float32Array,
-    top_surface: Float32Array,
-    bottom_surface: Float32Array,
-    travel: Float32Array,
-    other: Float32Array,
+    blocks_roles: Vec<u8>,
+    blocks_data: Vec<Float32Array>,
 }
 
 #[wasm_bindgen]
@@ -30,46 +21,19 @@ impl GcodeLayerBuffer {
         self.z
     }
 
-    /// Outer wall / perimeter move segments.
-    #[wasm_bindgen(getter)]
-    pub fn outer_wall(&self) -> Float32Array {
-        self.outer_wall.clone()
+    #[wasm_bindgen(js_name = blocksCount)]
+    pub fn blocks_count(&self) -> usize {
+        self.blocks_roles.len()
     }
 
-    /// Inner wall / inner perimeter move segments.
-    #[wasm_bindgen(getter)]
-    pub fn inner_wall(&self) -> Float32Array {
-        self.inner_wall.clone()
+    #[wasm_bindgen(js_name = blockRole)]
+    pub fn block_role(&self, i: usize) -> u8 {
+        self.blocks_roles[i]
     }
 
-    /// Sparse infill move segments.
-    #[wasm_bindgen(getter)]
-    pub fn infill(&self) -> Float32Array {
-        self.infill.clone()
-    }
-
-    /// Top surface solid infill move segments.
-    #[wasm_bindgen(getter)]
-    pub fn top_surface(&self) -> Float32Array {
-        self.top_surface.clone()
-    }
-
-    /// Bottom surface solid infill move segments.
-    #[wasm_bindgen(getter)]
-    pub fn bottom_surface(&self) -> Float32Array {
-        self.bottom_surface.clone()
-    }
-
-    /// Travel (non-extruding) move segments.
-    #[wasm_bindgen(getter)]
-    pub fn travel(&self) -> Float32Array {
-        self.travel.clone()
-    }
-
-    /// Segments not matching any recognised role.
-    #[wasm_bindgen(getter)]
-    pub fn other(&self) -> Float32Array {
-        self.other.clone()
+    #[wasm_bindgen(js_name = blockData)]
+    pub fn block_data(&self, i: usize) -> Float32Array {
+        self.blocks_data[i].clone()
     }
 }
 
@@ -78,15 +42,16 @@ fn into_float32_array(data: &[f32]) -> Float32Array {
 }
 
 fn layer_to_buffer(layer: &InternalLayer) -> GcodeLayerBuffer {
+    let mut roles = Vec::with_capacity(layer.blocks.len());
+    let mut data = Vec::with_capacity(layer.blocks.len());
+    for b in &layer.blocks {
+        roles.push(b.role.id());
+        data.push(into_float32_array(&b.data));
+    }
     GcodeLayerBuffer {
         z: layer.z,
-        outer_wall: into_float32_array(&layer.outer_wall),
-        inner_wall: into_float32_array(&layer.inner_wall),
-        infill: into_float32_array(&layer.infill),
-        top_surface: into_float32_array(&layer.top_surface),
-        bottom_surface: into_float32_array(&layer.bottom_surface),
-        travel: into_float32_array(&layer.travel),
-        other: into_float32_array(&layer.other),
+        blocks_roles: roles,
+        blocks_data: data,
     }
 }
 
@@ -98,7 +63,6 @@ fn layer_to_buffer(layer: &InternalLayer) -> GcodeLayerBuffer {
 /// const handle = GcodeHandle.parse(new Uint8Array(bytes));
 /// console.log(handle.layerCount());   // total layers
 /// const layer = handle.getLayer(5);   // GcodeLayerBuffer
-/// const buf   = layer.outer_wall;     // Float32Array [x0,y0,z0, x1,y1,z1, …]
 /// ```
 #[wasm_bindgen]
 pub struct GcodeHandle {
