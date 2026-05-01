@@ -34,10 +34,9 @@ flowchart LR
 ```
 ui/src/app/
 ├── app.config.ts          providers (router, http, markdown, input-modality, keyboard-shortcuts)
-├── app-routes.ts          /, /scene-demo, /slice/(new|:requestUuid)
+├── app-routes.ts          /, /slice/(new|:requestUuid)
 ├── pages/
 │   ├── home/              landing dashboard
-│   ├── scene-demo/        scene-engine playground (manual SceneOp dispatch)
 │   ├── slice-new/         upload + initial slice
 │   └── slice-viewer/      G-code preview, layer scrubber, history
 ├── nexus/                 application shell — top bar, sidebar, layout, print-estimates
@@ -116,10 +115,10 @@ flowchart LR
 
 The panel contains two read-only Monaco editor instances, each updated live as signals change:
 
-| Editor | Content | WebSocket field |
-|--------|---------|-----------------|
-| Top | Scene snapshot — objects, transforms, world AABBs | `scene` payload |
-| Bottom | Slice settings — layer height, walls, infill, … | `settings` payload |
+| Editor | Content                                           | WebSocket field    |
+| ------ | ------------------------------------------------- | ------------------ |
+| Top    | Scene snapshot — objects, transforms, world AABBs | `scene` payload    |
+| Bottom | Slice settings — layer height, walls, infill, …   | `settings` payload |
 
 `bigint` object IDs are serialised as strings so `JSON.stringify` does not throw.
 
@@ -173,15 +172,15 @@ The **only** place where `SceneEngineService.apply` should be called for user-dr
 
 Linear stack of complete `SceneSnapshot` values — no deltas, no partial patches.
 
-| Signal / method | Description |
-|-----------------|-------------|
-| `canUndo` | `true` when cursor > 0 |
-| `canRedo` | `true` when cursor < stack tail |
-| `entryCount` | total snapshots stored |
+| Signal / method  | Description                                   |
+| ---------------- | --------------------------------------------- |
+| `canUndo`        | `true` when cursor > 0                        |
+| `canRedo`        | `true` when cursor < stack tail               |
+| `entryCount`     | total snapshots stored                        |
 | `push(snapshot)` | append; trims redo branch; caps at 50 entries |
-| `undo()` | step cursor back and restore |
-| `redo()` | step cursor forward and restore |
-| `clear()` | wipe the stack |
+| `undo()`         | step cursor back and restore                  |
+| `redo()`         | step cursor forward and restore               |
+| `clear()`        | wipe the stack                                |
 
 **Restoration** issues `set_transform` ops for every object in the target snapshot and `remove` ops for objects that no longer exist. Objects that should be re-added but whose mesh bytes are no longer in memory are permanently skipped in the current implementation — re-add support requires a future mesh-byte retention layer.
 
@@ -193,10 +192,10 @@ The baseline snapshot (`s0`) is seeded by `SceneCommand` on the very first gestu
 
 `KeyboardShortcuts` is eagerly instantiated in `app.config.ts` and adds a single `keydown` listener to `document` for the lifetime of the app.
 
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+Z` (or `⌘Z`) | Undo |
-| `Ctrl+Y` (or `⌘Y`) | Redo |
+| Shortcut                  | Action                                     |
+| ------------------------- | ------------------------------------------ |
+| `Ctrl+Z` (or `⌘Z`)        | Undo                                       |
+| `Ctrl+Y` (or `⌘Y`)        | Redo                                       |
 | `Ctrl+Shift+Z` (or `⌘⇧Z`) | Redo (alternate — common on macOS / Linux) |
 
 Shortcuts are no-ops when the corresponding history direction is unavailable (guards `canUndo` / `canRedo`). The `keydown` event is consumed with `preventDefault()` only when the shortcut fires, so browser defaults are unaffected otherwise.
