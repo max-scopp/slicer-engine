@@ -53,6 +53,16 @@ pub(super) struct InternalLayer {
 }
 
 impl InternalLayer {
+    pub(super) fn is_empty(&self) -> bool {
+        self.outer_wall.is_empty()
+            && self.inner_wall.is_empty()
+            && self.infill.is_empty()
+            && self.top_surface.is_empty()
+            && self.bottom_surface.is_empty()
+            && self.travel.is_empty()
+            && self.other.is_empty()
+    }
+
     pub(super) fn new(z: f32) -> Self {
         Self {
             z,

@@ -151,11 +151,21 @@ pub(super) fn process_comment(
         || trimmed.eq_ignore_ascii_case("BEFORE_LAYER_CHANGE")
     {
         *seen_layer_change_comment = true;
-        let finished = std::mem::replace(current, InternalLayer::new(current_z));
-        layers.push(finished);
+        if !current.is_empty() {
+            let finished = std::mem::replace(current, InternalLayer::new(current_z));
+            layers.push(finished);
+        }
+        // Do not reset current.z here if it is empty, because a preceding ;Z:
+        // might have already set the correct future Z height for this empty layer.
         *role = Role::Travel;
     } else if let Some(type_val) = trimmed.strip_prefix("TYPE:") {
         *role = Role::from_type_comment(type_val);
+    } else if let Some(z_val) = trimmed.strip_prefix("Z:") {
+        if let Ok(z) = z_val.parse::<f32>() {
+            if current.is_empty() {
+                current.z = z;
+            }
+        }
     } else if let Some(width_val) = trimmed.strip_prefix("WIDTH:") {
         if let Ok(w) = width_val.parse::<f32>() {
             *width = w;
