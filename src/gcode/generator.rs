@@ -20,15 +20,15 @@ const WIDTH_EPSILON: f64 = 1e-6;
 /// line of length `move_len` at the given `layer_height` with the configured
 /// nozzle and filament diameters.
 ///
-/// Formula: E = line_length × (layer_height × nozzle_diameter) / (π × filament_radius²)
+/// Formula: E = line_length × (layer_height × line_width) / (π × filament_radius²)
 pub(crate) fn extrusion_for_move(
     move_len: f64,
     layer_height: f64,
-    nozzle_diameter_mm: f64,
+    width_mm: f64,
     filament_diameter_mm: f64,
 ) -> f64 {
     let filament_radius = filament_diameter_mm / 2.0;
-    let cross_section = layer_height * nozzle_diameter_mm;
+    let cross_section = layer_height * width_mm;
     let filament_area = std::f64::consts::PI * filament_radius.powi(2);
     move_len * cross_section / filament_area
 }
