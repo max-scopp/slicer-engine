@@ -44,8 +44,9 @@ a database row.
 5. **Status is a finite-state machine.** Transitions go forward only:
    `AwaitingUpload → Uploading → UploadComplete → Slicing → SliceComplete`,
    with `Error` reachable from any state.
-6. **`Mutex<Connection>` serialises all writes.** `rusqlite` is sync;
-   the server reaches the DB exclusively through `tokio::task::spawn_blocking`.
+6. **All `Database` methods are `async`.** The underlying SeaORM
+   `DatabaseConnection` is backed by `sqlx-sqlite` with WAL mode enabled
+   and manages its own connection pool — no external locking needed.
 
 ---
 
@@ -85,6 +86,27 @@ Indices target the two query patterns we actually run: status-based cleanup
 than _N_ hours), plus the per-workplate file lookup the slicer issues on
 every `Slice` request.
 
+The schema is defined as a SeaORM migration in
+[`migrations/m20250101_000001_initial.rs`](migrations/m20250101_000001_initial.rs)
+and applied automatically by [`migrator.rs`](migrator.rs) on every startup.
+
+---
+
+## Migrations
+
+Schema changes must be expressed as new migration files rather than
+editing the initial one. The workflow is:
+
+1. Create `src/db/migrations/mYYYYMMDD_NNNNNN_<description>.rs`
+   (e.g. `m20251201_000002_add_layer_count.rs`)
+   implementing `MigrationTrait` (see the initial migration as a template).
+2. Register it in `src/db/migrations/mod.rs`.
+3. Add it to the `migrations()` vec in `src/db/migrator.rs`.
+
+SeaORM tracks applied migrations in the `seaql_migrations` bookkeeping
+table; re-running `Database::open` on an existing database only applies
+the new migration(s).
+
 ---
 
 ## Status state machine
@@ -114,17 +136,17 @@ what failed; the cleanup pass deletes them on a TTL.
 ```mermaid
 classDiagram
     class Database {
-        -conn: Mutex~Connection~
-        +open(path) Result~Self~
-        +create_request(uuid) Result~RequestSession~
-        +get_request(uuid) Result~Option~
-        +update_status(uuid, status)
-        +add_upload_file(ruuid, file_uuid, name, path, size)
-        +get_file(file_uuid) Result~Option~FileEntry~~
-        +get_files_for_request(ruuid) Result~Vec~FileEntry~~
-        +set_download_file(ruuid, path, size)
-        +get_completed_sessions() Result~Vec~RequestSession~~
-        +cleanup_old_sessions(hours)
+        -conn: DatabaseConnection
+        +open(path) Future~Result~Self~~
+        +create_request(uuid) Future~Result~RequestSession~~
+        +get_request(uuid) Future~Result~Option~~
+        +update_status(uuid, status) Future~Result~~
+        +add_upload_file(ruuid, file_uuid, name, path, size) Future~Result~~
+        +get_file(file_uuid) Future~Result~Option~FileEntry~~~
+        +get_files_for_request(ruuid) Future~Result~Vec~FileEntry~~~
+        +set_download_file(ruuid, path, size) Future~Result~~
+        +get_completed_sessions() Future~Result~Vec~RequestSession~~~
+        +cleanup_old_sessions(hours) Future~Result~usize~~
     }
     class RequestSession {
         +request_uuid: Uuid
@@ -168,26 +190,26 @@ sequenceDiagram
     participant D as Database
     participant FS as work_dir
 
-    H->>D: create_request(ruuid) → AwaitingUpload
+    H->>D: create_request(ruuid).await → AwaitingUpload
     H->>FS: write {file_uuid}.{ext}
-    H->>D: add_upload_file(ruuid, file_uuid, name, path, size)
+    H->>D: add_upload_file(ruuid, file_uuid, name, path, size).await
     Note over D: status auto-advances to UploadComplete
 
-    W->>D: get_request(ruuid) (verify UploadComplete)
-    W->>D: update_status(Slicing)
+    W->>D: get_request(ruuid).await (verify UploadComplete)
+    W->>D: update_status(Slicing).await
     loop per scene object
-        W->>D: get_file(file_uuid)
+        W->>D: get_file(file_uuid).await
         D-->>W: FileEntry { file_path, ... }
         W->>FS: read file_path, bake transform
     end
     W->>FS: run pipeline, write {ruuid}.gcode
-    W->>D: set_download_file(ruuid, ...)
-    W->>D: update_status(SliceComplete)
+    W->>D: set_download_file(ruuid, ...).await
+    W->>D: update_status(SliceComplete).await
 
     Note over W,H: ListSessions client message
-    W->>D: get_completed_sessions()
+    W->>D: get_completed_sessions().await
     D-->>W: Vec~RequestSession~
-    W->>D: get_files_for_request(ruuid) (for filename label)
+    W->>D: get_files_for_request(ruuid).await (for filename label)
 ```
 
 The DB is only ever touched by the server. The CLI and the wasm build
@@ -198,16 +220,9 @@ exclude it via `#[cfg(not(target_arch = "wasm32"))]` in
 
 ## Threading
 
-```mermaid
-flowchart LR
-    A[actix async task] -->|spawn_blocking| T[Tokio blocking pool]
-    T -->|conn.lock| C[(SQLite Connection<br/>WAL mode)]
-```
-
-Every DB call inside an async handler is wrapped in
-`tokio::task::spawn_blocking`. The `Mutex<Connection>` then serialises
-queries on top of WAL, which lets readers proceed during writes — the only
-contention is between concurrent writers, which the mutex resolves.
+SeaORM's `DatabaseConnection` manages an internal connection pool with
+WAL mode enabled. All `Database` methods are `async` and can be `.await`ed
+directly from any async handler — no `spawn_blocking` wrapper is needed.
 
 ---
 
@@ -233,6 +248,9 @@ contention is between concurrent writers, which the mutex resolves.
 ## See also
 
 - [mod.rs](mod.rs) — `Database`, `RequestSession`, `FileEntry`, `RequestStatus`, queries
+- [entities/](entities/) — SeaORM entity models for `requests` and `files`
+- [migrations/](migrations/) — versioned schema migrations
+- [migrator.rs](migrator.rs) — `Migrator` (applies pending migrations on open)
 - [history_tests.rs](history_tests.rs) — round-trip and cleanup tests
 - [../server/README.md](../server/README.md) — how the server uses this
 - [../server/handlers.rs](../server/handlers.rs) — upload / download paths
