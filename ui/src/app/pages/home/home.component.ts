@@ -32,8 +32,8 @@ export class HomeDashboardComponent {
     }
     this.slicerFile.selectFile(file);
     try {
-      const uuid = await this.slicerFile.upload();
-      this.router.navigate(['/slice', uuid]);
+      const meta = await this.slicerFile.upload();
+      this.router.navigate(['/slice', meta.ruuid], { state: { uploadMeta: meta } });
     } catch {
       // upload error is tracked in slicerFile.uploadError
     }
