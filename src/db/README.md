@@ -97,11 +97,14 @@ and applied automatically by [`migrator.rs`](migrator.rs) on every startup.
 Schema changes must be expressed as new migration files rather than
 editing the initial one. The workflow is:
 
-1. Create `src/db/migrations/mYYYYMMDD_NNNNNN_<description>.rs`
-   (e.g. `m20251201_000002_add_layer_count.rs`)
-   implementing `MigrationTrait` (see the initial migration as a template).
-2. Register it in `src/db/migrations/mod.rs`.
-3. Add it to the `migrations()` vec in `src/db/migrator.rs`.
+1. Use the SeaORM CLI tool to generate the boilerplate:
+   ```bash
+   sea-orm-cli migrate generate "add_new_table" -d src/db
+   ```
+   (If you don't have it installed: `cargo install sea-orm-cli`).
+2. Implement the `up()` and `down()` methods in the generated `src/db/migrations/mYYYYMMDD_HHMMSS_add_new_table.rs` file.
+3. Register the new module in `src/db/migrations/mod.rs`.
+4. Add it to the `migrations()` vec in `src/db/migrator.rs`.
 
 SeaORM tracks applied migrations in the `seaql_migrations` bookkeeping
 table; re-running `Database::open` on an existing database only applies

@@ -214,6 +214,16 @@ See [architecture-cli-layer-1.md](plan/architecture-cli-layer-1.md) for detailed
 3. Test WASM builds with `wasm-pack test --headless --firefox`
 4. Verify CI passes all platform targets before merging
 
+### Adding a Database Migration
+
+1. Use the `sea-orm-cli` tool to scaffold the migration file:
+   ```bash
+   sea-orm-cli migrate generate "your_migration_name" -d src/db
+   ```
+2. Implement the schema changes in the generated file's `up` and `down` methods.
+3. Register the new module in `src/db/migrations/mod.rs`.
+4. Add the migration to the `migrations()` vector in `src/db/migrator.rs`.
+
 ## CI/CD Pipeline
 
 GitHub Actions ([.github/workflows/build.yml](.github/workflows/build.yml)) automatically:
