@@ -24,6 +24,13 @@ const MAX_GCODE_FILE_BYTES: u64 = 1024 * 1024; // 1 MiB
 /// Returns an [`std::io::Error`] if the path exists but cannot be read, or if
 /// the file exceeds the 1 MiB size limit.
 pub fn resolve_gcode_source(input: &str) -> Result<Vec<String>, std::io::Error> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        return Ok(input.lines().map(|l| l.to_string()).collect());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
     let path = std::path::Path::new(input);
     if path.is_file() {
         let meta = std::fs::metadata(path)?;
@@ -42,4 +49,5 @@ pub fn resolve_gcode_source(input: &str) -> Result<Vec<String>, std::io::Error> 
         return Ok(content.lines().map(|l| l.to_string()).collect());
     }
     Ok(input.lines().map(|l| l.to_string()).collect())
+    }
 }

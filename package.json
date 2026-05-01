@@ -5,9 +5,13 @@
   "packageManager": "pnpm@10.33.0",
   "scripts": {
     "hydrate": "pnpm run build:wasm && pnpm run gen",
+    "hydrate:web-slicer": "pnpm run build:wasm:web-slicer && pnpm run gen",
     "ui:dev": "pnpm --filter slicer-ui start",
+    "ui:dev:web-slicer": "pnpm --filter slicer-ui start:web-slicer",
     "ui:build": "pnpm --filter slicer-ui build",
+    "ui:build:web-slicer": "pnpm --filter slicer-ui build:web-slicer",
     "build:wasm": "wasm-pack build --target web --release --out-dir ui/src/generated/scene-wasm --out-name scene_engine",
+    "build:wasm:web-slicer": "wasm-pack build --target web --release --features web-slicer --out-dir ui/src/generated/scene-wasm --out-name scene_engine",
     "gen-schemas": "cargo run -- gen-schemas --output-dir ui/src/schemas",
     "gen-types": "pnpm --filter slicer-ui gen-types",
     "gen": "pnpm run gen-schemas && pnpm run gen-types",

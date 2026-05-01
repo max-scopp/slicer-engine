@@ -116,6 +116,13 @@ pub struct SceneSnapshotJs {
     pub bed: BedConfigJs,
 }
 
+#[cfg(feature = "web-slicer")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SliceResultJs {
+    pub gcode: String,
+    pub layer_count: usize,
+}
+
 impl From<&BedConfig> for BedConfigJs {
     fn from(b: &BedConfig) -> Self {
         Self {
@@ -315,6 +322,44 @@ impl SceneHandle {
             bed: BedConfigJs::from(&self.inner.bed),
         };
         serde_wasm_bindgen::to_value(&snap).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Slice the current scene in-browser and return the generated G-code.
+    ///
+    /// This method is only available in the alternative `web-slicer` wasm
+    /// build because it pulls in the full polygon clipping and slicing stack.
+    #[cfg(feature = "web-slicer")]
+    #[wasm_bindgen(js_name = sliceGcode)]
+    pub fn slice_gcode(&self, params: JsValue) -> Result<JsValue, JsValue> {
+        let params: crate::settings::params::SlicingParams = serde_wasm_bindgen::from_value(params)
+            .map_err(|e| JsValue::from_str(&format!("invalid slicing params: {}", e)))?;
+
+        if self.inner.objects.is_empty() {
+            return Err(JsValue::from_str(
+                "scene is empty; add at least one object before slicing",
+            ));
+        }
+
+        let mut combined = crate::mesh::types::Mesh::new();
+        for object in &self.inner.objects {
+            let baked = crate::scene::apply_transform(object.mesh.as_ref(), &object.transform);
+            combined.vertices.extend(baked.vertices);
+            combined.faces.extend(baked.faces);
+        }
+
+        if combined.faces.is_empty() {
+            return Err(JsValue::from_str(
+                "combined scene has no triangles; nothing to slice",
+            ));
+        }
+
+        let layers = crate::core::process_mesh(&combined, &params, &crate::logging::NullLogger);
+        let result = SliceResultJs {
+            layer_count: layers.len(),
+            gcode: crate::gcode::generate_gcode(&layers, &params),
+        };
+
+        serde_wasm_bindgen::to_value(&result).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 }
 

@@ -100,10 +100,18 @@ Full reference → [Settings](src/settings/README.md) · [Config (TOML)](src/con
 # Build the WASM bindings used by the UI
 make build-wasm   # or: wasm-pack build --target web --release
 
+# Alternative bundle: include the slicing pipeline in the browser WASM build
+pnpm run hydrate:web-slicer
+pnpm run ui:build:web-slicer
+
 # Run the UI in dev mode against a local server
 cd ui && pnpm install && pnpm start    # http://localhost:4200
 cargo run --release -- serve            # http://localhost:5201
 ```
+
+The `web-slicer` bundle is opt-in because it pulls `clipper2` into the wasm
+build. That requires a wasm-capable C++ toolchain (`clang++`) in addition to
+`wasm-pack`.
 
 Architecture: [UI guide](ui/README.md) · [Server (HTTP + WS)](src/server/README.md).
 

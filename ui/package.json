@@ -4,7 +4,9 @@
   "scripts": {
     "ng": "ng",
     "start": "ng serve --host 0.0.0.0",
+    "start:web-slicer": "ng serve --host 0.0.0.0 --configuration web-slicer",
     "build": "ng build",
+    "build:web-slicer": "ng build --configuration web-slicer",
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
     "gen-schemas": "cd .. && cargo run -- gen-schemas --output-dir ui/src/schemas",

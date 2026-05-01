@@ -82,6 +82,7 @@ export class Slicer {
 
   /** Name of the pipeline phase currently executing, or `null` when idle. */
   readonly currentPhase = signal<string | null>(null);
+  private objectUrl: string | null = null;
 
   /**
    * Overall slice progress 0–100.
@@ -161,7 +162,7 @@ export class Slicer {
         const resolvedUrl = msg.download_url.startsWith('/')
           ? `${environment.apiUrl}${msg.download_url}`
           : msg.download_url;
-        this.gcodeDownloadUrl.set(resolvedUrl);
+        this.setDownloadUrl(resolvedUrl);
 
         this.notifications.success(
           'Slice complete',
@@ -235,7 +236,8 @@ export class Slicer {
     if (!url) {
       return;
     }
-    const filename = this.selectedFile()?.name.replace(/\.stl$/i, '.gcode') ?? 'output.gcode';
+    const filename =
+      this.selectedFile()?.name.replace(/\.(stl|obj|3mf)$/i, '.gcode') ?? 'output.gcode';
     const link = document.createElement('a');
     link.href = url;
     link.download = filename;
@@ -310,6 +312,11 @@ export class Slicer {
   }
 
   async slice(): Promise<void> {
+    if (environment.sliceBackend === 'wasm') {
+      await this.sliceLocally();
+      return;
+    }
+
     const file = this.selectedFile();
     if (!file) {
       return;
@@ -318,7 +325,7 @@ export class Slicer {
     // Reset phase state for fresh run
     this.phaseTimings.set([]);
     this.currentPhase.set(null);
-    this.gcodeDownloadUrl.set(null);
+    this.setDownloadUrl(null);
 
     // If the file was already uploaded (navigated from slice-new or
     // restored from `/api/request/:ruuid`), reuse the workplate UUID
@@ -386,7 +393,7 @@ export class Slicer {
     this.outputLog.set([]);
     this.phaseTimings.set([]);
     this.currentPhase.set(null);
-    this.gcodeDownloadUrl.set(null);
+    this.setDownloadUrl(null);
     this.ws.send({ type: 'Reset' });
   }
 
@@ -396,5 +403,55 @@ export class Slicer {
 
   downloadFromHistory(session: { download_url: string; original_filename?: string | null }): void {
     this.history.download(session as import('./history').SessionSummary);
+  }
+
+  private async sliceLocally(): Promise<void> {
+    await this.sceneEngine.ready();
+
+    this.phaseTimings.set([]);
+    this.currentPhase.set(null);
+    this.setDownloadUrl(null);
+    this.status.set('slicing');
+    this.outputLog.update((log) => [...log, 'Starting local wasm slice…']);
+
+    try {
+      const result = this.sceneEngine.sliceToGcode(this.settings());
+      const url = URL.createObjectURL(
+        new Blob([result.gcode], {
+          type: 'text/plain;charset=utf-8',
+        }),
+      );
+
+      this.setDownloadUrl(url);
+      this.status.set('done');
+      this.notifications.success(
+        'Slice complete',
+        `${result.layer_count} layers — click Download to save G-code`,
+        6000,
+      );
+      this.outputLog.update((log) => [
+        ...log,
+        `Local slice complete — ${result.layer_count} layers generated.`,
+      ]);
+    } catch (error) {
+      this.status.set('error');
+      this.outputLog.update((log) => [
+        ...log,
+        `[error] Local slice failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      ]);
+    }
+  }
+
+  private setDownloadUrl(url: string | null): void {
+    if (this.objectUrl) {
+      URL.revokeObjectURL(this.objectUrl);
+      this.objectUrl = null;
+    }
+
+    if (url?.startsWith('blob:')) {
+      this.objectUrl = url;
+    }
+
+    this.gcodeDownloadUrl.set(url);
   }
 }

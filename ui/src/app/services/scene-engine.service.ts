@@ -1,5 +1,6 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import init, { SceneHandle, type RenderBuffer } from '../../generated/scene-wasm/scene_engine';
+import type { SlicingParams } from '../../generated/slicer-engine-ws-client-message-v1';
 import { LoggerService } from './logger.service';
 
 /**
@@ -31,6 +32,15 @@ export interface SceneSnapshot {
   objects: SceneObjectSnapshot[];
   bed: SceneBedSnapshot;
 }
+
+export interface LocalSliceResult {
+  gcode: string;
+  layer_count: number;
+}
+
+type SceneHandleWithWebSlicer = SceneHandle & {
+  sliceGcode(params: SlicingParams): LocalSliceResult;
+};
 
 /**
  * Wire-format scene op accepted by the WASM `applyOp`.
@@ -234,6 +244,21 @@ export class SceneEngineService {
     const stop = this.log.time(`getFaceGroups id=${id}`);
     const result = handle.getFaceGroups(id, angleThresholdDeg);
     stop({ groups: result.length });
+    return result;
+  }
+
+  /** Slice the current scene locally through the opt-in `web-slicer` wasm build. */
+  sliceToGcode(params: SlicingParams): LocalSliceResult {
+    const handle = this.requireHandle() as unknown as Partial<SceneHandleWithWebSlicer>;
+    if (typeof handle.sliceGcode !== 'function') {
+      throw new Error(
+        'This wasm bundle does not include local slicing. Rebuild with the web-slicer feature.',
+      );
+    }
+
+    const stop = this.log.time('sliceGcode');
+    const result = handle.sliceGcode(params);
+    stop({ layers: result.layer_count, bytes: result.gcode.length });
     return result;
   }
 
