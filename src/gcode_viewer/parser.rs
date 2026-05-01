@@ -126,6 +126,81 @@ pub(super) fn parse_gcode_bytes(bytes: &[u8]) -> Vec<InternalLayer> {
                     current.push_segment(seg_role, prev_x, prev_y, prev_z, x, y, z, width, height);
                 }
             }
+            "G2" | "G3" => {
+                let is_cw = cmd == "G2";
+                let prev_x = x;
+                let prev_y = y;
+                let prev_z = z;
+                let prev_e = e;
+
+                let mut new_x = x;
+                let mut new_y = y;
+                let mut new_z = z;
+                let mut new_e = e;
+                let mut has_e = false;
+                let mut i_off: f32 = 0.0;
+                let mut j_off: f32 = 0.0;
+                let mut has_ij = false;
+
+                for param in parts {
+                    if param.is_empty() {
+                        continue;
+                    }
+                    let (letter, rest) = param.split_at(1);
+                    let Ok(val) = rest.parse::<f32>() else {
+                        continue;
+                    };
+                    match letter.to_ascii_uppercase().as_str() {
+                        "X" => new_x = if absolute_xyz { val } else { x + val },
+                        "Y" => new_y = if absolute_xyz { val } else { y + val },
+                        "Z" => new_z = if absolute_xyz { val } else { z + val },
+                        "E" => {
+                            has_e = true;
+                            new_e = if absolute_e { val } else { e + val };
+                        }
+                        "I" => {
+                            i_off = val;
+                            has_ij = true;
+                        }
+                        "J" => {
+                            j_off = val;
+                            has_ij = true;
+                        }
+                        _ => {}
+                    }
+                }
+
+                if !seen_layer_change_comment && (new_z - prev_z).abs() > 1e-6 && new_z > prev_z {
+                    let finished = std::mem::replace(&mut current, InternalLayer::new(new_z));
+                    layers.push(finished);
+                }
+
+                x = new_x;
+                y = new_y;
+                z = new_z;
+                e = new_e;
+
+                let is_extruding = has_e && (new_e - prev_e) > 1e-7;
+                let seg_role = if is_extruding { role } else { Role::Travel };
+
+                let moved = (x - prev_x).abs() > 1e-6 || (y - prev_y).abs() > 1e-6;
+                if moved {
+                    if has_ij {
+                        let cx = prev_x + i_off;
+                        let cy = prev_y + j_off;
+                        current.push_arc(
+                            seg_role, prev_x, prev_y, prev_z, x, y, z, cx, cy, is_cw, width,
+                            height,
+                        );
+                    } else {
+                        // R-form arcs are uncommon and don't carry a centre we can
+                        // store directly; fall back to a straight chord.
+                        current.push_segment(
+                            seg_role, prev_x, prev_y, prev_z, x, y, z, width, height,
+                        );
+                    }
+                }
+            }
             _ => {} // G28, G4, M104, M109, T0, etc. — ignore
         }
     }

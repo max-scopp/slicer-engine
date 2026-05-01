@@ -10,6 +10,7 @@ use super::types::InternalLayer;
 pub struct GcodeLayerBuffer {
     z: f32,
     blocks_roles: Vec<u8>,
+    blocks_kinds: Vec<u8>,
     blocks_data: Vec<Float32Array>,
 }
 
@@ -31,6 +32,13 @@ impl GcodeLayerBuffer {
         self.blocks_roles[i]
     }
 
+    /// Geometric kind of the block at index `i`: `0` = line, `1` = arc.
+    /// Line blocks pack 8 floats per segment; arc blocks pack 11.
+    #[wasm_bindgen(js_name = blockKind)]
+    pub fn block_kind(&self, i: usize) -> u8 {
+        self.blocks_kinds[i]
+    }
+
     #[wasm_bindgen(js_name = blockData)]
     pub fn block_data(&self, i: usize) -> Float32Array {
         self.blocks_data[i].clone()
@@ -43,14 +51,17 @@ fn into_float32_array(data: &[f32]) -> Float32Array {
 
 fn layer_to_buffer(layer: &InternalLayer) -> GcodeLayerBuffer {
     let mut roles = Vec::with_capacity(layer.blocks.len());
+    let mut kinds = Vec::with_capacity(layer.blocks.len());
     let mut data = Vec::with_capacity(layer.blocks.len());
     for b in &layer.blocks {
         roles.push(b.role.id());
+        kinds.push(b.kind.id());
         data.push(into_float32_array(&b.data));
     }
     GcodeLayerBuffer {
         z: layer.z,
         blocks_roles: roles,
+        blocks_kinds: kinds,
         blocks_data: data,
     }
 }
