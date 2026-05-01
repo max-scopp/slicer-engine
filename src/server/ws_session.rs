@@ -187,7 +187,7 @@ async fn handle_ws_session(
                         ops.len(),
                         options.gravity
                     ));
-                    handle_scene_ops(&mut session, &mut scene, ops, options, &work_dir).await;
+                    handle_scene_ops(&mut session, &mut scene, ops, options, &work_dir, &db).await;
                 }
                 Ok(ClientMessage::SceneSnapshot) => {
                     let _ = send_msg(&mut session, &snapshot_msg(&scene)).await;
