@@ -30,6 +30,7 @@
 //! assert!(gcode.contains("START_PRINT"));
 //! ```
 
+pub mod arc_fitting;
 pub mod dialect;
 pub mod dialects;
 pub mod flavor;

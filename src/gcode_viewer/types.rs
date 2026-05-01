@@ -49,9 +49,38 @@ impl Role {
 
 // ── Internal layer representation ──────────────────────────────────────────
 
+/// Geometric kind of segments stored in a [`Block`].
+///
+/// `Line` blocks store 8 floats per segment: `[x0, y0, z0, x1, y1, z1, w, h]`.
+/// `Arc` blocks store 11 floats per segment: `[x0, y0, z0, x1, y1, z1, cx, cy, is_cw, w, h]`
+/// where `(cx, cy)` is the absolute centre on the layer's Z plane and `is_cw`
+/// is `1.0` for G2 and `0.0` for G3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SegmentKind {
+    Line,
+    Arc,
+}
+
+impl SegmentKind {
+    pub(super) fn id(self) -> u8 {
+        match self {
+            SegmentKind::Line => 0,
+            SegmentKind::Arc => 1,
+        }
+    }
+
+    pub(super) fn stride(self) -> usize {
+        match self {
+            SegmentKind::Line => 8,
+            SegmentKind::Arc => 11,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct Block {
     pub(super) role: Role,
+    pub(super) kind: SegmentKind,
     pub(super) data: Vec<f32>,
 }
 
@@ -88,14 +117,57 @@ impl InternalLayer {
     ) {
         let segment_data = [x0, y0, z0, x1, y1, z1, width, height];
         if let Some(last) = self.blocks.last_mut() {
-            if last.role == role {
+            if last.role == role && last.kind == SegmentKind::Line {
                 last.data.extend_from_slice(&segment_data);
                 return;
             }
         }
         self.blocks.push(Block {
             role,
+            kind: SegmentKind::Line,
             data: segment_data.to_vec(),
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn push_arc(
+        &mut self,
+        role: Role,
+        x0: f32,
+        y0: f32,
+        z0: f32,
+        x1: f32,
+        y1: f32,
+        z1: f32,
+        cx: f32,
+        cy: f32,
+        is_cw: bool,
+        width: f32,
+        height: f32,
+    ) {
+        let arc_data = [
+            x0,
+            y0,
+            z0,
+            x1,
+            y1,
+            z1,
+            cx,
+            cy,
+            if is_cw { 1.0 } else { 0.0 },
+            width,
+            height,
+        ];
+        if let Some(last) = self.blocks.last_mut() {
+            if last.role == role && last.kind == SegmentKind::Arc {
+                last.data.extend_from_slice(&arc_data);
+                return;
+            }
+        }
+        self.blocks.push(Block {
+            role,
+            kind: SegmentKind::Arc,
+            data: arc_data.to_vec(),
         });
     }
 }

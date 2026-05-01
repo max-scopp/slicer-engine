@@ -356,8 +356,13 @@ impl GcodeGenerator {
                 // Apply Ramer-Douglas-Peucker simplification when a tolerance is set.
                 // `douglas_peucker` always preserves the first and last point, so a
                 // path with >= 2 raw points will always yield >= 2 simplified points.
-                let points: Vec<(f64, f64)> = if params.path_tolerance > 0.0 && raw_points.len() > 2
-                {
+                //
+                // Important: when arc fitting is enabled, use the unsimplified point
+                // stream.  Pre-simplifying first can sparsify corners enough that the
+                // fitter chooses visually surprising long-sweep arcs.
+                let points: Vec<(f64, f64)> = if params.arc_fitting_enabled {
+                    raw_points
+                } else if params.path_tolerance > 0.0 && raw_points.len() > 2 {
                     crate::gcode::simplify::douglas_peucker(&raw_points, params.path_tolerance)
                 } else {
                     raw_points
@@ -464,25 +469,81 @@ impl GcodeGenerator {
 
                 // Print the contour segments
                 let mut prev = points[0];
-                for &(x, y) in points.iter().skip(1) {
-                    let dx = x - prev.0;
-                    let dy = y - prev.1;
-                    let len = (dx * dx + dy * dy).sqrt();
-                    if len < 1e-6 {
-                        prev = (x, y);
-                        continue;
+                let segments = if params.arc_fitting_enabled {
+                    crate::gcode::arc_fitting::fit_arcs(
+                        &points,
+                        params.arc_fitting_tolerance,
+                        params.arc_fitting_min_segments,
+                        params.arc_fitting_max_radius,
+                    )
+                } else {
+                    points
+                        .windows(2)
+                        .map(|w| crate::gcode::arc_fitting::PathSegment::Line {
+                            start: w[0],
+                            end: w[1],
+                        })
+                        .collect()
+                };
+
+                for seg in &segments {
+                    match *seg {
+                        crate::gcode::arc_fitting::PathSegment::Line { end, .. } => {
+                            let dx = end.0 - prev.0;
+                            let dy = end.1 - prev.1;
+                            let len = (dx * dx + dy * dy).sqrt();
+                            if len < 1e-6 {
+                                prev = end;
+                                continue;
+                            }
+                            e_total += extrusion_for_move(
+                                len,
+                                params.layer_height,
+                                width_mm,
+                                params.filament_diameter_mm,
+                            );
+                            out.push_str(&format!(
+                                "{}\n",
+                                self.dialect.move_extrude(
+                                    end.0,
+                                    end.1,
+                                    e_total,
+                                    print_speed_mm_min
+                                )
+                            ));
+                            prev = end;
+                        }
+                        crate::gcode::arc_fitting::PathSegment::Arc {
+                            end, center, is_cw, ..
+                        } => {
+                            let arc_len = seg.length();
+                            if arc_len < 1e-6 {
+                                prev = end;
+                                continue;
+                            }
+                            let i_off = center.0 - prev.0;
+                            let j_off = center.1 - prev.1;
+                            e_total += extrusion_for_move(
+                                arc_len,
+                                params.layer_height,
+                                width_mm,
+                                params.filament_diameter_mm,
+                            );
+                            out.push_str(&format!(
+                                "{}\n",
+                                self.dialect.move_arc_extrude(
+                                    end.0,
+                                    end.1,
+                                    i_off,
+                                    j_off,
+                                    e_total,
+                                    print_speed_mm_min,
+                                    is_cw,
+                                )
+                            ));
+                            prev = end;
+                        }
                     }
-                    e_total += extrusion_for_move(
-                        len,
-                        params.layer_height,
-                        width_mm,
-                        params.filament_diameter_mm,
-                    );
-                    out.push_str(&format!(
-                        "{}\n",
-                        self.dialect.move_extrude(x, y, e_total, print_speed_mm_min)
-                    ));
-                    prev = (x, y);
                 }
 
                 // Close the contour — only for inherently closed-loop roles such as

@@ -242,6 +242,46 @@ Reduces the number of G-code points without visibly affecting print quality.
     )]
     #[serde(default = "SlicingParams::default_gcode_flavor")]
     pub gcode_flavor: GcodeFlavor,
+
+    #[schemars(
+        description = "Enable G2/G3 arc fitting (ArcWelder-style).
+
+When enabled, sequences of collinear/circular G1 moves are post-processed into G2 (CW) and G3 (CCW) arc commands, drastically reducing G-code size and improving motion smoothness on curved geometry.
+Set to `false` to always emit straight G1 moves.",
+        extend("x-group" = "Output")
+    )]
+    #[serde(default = "SlicingParams::default_arc_fitting_enabled")]
+    pub arc_fitting_enabled: bool,
+
+    #[schemars(
+        description = "Maximum perpendicular deviation (mm) of any point from the fitted arc.
+
+Smaller values produce a more faithful reproduction of the original polyline at the cost of more, smaller arcs.
+**Typical:** 0.005–0.05 mm.",
+        extend("x-group" = "Output")
+    )]
+    #[serde(default = "SlicingParams::default_arc_fitting_tolerance")]
+    pub arc_fitting_tolerance: f64,
+
+    #[schemars(
+        description = "Minimum number of consecutive segments required to consider arc fitting.
+
+Sequences shorter than this are emitted as straight G1 moves. Higher values reduce false positives on noisy short paths.
+**Typical:** 4–8.",
+        extend("x-group" = "Output")
+    )]
+    #[serde(default = "SlicingParams::default_arc_fitting_min_segments")]
+    pub arc_fitting_min_segments: usize,
+
+    #[schemars(
+        description = "Maximum allowed arc radius (mm). Arcs above this radius are emitted as straight lines.
+
+Prevents nearly-straight 'arcs' with kilometre-scale radii that introduce floating-point noise on the firmware side.
+**Typical:** 1000.",
+        extend("x-group" = "Output")
+    )]
+    #[serde(default = "SlicingParams::default_arc_fitting_max_radius")]
+    pub arc_fitting_max_radius: f64,
 }
 
 impl Default for SlicingParams {
@@ -275,6 +315,10 @@ impl Default for SlicingParams {
             infill_overlap_percent: Self::default_infill_overlap_percent(),
             path_tolerance: Self::default_path_tolerance(),
             gcode_flavor: Self::default_gcode_flavor(),
+            arc_fitting_enabled: Self::default_arc_fitting_enabled(),
+            arc_fitting_tolerance: Self::default_arc_fitting_tolerance(),
+            arc_fitting_min_segments: Self::default_arc_fitting_min_segments(),
+            arc_fitting_max_radius: Self::default_arc_fitting_max_radius(),
         }
     }
 }
@@ -366,6 +410,22 @@ impl SlicingParams {
 
     fn default_gcode_flavor() -> GcodeFlavor {
         GcodeFlavor::Marlin
+    }
+
+    fn default_arc_fitting_enabled() -> bool {
+        false
+    }
+
+    fn default_arc_fitting_tolerance() -> f64 {
+        0.025
+    }
+
+    fn default_arc_fitting_min_segments() -> usize {
+        4
+    }
+
+    fn default_arc_fitting_max_radius() -> f64 {
+        1000.0
     }
 }
 

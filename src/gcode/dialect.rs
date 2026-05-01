@@ -91,6 +91,33 @@ pub trait GcodeDialect: Send + Sync {
         format!("G1 X{:.3} Y{:.3} E{:.5} F{:.0}", x, y, e, speed_mm_min)
     }
 
+    /// Move to `(x, y)` along a circular arc around centre `(x + i, y + j)`
+    /// while extruding filament to absolute E position `e` at `speed_mm_min`
+    /// mm/min.  `is_cw` selects `G2` (clockwise) when `true` and `G3`
+    /// (counter-clockwise) otherwise.
+    ///
+    /// Both `i` and `j` are **offsets from the current position** to the arc
+    /// centre, matching the standard RepRap/Marlin/Klipper convention.
+    fn move_arc_extrude(
+        &self,
+        x: f64,
+        y: f64,
+        i: f64,
+        j: f64,
+        e: f64,
+        speed_mm_min: f64,
+        is_cw: bool,
+    ) -> String {
+        let g = if is_cw { 2 } else { 3 };
+        // Keep XY endpoint precision consistent with linear moves while using
+        // higher precision for I/J center offsets. Arc geometry is highly
+        // sensitive to center quantization on large-radius or shallow sweeps.
+        format!(
+            "G{} X{:.3} Y{:.3} I{:.5} J{:.5} E{:.5} F{:.0}",
+            g, x, y, i, j, e, speed_mm_min
+        )
+    }
+
     /// Move the Z axis to `z` at `speed_mm_min` mm/min (no extrusion).
     fn move_z(&self, z: f64, speed_mm_min: f64) -> String {
         format!("G1 Z{:.3} F{:.0}", z, speed_mm_min)
