@@ -81,7 +81,7 @@ pub enum SceneOpJs {
     DropToFloor {
         id: u64,
     },
-    AlignFaceToFloor {
+    PlaceFaceOnFloor {
         id: u64,
         face_index: usize,
     },
@@ -184,6 +184,26 @@ impl SceneHandle {
         let op = js_to_op(op_js);
         self.inner
             .apply(op)
+            .map(|_| ())
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Apply a single scene op with optional modifiers (e.g. heavy gravity).
+    /// `options` JSON shape: `{ gravity?: boolean }`. Pass `null`/`undefined`
+    /// to use defaults.
+    #[wasm_bindgen(js_name = applyOpWithOptions)]
+    pub fn apply_op_with_options(&mut self, op: JsValue, options: JsValue) -> Result<(), JsValue> {
+        let op_js: SceneOpJs = serde_wasm_bindgen::from_value(op)
+            .map_err(|e| JsValue::from_str(&format!("invalid op: {}", e)))?;
+        let opts: crate::scene::SceneOptions = if options.is_null() || options.is_undefined() {
+            crate::scene::SceneOptions::default()
+        } else {
+            serde_wasm_bindgen::from_value(options)
+                .map_err(|e| JsValue::from_str(&format!("invalid options: {}", e)))?
+        };
+        let op = js_to_op(op_js);
+        self.inner
+            .apply_with_options(op, opts)
             .map(|_| ())
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -325,7 +345,7 @@ fn js_to_op(op: SceneOpJs) -> SceneOp {
         },
         SceneOpJs::CenterOnBed { id } => SceneOp::CenterOnBed { id: ObjectId(id) },
         SceneOpJs::DropToFloor { id } => SceneOp::DropToFloor { id: ObjectId(id) },
-        SceneOpJs::AlignFaceToFloor { id, face_index } => SceneOp::AlignFaceToFloor {
+        SceneOpJs::PlaceFaceOnFloor { id, face_index } => SceneOp::PlaceFaceOnFloor {
             id: ObjectId(id),
             face_index,
         },

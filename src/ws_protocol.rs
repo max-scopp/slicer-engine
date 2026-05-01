@@ -98,8 +98,19 @@ pub enum SceneOpDto {
     CenterOnBed { id: u64 },
     /// Drop the object so its lowest Z vertex sits on Z=0.
     DropToFloor { id: u64 },
-    /// Rotate so the chosen face's normal points down, then drop to floor.
-    AlignFaceToFloor { id: u64, face_index: usize },
+    /// Rotate so the chosen face's normal points down, then place that face
+    /// on the floor (z = 0). Replaces the legacy `align_face_to_floor` op.
+    PlaceFaceOnFloor { id: u64, face_index: usize },
+}
+
+/// Optional modifiers applied to every op in a [`ClientMessage::Scene`] batch.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SceneOptionsDto {
+    /// "Heavy gravity": after each transforming op, drop the affected object
+    /// to the floor (`world_aabb().min.z = 0`). No effect on `Add`, `Remove`,
+    /// `DropToFloor`, or `PlaceFaceOnFloor`.
+    #[serde(default)]
+    pub gravity: bool,
 }
 
 /// Snapshot of a scene object sent to the client (no mesh data).
@@ -143,7 +154,12 @@ pub enum ClientMessage {
     Reset,
     /// Apply one or more scene operations in order. Server replies with
     /// [`ServerMessage::SceneState`] on success.
-    Scene { ops: Vec<SceneOpDto> },
+    Scene {
+        ops: Vec<SceneOpDto>,
+        /// Optional batch-level modifiers (e.g. heavy gravity).
+        #[serde(default)]
+        options: SceneOptionsDto,
+    },
     /// Request the current scene snapshot. Server replies with
     /// [`ServerMessage::SceneState`].
     SceneSnapshot,

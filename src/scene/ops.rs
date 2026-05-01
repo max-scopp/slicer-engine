@@ -45,9 +45,28 @@ pub enum SceneOp {
     CenterOnBed { id: ObjectId },
     /// Translate so the object's transformed-AABB sits with min.z = 0.
     DropToFloor { id: ObjectId },
-    /// Rotate so the chosen face's outward normal points along `-Z`, then drop
-    /// the object to the floor.
-    AlignFaceToFloor { id: ObjectId, face_index: usize },
+    /// Rotate so the chosen face's outward normal points along `-Z`, then
+    /// translate so that the **selected face itself** sits on z = 0.
+    ///
+    /// Unlike a plain drop-to-floor, this lands the chosen face on the bed
+    /// even when the face is in the middle of the object (the rest of the
+    /// mesh extends upward from that face). Picking a top or bottom face
+    /// behaves identically to drop-to-floor.
+    PlaceFaceOnFloor { id: ObjectId, face_index: usize },
+}
+
+/// Optional modifiers that alter how a [`SceneOp`] is applied.
+///
+/// Applied via [`SceneState::apply_with_options`]. Plain [`SceneState::apply`]
+/// uses [`SceneOptions::default`] (all modifiers off).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct SceneOptions {
+    /// "Heavy gravity": after applying a transform op, drop the affected
+    /// object so its world-AABB min.z lands on 0. No effect on `Add`,
+    /// `Remove`, `DropToFloor`, or `PlaceFaceOnFloor` (those already control
+    /// the Z position themselves).
+    #[serde(default)]
+    pub gravity: bool,
 }
 
 /// Receipt returned by a successful [`SceneState::apply`] call.
@@ -71,8 +90,43 @@ pub enum SceneError {
 }
 
 impl SceneState {
-    /// Apply a [`SceneOp`] to this scene.
+    /// Apply a [`SceneOp`] to this scene with [`SceneOptions::default`].
     pub fn apply(&mut self, op: SceneOp) -> Result<OpReceipt, SceneError> {
+        self.apply_inner(op)
+    }
+
+    /// Apply a [`SceneOp`] with optional modifiers.
+    ///
+    /// When [`SceneOptions::gravity`] is set, the affected object is dropped
+    /// to the floor (`world_aabb().min.z = 0`) immediately after the op runs.
+    /// Gravity is skipped for `Add`, `Remove`, `DropToFloor`, and
+    /// `PlaceFaceOnFloor` (those ops either don't move an object's Z or
+    /// already put it on the floor themselves).
+    ///
+    /// The returned receipt's inverse restores the pre-op transform — undoing
+    /// both the original op and the gravity drop in one step.
+    pub fn apply_with_options(
+        &mut self,
+        op: SceneOp,
+        options: SceneOptions,
+    ) -> Result<OpReceipt, SceneError> {
+        let gravity_target = options
+            .gravity
+            .then(|| affected_id_for_gravity(&op))
+            .flatten();
+        let receipt = self.apply_inner(op)?;
+        if let Some(id) = gravity_target {
+            if let Some(obj) = self.get(id) {
+                let world = obj.world_aabb();
+                let mut new_t = obj.transform;
+                new_t.translation[2] -= world.min.z as f32;
+                self.get_mut(id).unwrap().transform = new_t;
+            }
+        }
+        Ok(receipt)
+    }
+
+    fn apply_inner(&mut self, op: SceneOp) -> Result<OpReceipt, SceneError> {
         match op {
             SceneOp::Add {
                 name,
@@ -190,7 +244,7 @@ impl SceneState {
                 })
             }
 
-            SceneOp::AlignFaceToFloor { id, face_index } => {
+            SceneOp::PlaceFaceOnFloor { id, face_index } => {
                 let obj = self.get(id).ok_or(SceneError::NotFound(id))?;
                 let prev = obj.transform;
                 let mesh = obj.mesh.clone();
@@ -214,10 +268,21 @@ impl SceneState {
                 let mut new_t = prev;
                 new_t.set_quat(align * prev.quat());
                 self.get_mut(id).unwrap().transform = new_t;
-                // Then drop to floor on the new orientation.
-                let world = self.get(id).unwrap().world_aabb();
-                let mut new_t = self.get(id).unwrap().transform;
-                new_t.translation[2] -= world.min.z as f32;
+                // Land the *selected face itself* on z = 0 (not the AABB min).
+                // For a top/bottom face this is identical to drop-to-floor; for
+                // a mid-object face the rest of the mesh extends upward from
+                // that face instead of clipping through the bed.
+                let matrix = new_t.to_matrix();
+                let face_min_z = face
+                    .vertices
+                    .iter()
+                    .map(|v| {
+                        matrix
+                            .transform_point3(Vec3::new(v.x as f32, v.y as f32, v.z as f32))
+                            .z
+                    })
+                    .fold(f32::INFINITY, f32::min);
+                new_t.translation[2] -= face_min_z;
                 self.get_mut(id).unwrap().transform = new_t;
                 Ok(OpReceipt {
                     inverse: SceneOp::SetTransform {
@@ -251,6 +316,22 @@ fn face_normal(face: &crate::mesh::types::Face) -> Option<Vec3> {
 
 fn vertex_to_vec3(v: &Vertex) -> Vec3 {
     Vec3::new(v.x as f32, v.y as f32, v.z as f32)
+}
+
+/// Returns the object id that gravity should act on after `op`, or `None` if
+/// gravity should be skipped for that op.
+fn affected_id_for_gravity(op: &SceneOp) -> Option<ObjectId> {
+    match op {
+        SceneOp::Translate { id, .. }
+        | SceneOp::SetTransform { id, .. }
+        | SceneOp::Rotate { id, .. }
+        | SceneOp::Scale { id, .. }
+        | SceneOp::CenterOnBed { id } => Some(*id),
+        SceneOp::Add { .. }
+        | SceneOp::Remove { .. }
+        | SceneOp::DropToFloor { .. }
+        | SceneOp::PlaceFaceOnFloor { .. } => None,
+    }
 }
 
 #[cfg(test)]
@@ -375,21 +456,97 @@ mod tests {
     }
 
     #[test]
-    fn align_face_to_floor_lands_face_at_z0() {
+    fn place_face_on_floor_lands_face_at_z0() {
         // Cube faces 8 and 9 are the +X-facing pair (vertices (1,*,*) and (1,*,*)).
         // Pick face index 4: triangle (0,1,5) — the -Y face (normal points -Y).
         // We want a face with non-Z normal so the alignment actually rotates.
         let mut s = SceneState::new(small_bed());
         let id = s.add_mesh("c", cube_mesh([0.0, 0.0, 0.0], 10.0));
         // Face 4 normal: (b-a)x(c-a) where a=(0,0,0), b=(10,0,0), c=(10,0,10) → (0,-100,0) → -Y.
-        s.apply(SceneOp::AlignFaceToFloor { id, face_index: 4 })
+        s.apply(SceneOp::PlaceFaceOnFloor { id, face_index: 4 })
             .unwrap();
         let world = s.get(id).unwrap().world_aabb();
         assert!(
             world.min.z.abs() < 1e-3,
-            "min.z={} after align+drop",
+            "min.z={} after place-face",
             world.min.z
         );
+    }
+
+    #[test]
+    fn place_face_on_floor_lands_mid_object_face() {
+        // Build a tall cuboid (10x10x40) and pick a side face that is *not*
+        // the bottom. The selected face must end up at z ≈ 0 — the rest of the
+        // mesh extends upward from there. With the old AABB-based drop, a side
+        // face would not actually touch the bed: the object would be sitting
+        // on its (newly rotated) bottom edge instead.
+        let mut s = SceneState::new(small_bed());
+        let id = s.add_mesh("c", cube_mesh([0.0, 0.0, 0.0], 10.0));
+        // Face 4 is on the -Y side; its three vertices span z = 0..10 in the
+        // local mesh. After a rotation that aligns -Y with -Z and then lands
+        // the face at z = 0, all three vertices of face 4 must have world z = 0.
+        s.apply(SceneOp::PlaceFaceOnFloor { id, face_index: 4 })
+            .unwrap();
+        let obj = s.get(id).unwrap();
+        let matrix = obj.transform.to_matrix();
+        let face = &obj.mesh.faces[4];
+        for v in &face.vertices {
+            let p = matrix.transform_point3(Vec3::new(v.x as f32, v.y as f32, v.z as f32));
+            assert!(p.z.abs() < 1e-3, "face vertex z = {} (expected 0)", p.z);
+        }
+    }
+
+    #[test]
+    fn gravity_drops_after_translate() {
+        let mut s = SceneState::new(small_bed());
+        let id = s.add_mesh("c", cube_mesh([0.0, 0.0, 0.0], 10.0));
+        s.apply_with_options(
+            SceneOp::Translate {
+                id,
+                delta: [5.0, 6.0, 25.0],
+            },
+            SceneOptions { gravity: true },
+        )
+        .unwrap();
+        let world = s.get(id).unwrap().world_aabb();
+        // XY translation respected, but Z is pulled back to the floor.
+        assert!(world.min.z.abs() < 1e-4, "min.z={}", world.min.z);
+        let t = s.get(id).unwrap().transform.translation;
+        assert!((t[0] - 5.0).abs() < 1e-4);
+        assert!((t[1] - 6.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn gravity_inverse_restores_pre_op_transform() {
+        let mut s = SceneState::new(small_bed());
+        let id = s.add_mesh("c", cube_mesh([0.0, 0.0, 0.0], 10.0));
+        // Start with the cube floating at z=20.
+        s.apply(SceneOp::Translate {
+            id,
+            delta: [0.0, 0.0, 20.0],
+        })
+        .unwrap();
+        let pre = s.get(id).unwrap().transform;
+        let receipt = s
+            .apply_with_options(
+                SceneOp::Translate {
+                    id,
+                    delta: [1.0, 0.0, 5.0],
+                },
+                SceneOptions { gravity: true },
+            )
+            .unwrap();
+        // After op + gravity, it sits on the floor.
+        assert!(s.get(id).unwrap().world_aabb().min.z.abs() < 1e-4);
+        // Inverse must restore the pre-op floating state, not the post-gravity state.
+        s.apply(receipt.inverse).unwrap();
+        let restored = s.get(id).unwrap().transform;
+        for i in 0..3 {
+            assert!(
+                (restored.translation[i] - pre.translation[i]).abs() < 1e-4,
+                "axis {i}"
+            );
+        }
     }
 
     #[test]

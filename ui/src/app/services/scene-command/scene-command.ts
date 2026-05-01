@@ -35,7 +35,7 @@ export class SceneCommand {
    * Apply a scene op.
    *
    * Accepts any `SceneOp` variant — translate, rotate, scale,
-   * align_face_to_floor, center_on_bed, drop_to_floor, remove,
+   * place_face_on_floor, center_on_bed, drop_to_floor, remove,
    * set_transform. History is op-type-agnostic; all ops are batched
    * identically by the before/after snapshot mechanism.
    */

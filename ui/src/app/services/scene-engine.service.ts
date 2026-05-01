@@ -56,7 +56,7 @@ export type SceneOp =
   | { op: 'scale'; args: { id: bigint; factors: [number, number, number] } }
   | { op: 'center_on_bed'; args: { id: bigint } }
   | { op: 'drop_to_floor'; args: { id: bigint } }
-  | { op: 'align_face_to_floor'; args: { id: bigint; face_index: number } };
+  | { op: 'place_face_on_floor'; args: { id: bigint; face_index: number } };
 
 const DEFAULT_BED: SceneBedSnapshot = {
   width: 220,

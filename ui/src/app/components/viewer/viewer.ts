@@ -1,17 +1,17 @@
 import {
-  ChangeDetectionStrategy,
-  Component,
-  ElementRef,
-  OnDestroy,
-  afterNextRender,
-  computed,
-  effect,
-  inject,
-  input,
-  output,
-  signal,
-  untracked,
-  viewChild,
+    ChangeDetectionStrategy,
+    Component,
+    ElementRef,
+    OnDestroy,
+    afterNextRender,
+    computed,
+    effect,
+    inject,
+    input,
+    output,
+    signal,
+    untracked,
+    viewChild,
 } from '@angular/core';
 import { BufferAttribute, BufferGeometry, Matrix4, Mesh, MeshPhongMaterial } from 'three';
 import { GcodePreviewService } from '../../services/gcode-preview.service';
@@ -329,7 +329,7 @@ export class Viewer implements OnDestroy {
       return;
     }
     this.sceneCommand.apply({
-      op: 'align_face_to_floor',
+      op: 'place_face_on_floor',
       args: { id, face_index: faceIndex },
     });
     this.sceneCommand.flush();

@@ -151,6 +151,10 @@ export class SceneSelection {
     this.gizmo.setCentroid(this.computeSelectionCentroid());
   }
 
+  getSelectedIds(): ReadonlySet<string> {
+    return this.currentSelectedIds;
+  }
+
   setObjectTransform(
     id: string,
     transform: {
