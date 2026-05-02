@@ -16,7 +16,7 @@ import { ViewerControl } from '../../services/viewer-control';
   styleUrl: './slice-viewer.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class SliceViewerComponent {
+export class SliceViewer {
   readonly #activatedRoute = inject(ActivatedRoute);
   readonly #router = inject(Router);
   readonly #slicer = inject(Slicer);

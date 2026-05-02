@@ -1,6 +1,6 @@
 import type { Group } from 'three';
 import type { GcodeLayerBuffer } from '../../../generated/scene-wasm/scene_engine';
-import type { RoleName } from '../../services/gcode-preview.service';
+import type { RoleName } from '../../services/gcode-preview';
 import {
   applyHiddenRoles,
   applySegmentProgress,

@@ -8,7 +8,7 @@ import { History, SessionSummary } from '../../services/history';
   templateUrl: './list-history.component.html',
   styleUrl: './list-history.component.scss',
 })
-export class ListHistoryComponent {
+export class ListHistory {
   protected readonly history = inject(History);
   readonly #router = inject(Router);
 

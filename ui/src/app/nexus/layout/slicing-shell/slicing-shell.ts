@@ -2,13 +2,13 @@ import { Component, computed, inject, signal } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
 import { ThreeDViewToolbar } from '../../../components/3d-view-toolbar/3d-view-toolbar';
 import { Card } from '../../../components/card/card';
-import { CodeEditorComponent } from '../../../components/code-editor/code-editor.component';
-import { SettingsPanelComponent } from '../../../components/settings-panel/settings-panel.component';
+import { CodeEditor } from '../../../components/code-editor/code-editor';
+import { SettingsPanel } from '../../../components/settings-panel/settings-panel';
 import { SlicePreviewControls } from '../../../components/slice-preview-controls/slice-preview-controls';
 import { ViewportCube } from '../../../components/viewport-cube/viewport-cube';
-import { SceneEngineService } from '../../../services/scene-engine.service';
+import { SceneEngine } from '../../../services/scene-engine';
 import { Slicer } from '../../../services/slicer';
-import { Sidebar } from '../../sidebar/sidebar.component';
+import { Sidebar } from '../../sidebar/sidebar';
 import { SliceControl } from '../../slice-control/slice-control';
 
 @Component({
@@ -20,15 +20,15 @@ import { SliceControl } from '../../slice-control/slice-control';
     ThreeDViewToolbar,
     ViewportCube,
     RouterOutlet,
-    SettingsPanelComponent,
-    CodeEditorComponent,
+    SettingsPanel,
+    CodeEditor,
     Card,
   ],
   templateUrl: './slicing-shell.html',
   styleUrl: './slicing-shell.scss',
 })
 export class NexusSlicingShell {
-  private readonly sceneEngine = inject(SceneEngineService);
+  private readonly sceneEngine = inject(SceneEngine);
   private readonly slicer = inject(Slicer);
 
   readonly editorPanelVisible = signal(false);

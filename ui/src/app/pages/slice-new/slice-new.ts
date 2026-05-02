@@ -9,7 +9,7 @@ import { Icon } from '../../shared/icon/icon';
   templateUrl: './slice-new.component.html',
   styleUrl: './slice-new.component.scss',
 })
-export class SliceNewComponent {
+export class SliceNew {
   private readonly router = inject(Router);
   readonly slicerFile = inject(SlicerFile);
   readonly uploading = computed(() => {

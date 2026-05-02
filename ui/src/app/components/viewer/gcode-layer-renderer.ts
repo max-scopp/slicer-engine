@@ -12,7 +12,7 @@ import {
   Vector3,
 } from 'three';
 import type { GcodeLayerBuffer } from '../../../generated/scene-wasm/scene_engine';
-import { ROLE_COLORS, ROLE_ORDER, type RoleName } from '../../services/gcode-preview.service';
+import { ROLE_COLORS, ROLE_ORDER, type RoleName } from '../../services/gcode-preview';
 
 // -- Shared types -------------------------------------------------------------
 

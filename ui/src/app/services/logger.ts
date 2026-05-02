@@ -1,6 +1,6 @@
 import { Injectable, isDevMode } from '@angular/core';
 
-/** Severity for {@link LoggerService}. Mapped to the matching `console` method. */
+/** Severity for {@link Logger}. Mapped to the matching `console` method. */
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 const LEVEL_ORDER: Record<LogLevel, number> = {
@@ -13,7 +13,7 @@ const LEVEL_ORDER: Record<LogLevel, number> = {
 /**
  * Lightweight scoped logger used across UI services.
  *
- * `LoggerService.scope('Foo')` returns a `ScopedLogger` that prefixes every
+ * `Logger.scope('Foo')` returns a `ScopedLogger` that prefixes every
  * line with `[Foo]`, supports `debug`/`info`/`warn`/`error`, and offers a
  * `time()` helper that returns a stop function reporting elapsed milliseconds.
  *
@@ -21,7 +21,7 @@ const LEVEL_ORDER: Record<LogLevel, number> = {
  * production builds; flip it at runtime via {@link setMinLevel}.
  */
 @Injectable({ providedIn: 'root' })
-export class LoggerService {
+export class Logger {
   private minLevel: LogLevel = isDevMode() ? 'debug' : 'info';
 
   setMinLevel(level: LogLevel): void {
@@ -50,7 +50,7 @@ export class ScopedLogger {
 
   constructor(
     private readonly name: string,
-    private readonly parent: LoggerService,
+    private readonly parent: Logger,
   ) {}
 
   debug(message: string, ...args: unknown[]): void {

@@ -1,10 +1,10 @@
 import {
-  afterNextRender,
-  Directive,
-  ElementRef,
-  inject,
-  OnDestroy,
-  Renderer2,
+    afterNextRender,
+    DestroyRef,
+    Directive,
+    ElementRef,
+    inject,
+    Renderer2,
 } from '@angular/core';
 
 // Extra px of leeway added per child to account for padding, margin, and gap
@@ -15,9 +15,10 @@ const LEEWAY_PER_CHILD_PX = 16;
   selector: '[stackWhenCramped]',
   standalone: true,
 })
-export class StackWhenCramped implements OnDestroy {
+export class StackWhenCramped {
   private readonly el = inject(ElementRef<HTMLElement>);
   private readonly renderer = inject(Renderer2);
+  private readonly destroyRef = inject(DestroyRef);
   private observer: ResizeObserver | null = null;
   private estimatedWidth = 0;
 
@@ -33,10 +34,10 @@ export class StackWhenCramped implements OnDestroy {
       this.observer.observe(el);
       this.updateLayout();
     });
-  }
 
-  ngOnDestroy(): void {
-    this.observer?.disconnect();
+    this.destroyRef.onDestroy(() => {
+      this.observer?.disconnect();
+    });
   }
 
   // Estimate the natural inline width the element needs using character counts.

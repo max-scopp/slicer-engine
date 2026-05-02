@@ -1,5 +1,5 @@
 import { Injectable, inject } from '@angular/core';
-import { SceneEngineService, SceneOp, SceneSnapshot } from '../scene-engine.service';
+import { SceneEngine, SceneOp, SceneSnapshot } from '../scene-engine';
 import { SceneHistory } from '../scene-history/scene-history';
 
 const COMMIT_DEBOUNCE_MS = 1000;
@@ -7,7 +7,7 @@ const COMMIT_DEBOUNCE_MS = 1000;
 /**
  * Single public dispatch point for all scene operations.
  *
- * Wraps `SceneEngineService.apply` with a gesture-batching layer:
+ * Wraps `SceneEngine.apply` with a gesture-batching layer:
  *
  * 1. The op is forwarded to the WASM engine **immediately** so real-time
  *    feedback (drag, gizmo movement) is never delayed.
@@ -19,13 +19,13 @@ const COMMIT_DEBOUNCE_MS = 1000;
  * history stack so the user can always undo back to the initial state.
  *
  * All callers (viewer, gizmos, panels) should inject and use **this class**
- * instead of calling `SceneEngineService.apply` directly. Initialisation
+ * instead of calling `SceneEngine.apply` directly. Initialisation
  * paths (`ready()`, `addMesh()`, `resetWithBed()`) still go directly to
- * `SceneEngineService` since they are not undoable ops.
+ * `SceneEngine` since they are not undoable ops.
  */
 @Injectable({ providedIn: 'root' })
 export class SceneCommand {
-  private readonly engine = inject(SceneEngineService);
+  private readonly engine = inject(SceneEngine);
   private readonly history = inject(SceneHistory);
 
   private gestureStart: SceneSnapshot | null = null;

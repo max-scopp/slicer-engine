@@ -10,7 +10,7 @@ import { ServerMessage } from '../../generated/slicer-engine-ws-server-message-v
 import { DEFAULT_SETTINGS } from '../models/slice-settings.model';
 import { History } from './history';
 import { NotificationService } from './notifications';
-import { SceneEngineService } from './scene-engine.service';
+import { SceneEngine } from './scene-engine';
 import { SlicerConnection } from './slicer-connection';
 import { SlicerFile } from './slicer-file';
 
@@ -71,7 +71,7 @@ export class Slicer {
   private readonly slicerFile = inject(SlicerFile);
   private readonly history = inject(History);
   private readonly notifications = inject(NotificationService);
-  private readonly sceneEngine = inject(SceneEngineService);
+  private readonly sceneEngine = inject(SceneEngine);
   private sliceAbort: AbortController | null = null;
 
   /**

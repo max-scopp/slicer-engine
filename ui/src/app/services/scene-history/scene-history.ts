@@ -1,6 +1,6 @@
 ﻿import { Injectable, computed, inject, signal } from '@angular/core';
-import { LoggerService } from '../logger.service';
-import { SceneEngineService, SceneSnapshot } from '../scene-engine.service';
+import { Logger } from '../logger';
+import { SceneEngine, SceneSnapshot } from '../scene-engine';
 
 const MAX_ENTRIES = 50;
 
@@ -22,8 +22,8 @@ const MAX_ENTRIES = 50;
  */
 @Injectable({ providedIn: 'root' })
 export class SceneHistory {
-  private readonly engine = inject(SceneEngineService);
-  private readonly log = inject(LoggerService).scope('SceneHistory');
+  private readonly engine = inject(SceneEngine);
+  private readonly log = inject(Logger).scope('SceneHistory');
 
   private readonly stack = signal<SceneSnapshot[]>([]);
   private readonly cursor = signal(-1);

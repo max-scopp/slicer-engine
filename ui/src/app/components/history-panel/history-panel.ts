@@ -9,7 +9,7 @@ import { History, SessionSummary } from '../../services/history';
   templateUrl: './history-panel.component.html',
   styleUrl: './history-panel.component.scss',
 })
-export class HistoryPanelComponent {
+export class HistoryPanel {
   private readonly historyService = inject(History);
 
   readonly previousSessions = this.historyService.sessions;

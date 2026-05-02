@@ -1,14 +1,14 @@
 import {
-  afterNextRender,
-  Component,
-  computed,
-  DOCUMENT,
-  ElementRef,
-  HostListener,
-  inject,
-  OnDestroy,
-  Renderer2,
-  signal,
+    afterNextRender,
+    Component,
+    computed,
+    DestroyRef,
+    DOCUMENT,
+    ElementRef,
+    HostListener,
+    inject,
+    Renderer2,
+    signal,
 } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { ConnectionState } from '../../components/connection-state/connection-state';
@@ -37,7 +37,7 @@ const MAX_WIDTH = 480;
     '[class.is-dragging]': 'isDragging()',
   },
 })
-export class Sidebar implements OnDestroy {
+export class Sidebar {
   protected readonly _theme = inject(AppTheme);
 
   private readonly el = inject(ElementRef<HTMLElement>);
@@ -56,17 +56,18 @@ export class Sidebar implements OnDestroy {
   private dragStartX = 0;
   private dragStartWidth = 0;
   private dragCleanup: (() => void)[] = [];
+  private readonly destroyRef = inject(DestroyRef);
 
   constructor() {
     afterNextRender(() => {
       this.applyCssWidth(this.readWidth());
     });
-  }
 
-  ngOnDestroy(): void {
-    for (const fn of this.dragCleanup) {
-      fn();
-    }
+    this.destroyRef.onDestroy(() => {
+      for (const fn of this.dragCleanup) {
+        fn();
+      }
+    });
   }
 
   protected onCollapseToggle(event: MouseEvent): void {

@@ -52,7 +52,7 @@ export const ROLE_ORDER: readonly RoleName[] = [
  * simulating the printer building the object layer by layer.
  */
 @Injectable({ providedIn: 'root' })
-export class GcodePreviewService {
+export class GcodePreview {
   private readonly slicer = inject(Slicer);
 
   /** Parsed handle — `null` until a slice download URL is available. */
@@ -186,7 +186,7 @@ export class GcodePreviewService {
       this.hiddenRoles.set(new Set<RoleName>());
       this.isProgressMode.set(false);
     } catch (error) {
-      console.error('[GcodePreviewService] Failed to load gcode:', error);
+      console.error('[GcodePreview] Failed to load gcode:', error);
     } finally {
       this.loading.set(false);
     }

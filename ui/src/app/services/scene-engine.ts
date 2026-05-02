@@ -1,7 +1,7 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import init, { SceneHandle, type RenderBuffer } from '../../generated/scene-wasm/scene_engine';
 import type { SlicingParams } from '../../generated/slicer-engine-ws-client-message-v1';
-import { LoggerService } from './logger.service';
+import { Logger } from './logger';
 
 /**
  * JS-side mirror of the Rust `SceneObjectJs` snapshot.
@@ -47,7 +47,7 @@ type SceneHandleWithWebSlicer = SceneHandle & {
  *
  * Mirrors `src/scene/wasm.rs::SceneOpJs` — the discriminant lives in `op` and
  * the variant payload in `args`. The `Add` variant is omitted because the
- * service exposes a dedicated {@link SceneEngineService.addMesh} method that
+ * service exposes a dedicated {@link SceneEngine.addMesh} method that
  * keeps raw bytes off the JSON path.
  */
 export type SceneOp =
@@ -89,8 +89,8 @@ const DEFAULT_BED: SceneBedSnapshot = {
  * issuing ops.
  */
 @Injectable({ providedIn: 'root' })
-export class SceneEngineService {
-  private readonly log = inject(LoggerService).scope('SceneEngine');
+export class SceneEngine {
+  private readonly log = inject(Logger).scope('SceneEngine');
   private handle: SceneHandle | null = null;
   private initPromise: Promise<void> | null = null;
 
@@ -290,7 +290,7 @@ export class SceneEngineService {
   private requireHandle(): SceneHandle {
     if (!this.handle) {
       this.log.error('used before ready() resolved');
-      throw new Error('SceneEngineService used before ready() resolved');
+      throw new Error('SceneEngine used before ready() resolved');
     }
     return this.handle;
   }

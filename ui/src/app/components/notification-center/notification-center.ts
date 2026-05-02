@@ -10,7 +10,7 @@ import { Notification, NotificationService } from '../../services/notifications'
   styleUrl: './notification-center.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class NotificationCenterComponent {
+export class NotificationCenter {
   readonly #service = inject(NotificationService);
 
   readonly notifications = this.#service.notifications;

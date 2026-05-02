@@ -1,18 +1,18 @@
 import { Component, ElementRef, ViewChild, inject } from '@angular/core';
 import { Router, RouterLink } from '@angular/router';
 import { ConnectionState } from '../../components/connection-state/connection-state';
-import { ListHistoryComponent } from '../../components/list-history/list-history.component';
+import { ListHistory } from '../../components/list-history/list-history';
 import { AppTheme } from '../../services/app-theme';
 import { SlicerFile } from '../../services/slicer-file';
 
 @Component({
   selector: 'nexus-home-dashboard',
   standalone: true,
-  imports: [RouterLink, ListHistoryComponent, ConnectionState],
+  imports: [RouterLink, ListHistory, ConnectionState],
   templateUrl: './home.component.html',
   styleUrl: './home.component.scss',
 })
-export class HomeDashboardComponent {
+export class HomeDashboard {
   protected _theme = inject(AppTheme);
   private readonly router = inject(Router);
   private readonly slicerFile = inject(SlicerFile);

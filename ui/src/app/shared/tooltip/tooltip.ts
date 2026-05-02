@@ -8,7 +8,7 @@ import { MarkdownComponent } from 'ngx-markdown';
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [MarkdownComponent],
 })
-export class TooltipComponent {
+export class Tooltip {
   readonly text = input.required<string>();
   readonly mode = input<'inline' | 'block'>('inline');
 }

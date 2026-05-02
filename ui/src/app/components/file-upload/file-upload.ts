@@ -14,7 +14,7 @@ function hasSupportedExtension(file: File): boolean {
   templateUrl: './file-upload.component.html',
   styleUrl: './file-upload.component.scss',
 })
-export class FileUploadComponent {
+export class FileUpload {
   private readonly slicer = inject(Slicer);
 
   readonly selectedFile = this.slicer.selectedFile;

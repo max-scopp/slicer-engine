@@ -3,17 +3,16 @@ import { Overlay, OverlayRef } from '@angular/cdk/overlay';
 import { ComponentPortal } from '@angular/cdk/portal';
 import {
   ComponentRef,
+  DestroyRef,
   Directive,
   ElementRef,
   HostListener,
   inject,
   input,
-  OnDestroy,
-  OnInit,
 } from '@angular/core';
 import { Subscription } from 'rxjs';
 import { UserInputModality } from '../input-modality/input-modality';
-import { TooltipComponent } from './tooltip.component';
+import { Tooltip } from './tooltip';
 
 const MOUSE_DELAY_MS = 600;
 const PEN_HOVER_DELAY_MS = 300;
@@ -43,7 +42,7 @@ const PEN_HOVER_DELAY_MS = 300;
 @Directive({
   selector: '[tooltip]',
 })
-export class TooltipDirective implements OnInit, OnDestroy {
+export class TooltipDirective {
   readonly tooltip = input.required<string>();
   /** 'inline' — single-line floating label above the host (default).
    *  'block'  — wider markdown-rendered card anchored to the right of the host. */
@@ -59,15 +58,16 @@ export class TooltipDirective implements OnInit, OnDestroy {
   private readonly elementRef = inject(ElementRef<HTMLElement>);
   private readonly focusMonitor = inject(FocusMonitor);
   private readonly inputModality = inject(UserInputModality);
+  private readonly destroyRef = inject(DestroyRef);
 
   private overlayRef: OverlayRef | null = null;
-  private componentRef: ComponentRef<TooltipComponent> | null = null;
+  private componentRef: ComponentRef<Tooltip> | null = null;
   private showTimeout: ReturnType<typeof setTimeout> | null = null;
   private modalitySub: Subscription | null = null;
   private backdropSub: Subscription | null = null;
   private clickToggleOpen = false;
 
-  ngOnInit(): void {
+  constructor() {
     // Hide immediately whenever the user switches input method.
     // This covers e.g. reaching for the mouse while a keyboard tooltip is open,
     // or tabbing away while a hover tooltip is pending.
@@ -88,6 +88,13 @@ export class TooltipDirective implements OnInit, OnDestroy {
       } else if (origin === 'keyboard') {
         this.show();
       }
+    });
+
+    this.destroyRef.onDestroy(() => {
+      this.hide();
+      this.modalitySub?.unsubscribe();
+      this.focusMonitor.stopMonitoring(this.elementRef);
+      this.backdropSub?.unsubscribe();
     });
   }
 
@@ -169,13 +176,6 @@ export class TooltipDirective implements OnInit, OnDestroy {
     this.hide();
   }
 
-  ngOnDestroy(): void {
-    this.hide();
-    this.modalitySub?.unsubscribe();
-    this.focusMonitor.stopMonitoring(this.elementRef);
-    this.backdropSub?.unsubscribe();
-  }
-
   private scheduleShow(delayMs: number): void {
     if (this.showTimeout !== null) {
       clearTimeout(this.showTimeout);
@@ -255,7 +255,7 @@ export class TooltipDirective implements OnInit, OnDestroy {
       });
     }
 
-    const portal = new ComponentPortal(TooltipComponent);
+    const portal = new ComponentPortal(Tooltip);
     this.componentRef = this.overlayRef.attach(portal);
     this.componentRef.setInput('text', this.tooltip());
     this.componentRef.setInput('mode', this.tooltipMode());

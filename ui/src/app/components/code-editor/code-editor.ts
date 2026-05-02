@@ -52,7 +52,7 @@ declare global {
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class CodeEditorComponent {
+export class CodeEditor {
   /** Text content to display. Changing this signal updates the editor live. */
   readonly content = input('');
   /** Monaco language identifier (default: `'plaintext'`). */

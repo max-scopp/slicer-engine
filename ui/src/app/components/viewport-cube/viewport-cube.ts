@@ -1,29 +1,29 @@
 import {
-  AfterViewInit,
-  ChangeDetectionStrategy,
-  Component,
-  ElementRef,
-  OnDestroy,
-  inject,
-  viewChild,
+    ChangeDetectionStrategy,
+    Component,
+    DestroyRef,
+    ElementRef,
+    afterNextRender,
+    inject,
+    viewChild,
 } from '@angular/core';
 import {
-  BoxGeometry,
-  CanvasTexture,
-  ConeGeometry,
-  CylinderGeometry,
-  Group,
-  LinearFilter,
-  Mesh,
-  MeshBasicMaterial,
-  PerspectiveCamera,
-  Raycaster,
-  Scene,
-  Sprite,
-  SpriteMaterial,
-  Vector2,
-  Vector3,
-  WebGLRenderer,
+    BoxGeometry,
+    CanvasTexture,
+    ConeGeometry,
+    CylinderGeometry,
+    Group,
+    LinearFilter,
+    Mesh,
+    MeshBasicMaterial,
+    PerspectiveCamera,
+    Raycaster,
+    Scene,
+    Sprite,
+    SpriteMaterial,
+    Vector2,
+    Vector3,
+    WebGLRenderer,
 } from 'three';
 import { ViewerControl } from '../../services/viewer-control';
 
@@ -178,9 +178,10 @@ const CLICK_DRAG_THRESHOLD = 4;
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class ViewportCube implements AfterViewInit, OnDestroy {
+export class ViewportCube {
   private readonly canvasRef = viewChild.required<ElementRef<HTMLCanvasElement>>('canvas');
   private readonly viewerControl = inject(ViewerControl);
+  private readonly destroyRef = inject(DestroyRef);
 
   private renderer: WebGLRenderer | null = null;
   private scene: Scene | null = null;
@@ -211,26 +212,26 @@ export class ViewportCube implements AfterViewInit, OnDestroy {
   private dragLast = new Vector2();
   private dragMoved = false;
 
-  ngAfterViewInit(): void {
-    this.init();
-  }
+  constructor() {
+    afterNextRender(() => this.init());
 
-  ngOnDestroy(): void {
-    cancelAnimationFrame(this.rafHandle);
-    this.resizeObserver?.disconnect();
-    this.themeObserver?.disconnect();
-    this.cube?.geometry.dispose();
-    if (this.cube) {
-      const mats = this.cube.material as MeshBasicMaterial[];
-      for (const m of mats) {
-        m.map?.dispose();
-        m.dispose();
+    this.destroyRef.onDestroy(() => {
+      cancelAnimationFrame(this.rafHandle);
+      this.resizeObserver?.disconnect();
+      this.themeObserver?.disconnect();
+      this.cube?.geometry.dispose();
+      if (this.cube) {
+        const mats = this.cube.material as MeshBasicMaterial[];
+        for (const m of mats) {
+          m.map?.dispose();
+          m.dispose();
+        }
       }
-    }
-    if (this.axesGizmo) {
-      disposeAxesGizmo(this.axesGizmo);
-    }
-    this.renderer?.dispose();
+      if (this.axesGizmo) {
+        disposeAxesGizmo(this.axesGizmo);
+      }
+      this.renderer?.dispose();
+    });
   }
 
   private init(): void {

@@ -1,24 +1,24 @@
 import {
-    ChangeDetectionStrategy,
-    Component,
-    ElementRef,
-    OnDestroy,
-    afterNextRender,
-    computed,
-    effect,
-    inject,
-    input,
-    output,
-    signal,
-    untracked,
-    viewChild,
+  ChangeDetectionStrategy,
+  Component,
+  DestroyRef,
+  ElementRef,
+  afterNextRender,
+  computed,
+  effect,
+  inject,
+  input,
+  output,
+  signal,
+  untracked,
+  viewChild,
 } from '@angular/core';
 import { BufferAttribute, BufferGeometry, Matrix4, Mesh, MeshPhongMaterial } from 'three';
-import { GcodePreviewService } from '../../services/gcode-preview.service';
+import { GcodePreview } from '../../services/gcode-preview';
 import { ObjectTracker } from '../../services/object-tracker';
 import { PrintArea } from '../../services/print-area';
 import { SceneCommand } from '../../services/scene-command/scene-command';
-import { SceneEngineService } from '../../services/scene-engine.service';
+import { SceneEngine } from '../../services/scene-engine';
 import { ViewerControl } from '../../services/viewer-control';
 import { GcodeOrchestrator } from './gcode-orchestrator';
 import type { GizmoDelta } from './gizmo';
@@ -49,7 +49,7 @@ export type ModelSource = string | URL | File | Blob | ArrayBuffer;
   styleUrl: './viewer.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class Viewer implements OnDestroy {
+export class Viewer {
   readonly mode = input<ViewerMode>('model');
   readonly model = input<ModelSource | null>(null);
   readonly showTravel = input(false);
@@ -62,9 +62,10 @@ export class Viewer implements OnDestroy {
   private readonly viewerControl = inject(ViewerControl);
   private readonly printArea = inject(PrintArea);
   private readonly objectTracker = inject(ObjectTracker);
-  private readonly sceneEngine = inject(SceneEngineService);
+  private readonly sceneEngine = inject(SceneEngine);
   private readonly sceneCommand = inject(SceneCommand);
-  private readonly gcodePreview = inject(GcodePreviewService);
+  private readonly gcodePreview = inject(GcodePreview);
+  private readonly destroyRef = inject(DestroyRef);
 
   /** Current loading status for the optional overlay. */
   readonly status = signal<'idle' | 'loading' | 'streaming' | 'ready' | 'error'>('idle');
@@ -118,6 +119,15 @@ export class Viewer implements OnDestroy {
 
   constructor() {
     afterNextRender(() => this.initScene());
+
+    this.destroyRef.onDestroy(() => {
+      this.cancelInFlightLoad();
+      this.gcode?.dispose();
+      this.gcode = null;
+      this.scene?.dispose();
+      this.scene = null;
+      this.viewerControl.orbitSink = null;
+    });
 
     // React to input changes — single effect handles mode + source switching.
     effect(() => {
@@ -347,15 +357,6 @@ export class Viewer implements OnDestroy {
       args: { id, face_index: faceIndex },
     });
     this.sceneCommand.flush();
-  }
-
-  ngOnDestroy(): void {
-    this.cancelInFlightLoad();
-    this.gcode?.dispose();
-    this.gcode = null;
-    this.scene?.dispose();
-    this.scene = null;
-    this.viewerControl.orbitSink = null;
   }
 
   statusLabel(): string {
