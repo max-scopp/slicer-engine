@@ -49,6 +49,12 @@ const PHASE_WEIGHTS: Record<string, number> = {
 };
 const PHASE_TOTAL_WEIGHT = Object.values(PHASE_WEIGHTS).reduce((a, b) => a + b, 0);
 
+/** Maximum time (ms) to wait for an upload operation before timing out. */
+const UPLOAD_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+/** Maximum time (ms) to wait for a slice operation before timing out. */
+const SLICE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+
 export type SlicerStatus = 'idle' | 'ready' | 'uploading' | 'slicing' | 'done' | 'error';
 
 export interface PhaseTimingData {
@@ -66,6 +72,7 @@ export class Slicer {
   private readonly history = inject(History);
   private readonly notifications = inject(NotificationService);
   private readonly sceneEngine = inject(SceneEngineService);
+  private sliceAbort: AbortController | null = null;
 
   /**
    * Currently-selected file. Sourced from {@link SlicerFile} so the upload
@@ -312,6 +319,18 @@ export class Slicer {
   }
 
   async slice(): Promise<void> {
+    // Guard: prevent concurrent slice operations
+    if (this.status() !== 'idle' && this.status() !== 'ready' && this.status() !== 'error') {
+      console.warn(
+        `[Slicer] Cannot slice while ${this.status()}. Wait for current operation to complete.`,
+      );
+      this.notifications.warning(
+        'Slice already in progress',
+        'Wait for the current slice to finish',
+      );
+      return;
+    }
+
     if (environment.sliceBackend === 'wasm') {
       await this.sliceLocally();
       return;
@@ -319,6 +338,7 @@ export class Slicer {
 
     const file = this.selectedFile();
     if (!file) {
+      this.notifications.error('No file selected', 'Please upload a model first');
       return;
     }
 
@@ -327,6 +347,10 @@ export class Slicer {
     this.currentPhase.set(null);
     this.setDownloadUrl(null);
 
+    // Set up operation abort controller for timeout handling
+    this.sliceAbort?.abort();
+    this.sliceAbort = new AbortController();
+
     // If the file was already uploaded (navigated from slice-new or
     // restored from `/api/request/:ruuid`), reuse the workplate UUID
     // (`ruuid`) and the file UUID(s) (`ofids`) — the slice references
@@ -334,8 +358,40 @@ export class Slicer {
     const existingRuuid = this.slicerFile.requestUuid();
     const existingFileIds = this.slicerFile.fileIds();
     if (existingRuuid && existingFileIds.length > 0) {
+      if (!this.ws.isConnected()) {
+        this.status.set('error');
+        this.outputLog.update((log) => [
+          ...log,
+          '[error] WebSocket not connected. Please refresh and try again.',
+        ]);
+        this.notifications.error(
+          'Connection error',
+          this.ws.lastError() || 'WebSocket disconnected',
+        );
+        return;
+      }
+
       this.status.set('slicing');
       this.outputLog.update((log) => [...log, `Starting slice job (request: ${existingRuuid})…`]);
+
+      // Set timeout for slice operation
+      const timeoutHandle = setTimeout(() => {
+        if (this.status() === 'slicing') {
+          this.status.set('error');
+          this.outputLog.update((log) => [
+            ...log,
+            `[error] Slice operation timed out after ${SLICE_TIMEOUT_MS / 1000 / 60} minutes`,
+          ]);
+          this.notifications.error(
+            'Slice timeout',
+            `Operation took too long. Server may be overloaded.`,
+          );
+          this.sliceAbort?.abort();
+        }
+      }, SLICE_TIMEOUT_MS);
+
+      this.sliceAbort!.signal.addEventListener('abort', () => clearTimeout(timeoutHandle));
+
       this.ws.send({
         type: 'Slice',
         request_uuid: existingRuuid,
@@ -349,26 +405,43 @@ export class Slicer {
     this.outputLog.update((log) => [...log, 'Uploading file…']);
 
     try {
-      // Step 1: Upload file via HTTP. Response: { ruuid, ofids: [...] }.
-      const formData = new FormData();
-      formData.append('file', file);
+      // Step 1: Upload file via HTTP with timeout. Response: { ruuid, ofids: [...] }.
+      const uploadTimeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Upload timeout')), UPLOAD_TIMEOUT_MS),
+      );
 
-      const uploadResponse = await this.http
-        .post<{ ruuid: string; ofids: string[] }>(`${environment.apiUrl}/upload`, formData)
-        .toPromise();
+      const uploadResponse = await Promise.race([
+        this.http
+          .post<{ ruuid: string; ofids: string[] }>(`${environment.apiUrl}/upload`, {
+            file,
+          })
+          .toPromise(),
+        uploadTimeout,
+      ]);
 
       if (!uploadResponse) {
         throw new Error('No response from upload');
       }
 
-      const { ruuid, ofids } = uploadResponse;
+      const { ruuid, ofids } = uploadResponse as { ruuid: string; ofids: string[] };
       this.outputLog.update((log) => [
         ...log,
         `Upload complete. Workplate: ${ruuid}, files: ${ofids.length}`,
         'Starting slice job…',
       ]);
 
-      // Step 2: Send slice request via WebSocket. The scene references the
+      // Step 2: Check WebSocket connection before sending slice request
+      if (!this.ws.isConnected()) {
+        this.status.set('error');
+        this.outputLog.update((log) => [
+          ...log,
+          '[error] Lost connection to server during upload. Reconnecting...',
+        ]);
+        this.notifications.error('Connection lost', 'File uploaded but slice job could not start');
+        return;
+      }
+
+      // Step 3: Send slice request via WebSocket. The scene references the
       // file by its `file_uuid` (first entry of `ofids`).
       this.status.set('slicing');
 
@@ -378,12 +451,29 @@ export class Slicer {
         scene: this.buildSceneSnapshot(ofids[0]),
         settings: this.settings(),
       });
+
+      // Set timeout for slice operation
+      const timeoutHandle = setTimeout(() => {
+        if (this.status() === 'slicing') {
+          this.status.set('error');
+          this.outputLog.update((log) => [
+            ...log,
+            `[error] Slice operation timed out after ${SLICE_TIMEOUT_MS / 1000 / 60} minutes`,
+          ]);
+          this.notifications.error(
+            'Slice timeout',
+            `Operation took too long. Server may be overloaded.`,
+          );
+          this.sliceAbort?.abort();
+        }
+      }, SLICE_TIMEOUT_MS);
+
+      this.sliceAbort!.signal.addEventListener('abort', () => clearTimeout(timeoutHandle));
     } catch (error) {
       this.status.set('error');
-      this.outputLog.update((log) => [
-        ...log,
-        `[error] Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      ]);
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      this.outputLog.update((log) => [...log, `[error] Upload failed: ${errorMsg}`]);
+      this.notifications.error('Upload failed', errorMsg);
     }
   }
 

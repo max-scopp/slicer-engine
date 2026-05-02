@@ -73,17 +73,31 @@ export class SlicerFile {
               const progress = event.total ? Math.round((event.loaded / event.total) * 100) : 0;
               this.uploadProgress.set(progress);
             } else if (event.type === HttpEventType.Response) {
-              const body = event.body!;
+              const body = event.body;
+              if (!body || !body.ruuid || !body.ofids) {
+                const message = 'Invalid response from server';
+                this.uploadError.set(message);
+                reject(new Error(message));
+                return;
+              }
               this.requestUuid.set(body.ruuid);
               this.fileIds.set(body.ofids);
               this.uploadProgress.set(100);
               resolve(body);
             }
           },
-          error: (error) => {
-            const message = error instanceof Error ? error.message : 'Upload failed';
+          error: (error: unknown) => {
+            let message = 'Upload failed';
+            if (error instanceof Error) {
+              message = error.message;
+            } else if (typeof error === 'object' && error !== null && 'error' in error) {
+              const err = error as { error?: { message?: string } };
+              message = err.error?.message || message;
+            }
             this.uploadError.set(message);
-            reject(error);
+            this.uploadProgress.set(0);
+            console.error('[SlicerFile] Upload error:', message);
+            reject(new Error(message));
           },
         });
     });
@@ -107,6 +121,14 @@ export class SlicerFile {
           throw new Error('No response from server');
         }
         return meta;
+      })
+      .catch((error) => {
+        const message =
+          error instanceof Error
+            ? error.message
+            : 'Failed to fetch workplate metadata';
+        console.error('[SlicerFile] getRequestMeta error:', message);
+        throw new Error(message);
       });
   }
 
@@ -141,21 +163,39 @@ export class SlicerFile {
               const progress = event.total ? Math.round((event.loaded / event.total) * 100) : 0;
               this.uploadProgress.set(progress);
             } else if (event.type === HttpEventType.Response) {
-              const blob = event.body as Blob;
-              const file = new File([blob], filename, {
-                type: 'application/octet-stream',
-              });
-              this.selectedFile.set(file);
-              this.requestUuid.set(requestUuid);
-              this.fileIds.set([fileUuid]);
-              this.uploadProgress.set(100);
-              resolve();
+              try {
+                const blob = event.body;
+                if (!blob || !(blob instanceof Blob)) {
+                  throw new Error('Invalid response: expected Blob');
+                }
+                const file = new File([blob], filename, {
+                  type: 'application/octet-stream',
+                });
+                this.selectedFile.set(file);
+                this.requestUuid.set(requestUuid);
+                this.fileIds.set([fileUuid]);
+                this.uploadProgress.set(100);
+                resolve();
+              } catch (err) {
+                const message = err instanceof Error ? err.message : 'Failed to process file';
+                this.uploadError.set(message);
+                console.error('[SlicerFile] fetchFile processing error:', message);
+                reject(new Error(message));
+              }
             }
           },
           error: (error: unknown) => {
-            const message = error instanceof Error ? error.message : 'Failed to load model';
+            let message = 'Failed to load model';
+            if (error instanceof Error) {
+              message = error.message;
+            } else if (typeof error === 'object' && error !== null && 'error' in error) {
+              const err = error as { error?: { message?: string } };
+              message = err.error?.message || message;
+            }
             this.uploadError.set(message);
-            reject(error);
+            this.uploadProgress.set(0);
+            console.error('[SlicerFile] fetchFile error:', message);
+            reject(new Error(message));
           },
         });
     });

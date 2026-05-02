@@ -122,11 +122,16 @@ export class SceneEngineService {
   /**
    * Load the WASM module and instantiate a fresh scene with the given bed.
    * Idempotent: subsequent calls reuse the existing engine without touching
-   * scene state.
+   * scene state. Throws on initialization failure.
    */
   ready(bed: SceneBedSnapshot = DEFAULT_BED): Promise<void> {
     if (!this.initPromise) {
-      this.initPromise = this.bootstrap(bed);
+      this.initPromise = this.bootstrap(bed).catch((err) => {
+        this.log.error('WASM initialization failed', err);
+        // Clear the cached promise so a retry is possible
+        this.initPromise = null;
+        throw err;
+      });
     }
     return this.initPromise;
   }
@@ -134,14 +139,20 @@ export class SceneEngineService {
   private async bootstrap(bed: SceneBedSnapshot): Promise<void> {
     this.log.info('bootstrap start', { bed });
     const stop = this.log.time('bootstrap');
-    // Load the wasm binary from the deployed asset path (configured in
-    // angular.json) instead of relying on `import.meta.url`, which after
-    // bundling resolves to the chunk URL rather than the directory the
-    // generated JS originally lived in.
-    await init({ module_or_path: 'scene_engine_bg.wasm' });
-    this.handle = new SceneHandle(bed as unknown as object);
-    this.refreshSnapshot();
-    stop();
+    try {
+      // Load the wasm binary from the deployed asset path (configured in
+      // angular.json) instead of relying on `import.meta.url`, which after
+      // bundling resolves to the chunk URL rather than the directory the
+      // generated JS originally lived in.
+      await init({ module_or_path: 'scene_engine_bg.wasm' });
+      this.handle = new SceneHandle(bed as unknown as object);
+      this.refreshSnapshot();
+      stop();
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Unknown WASM initialization error';
+      this.log.error('WASM init error:', errorMsg);
+      throw new Error(`Scene engine initialization failed: ${errorMsg}`);
+    }
   }
 
   /**

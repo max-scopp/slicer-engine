@@ -11,11 +11,6 @@
 //! - Printer profile and slicing parameter validation
 //! - User-friendly CLI layer for command-line usage
 
-pub mod logging;
-pub mod mesh;
-pub mod scene;
-#[cfg(any(not(target_arch = "wasm32"), feature = "web-slicer"))]
-pub mod settings;
 #[cfg(any(not(target_arch = "wasm32"), feature = "web-slicer"))]
 pub mod arachne;
 #[cfg(any(not(target_arch = "wasm32"), feature = "web-slicer"))]
@@ -24,6 +19,11 @@ pub mod core;
 pub mod gcode;
 #[cfg(any(not(target_arch = "wasm32"), feature = "web-slicer"))]
 pub mod infill;
+pub mod logging;
+pub mod mesh;
+pub mod scene;
+#[cfg(any(not(target_arch = "wasm32"), feature = "web-slicer"))]
+pub mod settings;
 
 #[cfg(target_arch = "wasm32")]
 pub mod gcode_viewer;
