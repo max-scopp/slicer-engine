@@ -41,8 +41,16 @@ export class SlicerConnection {
   readonly lastError = signal<string | null>(null);
 
   readonly messages$: Observable<ServerMessage>;
+  readonly #cloudTransportEnabled: boolean;
 
   constructor() {
+    this.#cloudTransportEnabled = this.isCloudTransportEnabled();
+    if (!this.#cloudTransportEnabled) {
+      this.status.set('disconnected');
+      this.messages$ = EMPTY;
+      return;
+    }
+
     const shared$ = this.#reconnect$.pipe(
       switchMap(() => this.#connect()),
       share(),
@@ -84,6 +92,10 @@ export class SlicerConnection {
   }
 
   retry(): void {
+    if (!this.#cloudTransportEnabled) {
+      return;
+    }
+
     const current = this.status();
     if (current !== 'failed' && current !== 'disconnected') {
       return;
@@ -147,5 +159,21 @@ export class SlicerConnection {
         );
       }),
     );
+  }
+
+  private isCloudTransportEnabled(): boolean {
+    const globals = globalThis as unknown as {
+      __TAURI__?: unknown;
+      __TAURI_INTERNALS__?: unknown;
+      navigator?: { userAgent?: string };
+    };
+    const isTauri =
+      Boolean(globals.__TAURI__ || globals.__TAURI_INTERNALS__) ||
+      Boolean(globals.navigator?.userAgent?.includes('Tauri'));
+    if (isTauri) {
+      return false;
+    }
+
+    return environment.runtimeMode === 'cloud';
   }
 }

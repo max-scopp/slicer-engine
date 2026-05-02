@@ -1,7 +1,7 @@
 <nexus-badge [variant]="config().variant">
   <span class="dot" [class.pulse]="config().pulse"></span>
   {{ config().label }}
-  @if (connection.isFailed()) {
-    <button class="retry-btn" (click)="connection.retry()">Connect again</button>
+  @if (slicer.canRetryConnection()) {
+    <button class="retry-btn" (click)="slicer.retryConnection()">Connect again</button>
   }
 </nexus-badge>

@@ -1,52 +1,43 @@
 import { Injectable, computed, effect, inject, signal } from '@angular/core';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { SessionSummary } from '../../generated/slicer-engine-ws-server-message-v1';
-import { SlicerConnection } from './slicer-connection';
-
-export type { SessionSummary };
+import { RuntimeHistorySession } from '../runtime/domain/history-models';
+import { Slicer } from './slicer';
 
 export type HistoryLoadState = 'pending' | 'loaded';
 
 @Injectable({ providedIn: 'root' })
 export class History {
-  private readonly ws = inject(SlicerConnection);
+  private readonly slicer = inject(Slicer);
 
-  readonly sessions = signal<SessionSummary[]>([]);
+  readonly sessions = signal<RuntimeHistorySession[]>([]);
   readonly loadState = signal<HistoryLoadState>('pending');
 
   /** True only once the first response has come back and the list is genuinely empty. */
   readonly isEmpty = computed(() => this.loadState() === 'loaded' && this.sessions().length === 0);
 
   constructor() {
-    this.ws.messages$.pipe(takeUntilDestroyed()).subscribe((msg) => {
-      if (msg.type === 'SessionsList') {
-        this.sessions.set(msg.sessions);
-        this.loadState.set('loaded');
-      } else if (msg.type === 'SliceComplete') {
-        this.refresh();
-      }
-    });
-
     effect(() => {
-      if (this.ws.isConnected()) {
-        this.loadState.set('pending');
-        this.refresh();
+      const ready = this.slicer.historyReady();
+      const _version = this.slicer.historyVersion();
+      if (ready) {
+        void this.refresh();
       }
     });
   }
 
-  refresh(): void {
-    this.ws.send({ type: 'ListSessions' });
+  async refresh(): Promise<void> {
+    this.loadState.set('pending');
+    try {
+      const sessions = await this.slicer.getHistory();
+      this.sessions.set(sessions);
+      this.loadState.set('loaded');
+    } catch {
+      this.sessions.set([]);
+      this.loadState.set('loaded');
+    }
   }
 
-  download(session: SessionSummary): void {
-    const filename =
-      (session.original_filename as string | null | undefined)?.replace(/\.stl$/i, '.gcode') ??
-      'output.gcode';
-    const link = document.createElement('a');
-    link.href = session.download_url;
-    link.download = filename;
-    link.click();
+  download(session: RuntimeHistorySession): void {
+    void this.slicer.downloadHistorySession(session);
   }
 
   formatDate(dateStr: string): string {

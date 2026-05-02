@@ -45,6 +45,8 @@ export class SlicerFile {
 
   selectFile(file: File): void {
     this.selectedFile.set(file);
+    this.requestUuid.set(null);
+    this.fileIds.set([]);
     this.uploadProgress.set(0);
     this.uploadError.set(null);
   }
@@ -124,9 +126,7 @@ export class SlicerFile {
       })
       .catch((error) => {
         const message =
-          error instanceof Error
-            ? error.message
-            : 'Failed to fetch workplate metadata';
+          error instanceof Error ? error.message : 'Failed to fetch workplate metadata';
         console.error('[SlicerFile] getRequestMeta error:', message);
         throw new Error(message);
       });
@@ -139,6 +139,14 @@ export class SlicerFile {
   adopt(meta: RequestMeta): void {
     this.requestUuid.set(meta.ruuid);
     this.fileIds.set(meta.ofids.map((f) => f.file_uuid));
+  }
+
+  /** Mark the selected file as belonging to a local-only workplate. */
+  adoptLocal(requestUuid: string): void {
+    this.requestUuid.set(requestUuid);
+    this.fileIds.set([]);
+    this.uploadProgress.set(0);
+    this.uploadError.set(null);
   }
 
   /**

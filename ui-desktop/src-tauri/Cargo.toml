@@ -1,0 +1,26 @@
+[package]
+name = "slicer-ui-desktop"
+version = "0.1.0"
+edition = "2021"
+
+[package.metadata.bundle]
+name = "Slicer Engine Desktop"
+identifier = "com.maxscopp.slicerengine"
+icon = [
+    "icons/icon.ico",
+    "icons/32x32.png",
+    "icons/128x128.png",
+    "icons/256x256.png",
+]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["clock"] }
+slicer-engine = { path = "../../" }

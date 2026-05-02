@@ -8,12 +8,12 @@ type Environment = {
   production: boolean;
   apiUrl: string;
   wsUrl: string;
-  sliceBackend: 'server' | 'wasm';
+  runtimeMode: 'native' | 'cloud' | 'web';
 };
 
 export const environment: Environment = {
   production: false,
   apiUrl: `${httpProtocol}//${host}:${BACKEND_PORT}/api`,
   wsUrl: `${wsProtocol}//${host}:${BACKEND_PORT}/ws`,
-  sliceBackend: 'server',
+  runtimeMode: 'cloud',
 };

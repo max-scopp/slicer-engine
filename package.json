@@ -10,6 +10,8 @@
     "ui:dev:web-slicer": "pnpm --filter slicer-ui start:web-slicer",
     "ui:build": "pnpm --filter slicer-ui build",
     "ui:build:web-slicer": "pnpm --filter slicer-ui build:web-slicer",
+    "desktop:dev": "pnpm --filter slicer-ui-desktop dev",
+    "desktop:build": "pnpm --filter slicer-ui-desktop build",
     "build:wasm": "wasm-pack build --target web --release --out-dir ui/src/generated/scene-wasm --out-name scene_engine",
     "build:wasm:web-slicer": "wasm-pack build --target web --release --features web-slicer --out-dir ui/src/generated/scene-wasm --out-name scene_engine",
     "gen-schemas": "cargo run -- gen-schemas --output-dir ui/src/schemas",

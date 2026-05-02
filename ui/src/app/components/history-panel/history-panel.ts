@@ -1,6 +1,7 @@
 import { CommonModule } from '@angular/common';
 import { Component, inject } from '@angular/core';
-import { History, SessionSummary } from '../../services/history';
+import { RuntimeHistorySession } from '../../runtime/domain/history-models';
+import { History } from '../../services/history';
 
 @Component({
   selector: 'nexus-history-panel',
@@ -15,10 +16,10 @@ export class HistoryPanel {
   readonly previousSessions = this.historyService.sessions;
 
   loadHistory(): void {
-    this.historyService.refresh();
+    void this.historyService.refresh();
   }
 
-  downloadSession(session: SessionSummary): void {
+  downloadSession(session: RuntimeHistorySession): void {
     this.historyService.download(session);
   }
 
@@ -26,7 +27,7 @@ export class HistoryPanel {
     return this.historyService.formatDate(dateStr);
   }
 
-  getFilename(session: SessionSummary): string {
+  getFilename(session: RuntimeHistorySession): string {
     return (
       (session.original_filename as string | null | undefined)?.replace(/\.stl$/i, '.gcode') ??
       'output.gcode'

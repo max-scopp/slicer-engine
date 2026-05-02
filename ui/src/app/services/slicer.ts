@@ -1,18 +1,18 @@
-import { HttpClient } from '@angular/common/http';
-import { Injectable, computed, effect, inject, signal } from '@angular/core';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { Injectable, computed, inject, signal } from '@angular/core';
 import { environment } from '../../environments/environment';
-import {
-  SceneObjectSliceDto,
-  SlicingParams,
-} from '../../generated/slicer-engine-ws-client-message-v1';
-import { ServerMessage } from '../../generated/slicer-engine-ws-server-message-v1';
+import { SlicingParams } from '../../generated/slicer-engine-ws-client-message-v1';
 import { DEFAULT_SETTINGS } from '../models/slice-settings.model';
-import { History } from './history';
+import { RuntimeOrchestrator } from '../runtime/application/runtime-orchestrator';
+import { RuntimeSession } from '../runtime/application/runtime-session';
+import { RuntimeHistorySession } from '../runtime/domain/history-models';
+import { RuntimeMode } from '../runtime/domain/runtime-mode';
+import { RuntimeMeshInput, RuntimeSceneSnapshot } from '../runtime/domain/scene-commands';
+import { createRuntime } from '../runtime/factory/runtime-factory';
+import { RuntimeEvent } from '../runtime/ports/runtime-events';
 import { NotificationService } from './notifications';
 import { SceneEngine } from './scene-engine';
-import { SlicerConnection } from './slicer-connection';
-import { SlicerFile } from './slicer-file';
+import { ConnectionStatus, SlicerConnection } from './slicer-connection';
+import { SlicerFile, UploadResponse } from './slicer-file';
 
 /** Human-readable label for each pipeline phase. */
 export const PHASE_LABELS: Record<string, string> = {
@@ -49,9 +49,6 @@ const PHASE_WEIGHTS: Record<string, number> = {
 };
 const PHASE_TOTAL_WEIGHT = Object.values(PHASE_WEIGHTS).reduce((a, b) => a + b, 0);
 
-/** Maximum time (ms) to wait for an upload operation before timing out. */
-const UPLOAD_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-
 /** Maximum time (ms) to wait for a slice operation before timing out. */
 const SLICE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -64,15 +61,34 @@ export interface PhaseTimingData {
   elapsedMs?: number;
 }
 
+export interface WorkplateStart {
+  requestUuid: string;
+  uploadMeta?: UploadResponse;
+}
+
 @Injectable({ providedIn: 'root' })
 export class Slicer {
-  private readonly ws = inject(SlicerConnection);
-  private readonly http = inject(HttpClient);
+  private readonly wsConnection = inject(SlicerConnection);
   private readonly slicerFile = inject(SlicerFile);
-  private readonly history = inject(History);
   private readonly notifications = inject(NotificationService);
   private readonly sceneEngine = inject(SceneEngine);
+  private readonly runtimeMode = this.resolveRuntimeMode();
+  private readonly runtime = createRuntime({
+    mode: this.runtimeMode,
+    apiUrl: environment.apiUrl,
+    wsUrl: environment.wsUrl,
+    sceneEngine: this.sceneEngine,
+    slicerConnection: this.wsConnection,
+    slicerFile: this.slicerFile,
+  });
+  private readonly runtimeSession = new RuntimeSession(this.runtimeMode);
+  private readonly orchestrator = new RuntimeOrchestrator(this.runtime, this.runtimeSession);
   private sliceAbort: AbortController | null = null;
+  private activeSliceId: string | null = null;
+  /** Cached mesh input from a native file-picker selection. When set,
+   *  `readRuntimeMeshInput` returns this directly (avoiding `arrayBuffer()`
+   *  on the File object) and the `filePath` field enables path-only IPC. */
+  private pendingNativeMeshInput: RuntimeMeshInput | null = null;
 
   /**
    * Currently-selected file. Sourced from {@link SlicerFile} so the upload
@@ -81,6 +97,23 @@ export class Slicer {
   readonly selectedFile = this.slicerFile.selectedFile;
   readonly settings = signal<SlicingParams>(DEFAULT_SETTINGS);
   readonly status = signal<SlicerStatus>('idle');
+  readonly runtimeConnected = signal(false);
+  readonly historyVersion = signal(0);
+  readonly historyReady = computed<boolean>(() => {
+    if (this.runtimeMode === 'cloud') {
+      return this.wsConnection.isConnected();
+    }
+    return this.runtimeConnected();
+  });
+  readonly connectionStatus = computed<ConnectionStatus>(() => {
+    if (this.runtimeMode === 'cloud') {
+      return this.wsConnection.status();
+    }
+
+    // For now, non-cloud runtimes are treated as always connected from the UI's
+    // perspective. Runtime init errors still surface through `status` + logs.
+    return 'connected';
+  });
   readonly outputLog = signal<string[]>([]);
   readonly phaseTimings = signal<PhaseTimingData[]>([]);
 
@@ -116,78 +149,15 @@ export class Slicer {
   });
 
   constructor() {
-    // Pipe all WebSocket server messages into local state
-    this.ws.messages$.pipe(takeUntilDestroyed()).subscribe((msg) => this.handleMessage(msg));
-
-    // Reflect WebSocket connection status in the log
-    effect(() => {
-      const connStatus = this.ws.status();
-      if (connStatus === 'connected') {
-        // Will also receive the 'connected' ServerMessage with version from server
-      } else if (connStatus === 'disconnected') {
-        this.outputLog.update((l) => [...l, '[ws] Disconnected from server.']);
-      } else if (connStatus === 'failed') {
-        this.outputLog.update((l) => [...l, '[ws] Connection error — is the server running?']);
-        if (this.status() === 'slicing') {
-          this.status.set('error');
-        }
-      }
+    this.orchestrator.onEvent((event) => this.handleRuntimeEvent(event));
+    this.orchestrator.init().catch((error) => {
+      this.runtimeConnected.set(false);
+      this.status.set('error');
+      this.outputLog.update((log) => [
+        ...log,
+        `[error] Runtime initialization failed: ${error instanceof Error ? error.message : String(error)}`,
+      ]);
     });
-  }
-
-  private handleMessage(msg: ServerMessage): void {
-    switch (msg.type) {
-      case 'Connected':
-        this.outputLog.update((l) => [...l, `[ws] Connected to slicer-engine v${msg.version}`]);
-        break;
-      case 'Log':
-        this.outputLog.update((l) => [...l, `[${msg.level}] ${msg.message}`]);
-        break;
-      case 'PhaseMarker':
-        this.handlePhaseMarker(msg);
-        break;
-      case 'Progress':
-        this.outputLog.update((l) => [
-          ...l,
-          `Progress: ${msg.current_layer} / ${msg.total_layers} layers`,
-        ]);
-        break;
-      case 'SliceComplete': {
-        this.status.set('done');
-        this.currentPhase.set(null);
-
-        // Log overall phase timings to the browser console
-        const timings = this.phaseTimings();
-        const timingLines = timings
-          .filter((t) => t.elapsedMs != null)
-          .map((t) => `  ${(PHASE_LABELS[t.phase] ?? t.phase).padEnd(28)} ${t.elapsedMs} ms`)
-          .join('\n');
-        console.log(
-          `[slicer] Slice complete — ${msg.layer_count} layers\nPhase timings:\n${timingLines}`,
-        );
-
-        const resolvedUrl = msg.download_url.startsWith('/')
-          ? `${environment.apiUrl}${msg.download_url}`
-          : msg.download_url;
-        this.setDownloadUrl(resolvedUrl);
-
-        this.notifications.success(
-          'Slice complete',
-          `${msg.layer_count} layers — click Download to save G-code`,
-          6000,
-        );
-
-        this.outputLog.update((l) => [
-          ...l,
-          `Slice complete — ${msg.layer_count} layers generated.`,
-        ]);
-        break;
-      }
-      case 'Error':
-        this.status.set('error');
-        this.outputLog.update((l) => [...l, `[error] ${msg.message}`]);
-        break;
-    }
   }
 
   private handlePhaseMarker(msg: {
@@ -238,6 +208,55 @@ export class Slicer {
     }
   }
 
+  private handleRuntimeEvent(event: RuntimeEvent): void {
+    switch (event.type) {
+      case 'connected':
+        this.runtimeConnected.set(true);
+        this.outputLog.update((log) => [...log, `[runtime] Connected (${event.mode})`]);
+        break;
+      case 'log':
+        this.outputLog.update((log) => [...log, `[${event.level}] ${event.message}`]);
+        break;
+      case 'phase-start':
+        this.handlePhaseMarker({ phase: event.phase, event: 'start' });
+        break;
+      case 'phase-end':
+        this.handlePhaseMarker({
+          phase: event.phase,
+          event: 'end',
+          elapsed_ms: event.elapsedMs ?? null,
+        });
+        break;
+      case 'progress':
+        this.outputLog.update((log) => [
+          ...log,
+          `Progress: ${event.currentLayer} / ${event.totalLayers} layers`,
+        ]);
+        break;
+      case 'slice-complete':
+        this.historyVersion.update((v) => v + 1);
+        this.currentPhase.set(null);
+        break;
+      case 'error':
+        if (event.error.code === 'not_ready' || event.error.code === 'transport_error') {
+          this.runtimeConnected.set(false);
+        }
+        this.status.set('error');
+        this.outputLog.update((log) => [...log, `[error] ${event.error.message}`]);
+        break;
+    }
+  }
+
+  canRetryConnection(): boolean {
+    return this.runtimeMode === 'cloud' && this.wsConnection.isFailed();
+  }
+
+  retryConnection(): void {
+    if (this.runtimeMode === 'cloud') {
+      this.wsConnection.retry();
+    }
+  }
+
   downloadGcode(): void {
     const url = this.gcodeDownloadUrl();
     if (!url) {
@@ -252,6 +271,8 @@ export class Slicer {
   }
 
   selectFile(file: File): void {
+    // Selecting a file via the standard input path clears any native selection.
+    this.pendingNativeMeshInput = null;
     this.slicerFile.selectFile(file);
     this.status.set('ready');
     this.outputLog.update((log) => [
@@ -260,67 +281,59 @@ export class Slicer {
     ]);
   }
 
+  /** Open a native OS file-picker (Tauri only).
+   *  Returns `true` when a file was selected, `false` when cancelled or
+   *  when the native picker is unavailable (falls back to `<input type="file">`). */
+  async openAndSelectFile(): Promise<boolean> {
+    if (!this.runtime.openFilePicker) {
+      return false;
+    }
+
+    const meshInput = await this.runtime.openFilePicker();
+    if (!meshInput) {
+      return false;
+    }
+
+    this.pendingNativeMeshInput = meshInput;
+    // Create a minimal File for the selectedFile signal (filename display).
+    // Bytes are intentionally absent for native-picker files; the File has no
+    // content but the filename is correct for all UI label consumers.
+    const file = new File([], meshInput.fileName);
+    this.slicerFile.selectFile(file);
+    this.status.set('ready');
+    this.outputLog.update((log) => [...log, `File selected: ${meshInput.fileName}`]);
+    await this.orchestrator.addMesh(meshInput);
+    return true;
+  }
+
+  async startWorkplate(file: File): Promise<WorkplateStart> {
+    this.selectFile(file);
+
+    if (this.runtimeMode !== 'cloud') {
+      const requestUuid = this.createLocalRequestId();
+      this.slicerFile.adoptLocal(requestUuid);
+      return { requestUuid };
+    }
+
+    const uploadMeta = await this.slicerFile.upload();
+    return {
+      requestUuid: uploadMeta.ruuid,
+      uploadMeta,
+    };
+  }
+
   updateSettings(patch: Partial<SlicingParams>): void {
     this.settings.update((current) => ({ ...current, ...patch }));
   }
 
-  /**
-   * Build the wire-format scene that goes alongside a slice request.
-   *
-   * The frontend owns its scene as a signal of {@link SceneObjectSnapshot}s
-   * inside {@link SceneEngineService}. Slicing on the server has to see the
-   * exact same objects with the exact same transforms, otherwise the user's
-   * translate/rotate/scale/center/drop-to-floor edits silently disappear at
-   * slice time. We rebuild the snapshot fresh on every call so transient
-   * sync issues are impossible.
-   *
-   * Each entry references an uploaded file by `file_id` — a `file_uuid`
-   * from the upload response's `ofids`, distinct from the workplate
-   * `ruuid`. The server resolves the file (and its on-disk extension) via
-   * the DB, so the wire format does not carry a format hint. The server
-   * applies each transform via `apply_transform` and merges the resulting
-   * meshes before `process_mesh`.
-   *
-   * **Single-upload caveat.** Today every scene object is assumed to have
-   * come from the same upload (`uploadFileId` = the only entry of `ofids`).
-   * The wire format already supports per-object `file_id`s for a true
-   * multi-file scene, but the `SceneObjectSnapshot` produced by the WASM
-   * engine doesn't yet carry the originating file UUID. When the multi-
-   * upload UX lands, replace the constant `uploadFileId` here with
-   * `o.file_id` (or whichever field the snapshot grows) — the server side
-   * already handles per-object `file_id` correctly.
-   */
-  private buildSceneSnapshot(uploadFileId: string): SceneObjectSliceDto[] {
-    const objects = this.sceneEngine.objects();
-    if (objects.length === 0) {
-      // Scene engine hasn't been populated yet (file uploaded but the
-      // WASM scene hasn't ingested the bytes). Fall back to a single
-      // identity-transform object so the server still slices the
-      // uploaded file with the user's chosen settings.
-      return [
-        {
-          file_id: uploadFileId,
-          transform: {
-            translation: [0, 0, 0],
-            euler_xyz_deg: [0, 0, 0],
-            scale: [1, 1, 1],
-          },
-        },
-      ];
-    }
-    return objects.map((o) => ({
-      file_id: uploadFileId,
-      transform: {
-        translation: o.translation,
-        euler_xyz_deg: o.euler_xyz_deg,
-        scale: o.scale,
-      },
-    }));
-  }
-
   async slice(): Promise<void> {
     // Guard: prevent concurrent slice operations
-    if (this.status() !== 'idle' && this.status() !== 'ready' && this.status() !== 'error') {
+    if (
+      this.status() !== 'idle' &&
+      this.status() !== 'ready' &&
+      this.status() !== 'done' &&
+      this.status() !== 'error'
+    ) {
       console.warn(
         `[Slicer] Cannot slice while ${this.status()}. Wait for current operation to complete.`,
       );
@@ -328,11 +341,6 @@ export class Slicer {
         'Slice already in progress',
         'Wait for the current slice to finish',
       );
-      return;
-    }
-
-    if (environment.sliceBackend === 'wasm') {
-      await this.sliceLocally();
       return;
     }
 
@@ -351,30 +359,15 @@ export class Slicer {
     this.sliceAbort?.abort();
     this.sliceAbort = new AbortController();
 
-    // If the file was already uploaded (navigated from slice-new or
-    // restored from `/api/request/:ruuid`), reuse the workplate UUID
-    // (`ruuid`) and the file UUID(s) (`ofids`) — the slice references
-    // files by their own UUID, never by `ruuid`.
-    const existingRuuid = this.slicerFile.requestUuid();
-    const existingFileIds = this.slicerFile.fileIds();
-    if (existingRuuid && existingFileIds.length > 0) {
-      if (!this.ws.isConnected()) {
-        this.status.set('error');
-        this.outputLog.update((log) => [
-          ...log,
-          '[error] WebSocket not connected. Please refresh and try again.',
-        ]);
-        this.notifications.error(
-          'Connection error',
-          this.ws.lastError() || 'WebSocket disconnected',
-        );
-        return;
-      }
+    try {
+      const model = await this.readRuntimeMeshInput(file);
+      const scene = await this.ensureRuntimeReadyForSlice(model);
 
       this.status.set('slicing');
-      this.outputLog.update((log) => [...log, `Starting slice job (request: ${existingRuuid})…`]);
+      const sliceId = this.createSliceId();
+      this.activeSliceId = sliceId;
+      this.outputLog.update((log) => [...log, `Starting slice job (${this.runtimeMode})…`]);
 
-      // Set timeout for slice operation
       const timeoutHandle = setTimeout(() => {
         if (this.status() === 'slicing') {
           this.status.set('error');
@@ -384,152 +377,207 @@ export class Slicer {
           ]);
           this.notifications.error(
             'Slice timeout',
-            `Operation took too long. Server may be overloaded.`,
+            'Operation took too long. Runtime may be overloaded.',
           );
           this.sliceAbort?.abort();
         }
       }, SLICE_TIMEOUT_MS);
+      this.sliceAbort.signal.addEventListener('abort', () => clearTimeout(timeoutHandle));
 
-      this.sliceAbort!.signal.addEventListener('abort', () => clearTimeout(timeoutHandle));
-
-      this.ws.send({
-        type: 'Slice',
-        request_uuid: existingRuuid,
-        scene: this.buildSceneSnapshot(existingFileIds[0]),
-        settings: this.settings(),
+      const result = await this.orchestrator.slice({
+        sliceId,
+        request_uuid: this.slicerFile.requestUuid() ?? undefined,
+        model,
+        scene,
+        settings: this.settings() as unknown as Record<string, unknown>,
       });
-      return;
-    }
 
-    this.status.set('uploading');
-    this.outputLog.update((log) => [...log, 'Uploading file…']);
-
-    try {
-      // Step 1: Upload file via HTTP with timeout. Response: { ruuid, ofids: [...] }.
-      const uploadTimeout = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Upload timeout')), UPLOAD_TIMEOUT_MS),
-      );
-
-      const uploadResponse = await Promise.race([
-        this.http
-          .post<{ ruuid: string; ofids: string[] }>(`${environment.apiUrl}/upload`, {
-            file,
-          })
-          .toPromise(),
-        uploadTimeout,
-      ]);
-
-      if (!uploadResponse) {
-        throw new Error('No response from upload');
+      const preview = await this.orchestrator.getPreviewSource(result.sliceId);
+      if (preview.kind === 'download-url') {
+        this.setDownloadUrl(preview.url);
+      }
+      if (preview.kind === 'gcode-inline') {
+        const url = URL.createObjectURL(
+          new Blob([preview.gcode], {
+            type: 'text/plain;charset=utf-8',
+          }),
+        );
+        this.setDownloadUrl(url);
+      }
+      if (preview.kind === 'none' && result.downloadUrl) {
+        this.setDownloadUrl(result.downloadUrl);
       }
 
-      const { ruuid, ofids } = uploadResponse as { ruuid: string; ofids: string[] };
+      this.status.set('done');
+      this.currentPhase.set(null);
+      this.notifications.success(
+        'Slice complete',
+        `${result.layerCount} layers — click Download to save G-code`,
+        6000,
+      );
       this.outputLog.update((log) => [
         ...log,
-        `Upload complete. Workplate: ${ruuid}, files: ${ofids.length}`,
-        'Starting slice job…',
+        `Slice complete — ${result.layerCount} layers generated.`,
       ]);
-
-      // Step 2: Check WebSocket connection before sending slice request
-      if (!this.ws.isConnected()) {
-        this.status.set('error');
-        this.outputLog.update((log) => [
-          ...log,
-          '[error] Lost connection to server during upload. Reconnecting...',
-        ]);
-        this.notifications.error('Connection lost', 'File uploaded but slice job could not start');
-        return;
-      }
-
-      // Step 3: Send slice request via WebSocket. The scene references the
-      // file by its `file_uuid` (first entry of `ofids`).
-      this.status.set('slicing');
-
-      this.ws.send({
-        type: 'Slice',
-        request_uuid: ruuid,
-        scene: this.buildSceneSnapshot(ofids[0]),
-        settings: this.settings(),
-      });
-
-      // Set timeout for slice operation
-      const timeoutHandle = setTimeout(() => {
-        if (this.status() === 'slicing') {
-          this.status.set('error');
-          this.outputLog.update((log) => [
-            ...log,
-            `[error] Slice operation timed out after ${SLICE_TIMEOUT_MS / 1000 / 60} minutes`,
-          ]);
-          this.notifications.error(
-            'Slice timeout',
-            `Operation took too long. Server may be overloaded.`,
-          );
-          this.sliceAbort?.abort();
-        }
-      }, SLICE_TIMEOUT_MS);
-
-      this.sliceAbort!.signal.addEventListener('abort', () => clearTimeout(timeoutHandle));
+      this.activeSliceId = null;
     } catch (error) {
       this.status.set('error');
-      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-      this.outputLog.update((log) => [...log, `[error] Upload failed: ${errorMsg}`]);
-      this.notifications.error('Upload failed', errorMsg);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      this.outputLog.update((log) => [...log, `[error] Slice failed: ${errorMsg}`]);
+      this.notifications.error('Slice failed', errorMsg);
+      this.activeSliceId = null;
     }
   }
 
   reset(): void {
+    if (this.activeSliceId) {
+      void this.orchestrator.cancel(this.activeSliceId);
+      this.activeSliceId = null;
+    }
+    this.pendingNativeMeshInput = null;
     this.slicerFile.reset();
     this.status.set('idle');
     this.outputLog.set([]);
     this.phaseTimings.set([]);
     this.currentPhase.set(null);
     this.setDownloadUrl(null);
-    this.ws.send({ type: 'Reset' });
   }
 
-  loadPreviousSessions(): void {
-    this.history.refresh();
+  getHistory(): Promise<RuntimeHistorySession[]> {
+    return this.orchestrator.getHistory();
   }
 
-  downloadFromHistory(session: { download_url: string; original_filename?: string | null }): void {
-    this.history.download(session as import('./history').SessionSummary);
-  }
-
-  private async sliceLocally(): Promise<void> {
-    await this.sceneEngine.ready();
-
-    this.phaseTimings.set([]);
-    this.currentPhase.set(null);
-    this.setDownloadUrl(null);
-    this.status.set('slicing');
-    this.outputLog.update((log) => [...log, 'Starting local wasm slice…']);
-
-    try {
-      const result = this.sceneEngine.sliceToGcode(this.settings());
-      const url = URL.createObjectURL(
-        new Blob([result.gcode], {
-          type: 'text/plain;charset=utf-8',
-        }),
+  async downloadHistorySession(session: RuntimeHistorySession): Promise<void> {
+    if (!session.download_url) {
+      const preview = await this.orchestrator.getPreviewSource(session.request_uuid);
+      if (preview.kind === 'download-url') {
+        this.downloadFromUrl(preview.url, session.original_filename ?? undefined);
+        return;
+      }
+      if (preview.kind === 'gcode-inline') {
+        const url = URL.createObjectURL(
+          new Blob([preview.gcode], {
+            type: 'text/plain;charset=utf-8',
+          }),
+        );
+        this.downloadFromUrl(url, session.original_filename ?? undefined);
+        URL.revokeObjectURL(url);
+        return;
+      }
+      this.notifications.warning(
+        'No downloadable output',
+        'No preview source available for this session',
       );
-
-      this.setDownloadUrl(url);
-      this.status.set('done');
-      this.notifications.success(
-        'Slice complete',
-        `${result.layer_count} layers — click Download to save G-code`,
-        6000,
-      );
-      this.outputLog.update((log) => [
-        ...log,
-        `Local slice complete — ${result.layer_count} layers generated.`,
-      ]);
-    } catch (error) {
-      this.status.set('error');
-      this.outputLog.update((log) => [
-        ...log,
-        `[error] Local slice failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      ]);
+      return;
     }
+
+    this.downloadFromUrl(session.download_url, session.original_filename ?? undefined);
+  }
+
+  private downloadFromUrl(url: string, originalFilename?: string): void {
+    const filename =
+      (originalFilename as string | null | undefined)?.replace(/\.(stl|obj|3mf)$/i, '.gcode') ??
+      'output.gcode';
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+  }
+
+  private resolveRuntimeMode(): RuntimeMode {
+    if (this.isTauriDetected()) {
+      return 'native';
+    }
+
+    return environment.runtimeMode;
+  }
+
+  private isTauriDetected(): boolean {
+    const globals = globalThis as unknown as {
+      __TAURI__?: unknown;
+      __TAURI_INTERNALS__?: unknown;
+      navigator?: { userAgent?: string };
+    };
+    if (globals.__TAURI__ || globals.__TAURI_INTERNALS__) {
+      return true;
+    }
+    return Boolean(globals.navigator?.userAgent?.includes('Tauri'));
+  }
+
+  private createSliceId(): string {
+    if (globalThis.crypto?.randomUUID) {
+      return globalThis.crypto.randomUUID();
+    }
+    return `slice-${Date.now()}`;
+  }
+
+  private createLocalRequestId(): string {
+    return `local-${this.createSliceId()}`;
+  }
+
+  private async ensureRuntimeReadyForSlice(model: RuntimeMeshInput): Promise<RuntimeSceneSnapshot> {
+    if (this.runtimeMode === 'cloud') {
+      const requestUuid = this.slicerFile.requestUuid();
+      const fileIds = this.slicerFile.fileIds();
+      if (!requestUuid || fileIds.length === 0) {
+        this.status.set('uploading');
+        this.outputLog.update((log) => [...log, 'Uploading file…']);
+        await this.orchestrator.addMesh(model);
+        this.outputLog.update((log) => [...log, 'Upload complete. Starting slice job…']);
+      }
+    }
+
+    let scene = this.visibleSceneSnapshot();
+    if (
+      (this.runtimeMode === 'web' || this.runtimeMode === 'native') &&
+      scene.objects.length === 0
+    ) {
+      await this.orchestrator.addMesh(model);
+      scene = this.visibleSceneSnapshot();
+    }
+
+    return scene;
+  }
+
+  private async readRuntimeMeshInput(file: File): Promise<RuntimeMeshInput> {
+    // When the user picked a file through the native OS dialog, return the
+    // pre-built input directly. It already has `filePath` set so the Tauri
+    // runtime will pass only the path to Rust, skipping `arrayBuffer()` here
+    // and avoiding large byte arrays crossing the IPC channel during slicing.
+    if (this.pendingNativeMeshInput) {
+      return this.pendingNativeMeshInput;
+    }
+    return {
+      fileName: file.name,
+      format: this.fileFormatFromName(file.name),
+      bytes: new Uint8Array(await file.arrayBuffer()),
+    };
+  }
+
+  private visibleSceneSnapshot(): RuntimeSceneSnapshot {
+    const snapshot = this.sceneEngine.snapshot();
+    return {
+      objects: snapshot.objects.map((object) => ({
+        id: object.id.toString(),
+        name: object.name,
+        translation: object.translation,
+        euler_xyz_deg: object.euler_xyz_deg,
+        scale: object.scale,
+        triangle_count: object.triangle_count,
+        world_aabb: object.world_aabb,
+      })),
+    };
+  }
+
+  private fileFormatFromName(fileName: string): 'stl' | 'obj' | '3mf' {
+    const lower = fileName.toLowerCase();
+    if (lower.endsWith('.obj')) {
+      return 'obj';
+    }
+    if (lower.endsWith('.3mf')) {
+      return '3mf';
+    }
+    return 'stl';
   }
 
   private setDownloadUrl(url: string | null): void {

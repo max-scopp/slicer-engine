@@ -19,6 +19,11 @@ node_modules/
 ui/dist/
 ui/.angular/
 
+# Tauri desktop
+ui-desktop/src-tauri/target
+ui-desktop/src-tauri/target/**
+ui-desktop/src-tauri/gen/
+
 # VitePress
 docs/.vitepress/dist/
 docs/.vitepress/cache/

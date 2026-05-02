@@ -1,6 +1,6 @@
 # Slicer Engine
 
-> **3D model slicing, in Rust.** One engine, three surfaces — CLI, WebSocket server, and Angular UI (via WebAssembly).
+> **3D model slicing, in Rust.** One engine, four surfaces — CLI, WebSocket server, Angular UI (via WebAssembly), and a native desktop app (Tauri).
 
 A ground-up slicer that turns STL / OBJ / 3MF meshes into G-code for FFF 3D printers. Built on [Clipper2](https://github.com/AngusJohnson/Clipper2), bringing modern practice from Cura, PrusaSlicer, and SuperSlicer into a single, unified codebase.
 
@@ -30,8 +30,12 @@ cargo run --release -- settings set layer_height 0.15
 graph TB
     subgraph Surfaces
         F["CLI"]
-        E["Web UI<br/>(Angular + WASM)"]
         S["WebSocket server"]
+        subgraph UI["Angular UI"]
+            CM["cloud mode<br/>(scene in WASM,<br/>slice on server)"]
+            WM["web mode<br/>(scene + slice<br/>in WASM)"]
+            NM["native mode<br/>(Tauri desktop,<br/>all in Rust)"]
+        end
     end
 
     subgraph Core["Rust core"]
@@ -44,7 +48,10 @@ graph TB
     end
 
     F --> SC
-    E -->|wasm-bindgen| SC
+    CM -->|"WS + HTTP"| S
+    WM -->|wasm-bindgen| SC
+    NM -->|"wasm-bindgen scene"| SC
+    NM -->|"tauri::invoke slicing"| SC
     S --> SC
     SC --> M --> SL --> A
     SL --> I
@@ -55,7 +62,17 @@ graph TB
     style G fill:#e1f5ff
 ```
 
-The same Rust code is compiled twice — once natively for the CLI / server, once to WebAssembly for the UI — so previews and final output never disagree. See [Scene Engine](src/scene/README.md) and [Slicing Pipeline](src/core/README.md) for the contract.
+The same Rust core is compiled three ways — natively for CLI/server, to WebAssembly for the browser, and as a Tauri backend for the desktop — so previews and final output never disagree.
+
+The Angular UI selects its **runtime mode** at startup:
+
+| Mode     | Scene            | Slicing          | When               |
+| -------- | ---------------- | ---------------- | ------------------ |
+| `cloud`  | WASM (local)     | WebSocket server | Default web build  |
+| `web`    | WASM (local)     | WASM (local)     | `web-slicer` build |
+| `native` | WASM (local)     | Tauri IPC → Rust | Tauri desktop      |
+
+See [Scene Engine](src/scene/README.md) and [Slicing Pipeline](src/core/README.md) for the contract.
 
 ---
 
@@ -94,26 +111,55 @@ Full reference → [Settings](src/settings/README.md) · [Config (TOML)](src/con
 
 ---
 
-## Web UI
+## Web UI (cloud mode — Angular + server)
 
 ```bash
-# Build the WASM bindings used by the UI
-make build-wasm   # or: wasm-pack build --target web --release
+# 1. Build WASM scene bindings
+pnpm run hydrate            # wasm-pack + schema/type gen
 
-# Alternative bundle: include the slicing pipeline in the browser WASM build
-pnpm run hydrate:web-slicer
-pnpm run ui:build:web-slicer
-
-# Run the UI in dev mode against a local server
-cd ui && pnpm install && pnpm start    # http://localhost:4200
-cargo run --release -- serve            # http://localhost:5201
+# 2. Start dev servers (both must run)
+pnpm run ui:dev             # Angular dev server → http://localhost:4200
+cargo run --release -- serve # WebSocket/HTTP server → http://localhost:5201
 ```
 
-The `web-slicer` bundle is opt-in because it pulls `clipper2` into the wasm
-build. That requires a wasm-capable C++ toolchain (`clang++`) in addition to
-`wasm-pack`.
+The default environment (`src/environments/environment.ts`) sets `runtimeMode: 'cloud'` so the UI sends slicing jobs to the local server while using WASM for scene management.
 
-Architecture: [UI guide](ui/README.md) · [Server (HTTP + WS)](src/server/README.md).
+---
+
+## Web UI (web mode — fully in-browser)
+
+Includes the slicing pipeline in the WASM bundle. Requires a wasm-capable C++ toolchain (`clang++`) for `clipper2`.
+
+```bash
+# Build the full WASM bundle (scene + slicer)
+pnpm run hydrate:web-slicer
+
+# Dev server — no backend required
+pnpm run ui:dev:web-slicer   # http://localhost:4200
+
+# Production build
+pnpm run ui:build:web-slicer
+```
+
+---
+
+## Desktop app (native mode — Tauri)
+
+Bundles the Angular UI and the full Rust engine into a native desktop application. No server required.
+
+```bash
+# Prerequisites: install Tauri CLI
+cargo install tauri-cli --version "^2"
+# or: pnpm add -g @tauri-apps/cli
+
+# Dev mode (hot-reloads Angular, rebuilds Rust on change)
+pnpm run desktop:dev
+
+# Production build (outputs a platform installer)
+pnpm run desktop:build
+```
+
+The desktop app detects `window.__TAURI__` at runtime and automatically activates `native` mode. Scene edits still use the shared WASM `SceneState` used by the browser UI; slicing receives that scene snapshot plus the selected model bytes over `tauri::invoke` and runs in the bundled native Rust engine.
 
 ---
 
@@ -148,13 +194,13 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for workflow, [AGENTS.md](AGENTS.md) for 
 
 ## Features
 
-STL / OBJ / 3MF input · Triangle-plane slicing · Arachne variable-width walls · Infill patterns (rectilinear, grid, honeycomb, gyroid, TPMS-D) · Multi-dialect G-code (Marlin, Klipper) · Custom start/end G-code · Lifecycle markers · Single source of truth scene engine (CLI / WS / WASM share state) · TOML config with deep merge · Per-object overrides · Cross-platform (Windows, macOS, Linux, browser).
+STL / OBJ / 3MF input · Triangle-plane slicing · Arachne variable-width walls · Infill patterns (rectilinear, grid, honeycomb, gyroid, TPMS-D) · Multi-dialect G-code (Marlin, Klipper) · Custom start/end G-code · Lifecycle markers · Single source of truth scene engine (CLI / WS / WASM / Tauri share state) · Three runtime modes (cloud, web, native) · TOML config with deep merge · Per-object overrides · Cross-platform (Windows, macOS, Linux, browser, desktop).
 
 ---
 
 ## References
 
-[RepRap G-code Wiki](https://reprap.org/wiki/G-code) · [Arachne Paper](https://github.com/Ultimaker/CuraEngine/blob/main/docs/arachne.md) · [Clipper2](https://www.angusj.com/clipper2/Docs/Overview.htm) · [Marlin G-code](https://marlinfw.org/meta/gcode/) · [Klipper G-code](https://www.klipper3d.org/G-Codes.html)
+[RepRap G-code Wiki](https://reprap.org/wiki/G-code) · [Arachne Paper](https://github.com/Ultimaker/CuraEngine/blob/main/docs/arachne.md) · [Clipper2](https://www.angusj.com/clipper2/Docs/Overview.htm) · [Marlin G-code](https://marlinfw.org/meta/gcode/) · [Klipper G-code](https://www.klipper3d.org/G-Codes.html) · [Tauri](https://v2.tauri.app/)
 
 ---
 

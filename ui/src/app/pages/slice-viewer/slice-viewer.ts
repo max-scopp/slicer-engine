@@ -55,6 +55,14 @@ export class SliceViewer {
       }
 
       this.#lastFetchedUuid = uuid;
+      if (this.#slicerFile.selectedFile() && this.#slicerFile.requestUuid() === uuid) {
+        return;
+      }
+
+      if (uuid.startsWith('local-')) {
+        return;
+      }
+
       void this.#restoreModelFromBackend(uuid);
     });
   }
@@ -68,7 +76,8 @@ export class SliceViewer {
       const navState = this.#router.getCurrentNavigation()?.extras?.state as
         | { uploadMeta?: UploadResponse }
         | undefined;
-      const stateUpload = navState?.uploadMeta ?? (history.state?.uploadMeta as UploadResponse | undefined);
+      const stateUpload =
+        navState?.uploadMeta ?? (history.state?.uploadMeta as UploadResponse | undefined);
 
       let meta: RequestMeta;
       if (stateUpload && stateUpload.ruuid === requestUuid) {

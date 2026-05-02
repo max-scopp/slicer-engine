@@ -1,6 +1,7 @@
 import { Component, inject } from '@angular/core';
 import { Router } from '@angular/router';
-import { History, SessionSummary } from '../../services/history';
+import { History } from '../../services/history';
+import { RuntimeHistorySession } from '../../runtime/domain/history-models';
 
 @Component({
   selector: 'nexus-list-history',
@@ -12,11 +13,11 @@ export class ListHistory {
   protected readonly history = inject(History);
   readonly #router = inject(Router);
 
-  navigate(session: SessionSummary): void {
+  navigate(session: RuntimeHistorySession): void {
     void this.#router.navigate(['/slice', session.request_uuid]);
   }
 
-  download(session: SessionSummary): void {
+  download(session: RuntimeHistorySession): void {
     this.history.download(session);
   }
 }

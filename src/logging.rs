@@ -127,6 +127,15 @@ pub trait ProcessLogger: Send + Sync {
     /// Called at the end of a named pipeline phase (see [`phases`]).
     /// The default implementation is a no-op, preserving backward compatibility.
     fn log_phase_end(&self, _phase: &str, _elapsed_ms: u64) {}
+
+    /// Returns `true` when the pipeline should abort early.
+    ///
+    /// Checked between major phases in [`crate::core::process_mesh`]. The
+    /// default always returns `false`, so existing loggers remain valid
+    /// without any changes.
+    fn is_cancelled(&self) -> bool {
+        false
+    }
 }
 
 /// RAII guard that records a [`ProcessLogger::log_phase_start`] event on creation

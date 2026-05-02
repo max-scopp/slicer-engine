@@ -15,6 +15,9 @@
   },
   "private": true,
   "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
+    "@tauri-apps/plugin-fs": "^2",
     "@angular/animations": "^21.2.10",
     "@angular/aria": "^21.2.8",
     "@angular/cdk": "^21.2.8",

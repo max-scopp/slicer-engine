@@ -3,7 +3,7 @@ import { Router, RouterLink } from '@angular/router';
 import { ConnectionState } from '../../components/connection-state/connection-state';
 import { ListHistory } from '../../components/list-history/list-history';
 import { AppTheme } from '../../services/app-theme';
-import { SlicerFile } from '../../services/slicer-file';
+import { Slicer } from '../../services/slicer';
 
 @Component({
   selector: 'nexus-home-dashboard',
@@ -15,7 +15,7 @@ import { SlicerFile } from '../../services/slicer-file';
 export class HomeDashboard {
   protected _theme = inject(AppTheme);
   private readonly router = inject(Router);
-  private readonly slicerFile = inject(SlicerFile);
+  private readonly slicer = inject(Slicer);
 
   @ViewChild('quickFileInput') private quickFileInput!: ElementRef<HTMLInputElement>;
 
@@ -30,12 +30,13 @@ export class HomeDashboard {
     if (!file || !/\.(stl|obj|3mf)$/i.test(file.name)) {
       return;
     }
-    this.slicerFile.selectFile(file);
     try {
-      const meta = await this.slicerFile.upload();
-      this.router.navigate(['/slice', meta.ruuid], { state: { uploadMeta: meta } });
+      const workplate = await this.slicer.startWorkplate(file);
+      this.router.navigate(['/slice', workplate.requestUuid], {
+        state: workplate.uploadMeta ? { uploadMeta: workplate.uploadMeta } : undefined,
+      });
     } catch {
-      // upload error is tracked in slicerFile.uploadError
+      // Errors are tracked by the slicer/file services and surfaced in the UI.
     }
   }
 }
