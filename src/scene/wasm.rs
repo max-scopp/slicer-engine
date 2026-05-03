@@ -11,6 +11,8 @@ use crate::scene::ops::SceneOp;
 use crate::scene::state::{ObjectId, SceneState};
 use crate::scene::transform::Transform;
 use js_sys::{Float32Array, Uint32Array};
+#[cfg(feature = "web-slicer")]
+use js_sys::{Function, Object, Reflect};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -331,6 +333,34 @@ impl SceneHandle {
     #[cfg(feature = "web-slicer")]
     #[wasm_bindgen(js_name = sliceGcode)]
     pub fn slice_gcode(&self, params: JsValue) -> Result<JsValue, JsValue> {
+        self.slice_gcode_impl(params, None)
+    }
+
+    /// Slice the current scene in-browser and report log/phase/progress events
+    /// through a JavaScript callback while the synchronous WASM call runs.
+    ///
+    /// `callback` receives objects shaped like:
+    /// `{ type: "log", level, message }`,
+    /// `{ type: "phase", phase, event, elapsed_ms? }`, and
+    /// `{ type: "progress", current_layer, total_layers }`.
+    #[cfg(feature = "web-slicer")]
+    #[wasm_bindgen(js_name = sliceGcodeWithEvents)]
+    pub fn slice_gcode_with_events(
+        &self,
+        params: JsValue,
+        callback: Function,
+    ) -> Result<JsValue, JsValue> {
+        self.slice_gcode_impl(params, Some(callback))
+    }
+}
+
+#[cfg(feature = "web-slicer")]
+impl SceneHandle {
+    fn slice_gcode_impl(
+        &self,
+        params: JsValue,
+        callback: Option<Function>,
+    ) -> Result<JsValue, JsValue> {
         let params: crate::settings::params::SlicingParams = serde_wasm_bindgen::from_value(params)
             .map_err(|e| JsValue::from_str(&format!("invalid slicing params: {}", e)))?;
 
@@ -353,14 +383,107 @@ impl SceneHandle {
             ));
         }
 
-        let layers = crate::core::process_mesh(&combined, &params, &crate::logging::NullLogger);
+        let logger = WasmSliceLogger::new(callback);
+        let layers = crate::core::process_mesh(&combined, &params, &logger);
+        let layer_count = layers.len();
+        logger.emit_progress(layer_count, layer_count);
+
+        let t_gcode =
+            crate::logging::PhaseTimer::start(crate::logging::phases::GCODE_GENERATION, &logger);
         let result = SliceResultJs {
-            layer_count: layers.len(),
+            layer_count,
             gcode: crate::gcode::generate_gcode(&layers, &params),
         };
+        t_gcode.finish();
 
         serde_wasm_bindgen::to_value(&result).map_err(|e| JsValue::from_str(&e.to_string()))
     }
+}
+
+#[cfg(feature = "web-slicer")]
+struct WasmSliceLogger {
+    callback: Option<Function>,
+}
+
+#[cfg(feature = "web-slicer")]
+impl WasmSliceLogger {
+    fn new(callback: Option<Function>) -> Self {
+        Self { callback }
+    }
+
+    fn emit_log(&self, level: &str, message: &str) {
+        let event = Object::new();
+        set_js_str(&event, "type", "log");
+        set_js_str(&event, "level", level);
+        set_js_str(&event, "message", message);
+        self.emit(event);
+    }
+
+    fn emit_phase(&self, phase: &str, event_name: &str, elapsed_ms: Option<u64>) {
+        let event = Object::new();
+        set_js_str(&event, "type", "phase");
+        set_js_str(&event, "phase", phase);
+        set_js_str(&event, "event", event_name);
+        if let Some(elapsed_ms) = elapsed_ms {
+            set_js_num(&event, "elapsed_ms", elapsed_ms as f64);
+        }
+        self.emit(event);
+    }
+
+    fn emit_progress(&self, current_layer: usize, total_layers: usize) {
+        let event = Object::new();
+        set_js_str(&event, "type", "progress");
+        set_js_num(&event, "current_layer", current_layer as f64);
+        set_js_num(&event, "total_layers", total_layers as f64);
+        self.emit(event);
+    }
+
+    fn emit(&self, event: Object) {
+        if let Some(callback) = &self.callback {
+            let _ = callback.call1(&JsValue::NULL, &event.into());
+        }
+    }
+}
+
+#[cfg(feature = "web-slicer")]
+impl crate::logging::ProcessLogger for WasmSliceLogger {
+    fn log_info(&self, msg: &str) {
+        self.emit_log("info", msg);
+    }
+
+    fn log_debug(&self, msg: &str) {
+        self.emit_log("debug", msg);
+    }
+
+    fn log_warn(&self, msg: &str) {
+        self.emit_log("warn", msg);
+    }
+
+    fn log_phase_start(&self, phase: &str) {
+        self.emit_phase(phase, "start", None);
+    }
+
+    fn log_phase_end(&self, phase: &str, elapsed_ms: u64) {
+        self.emit_phase(phase, "end", Some(elapsed_ms));
+    }
+}
+
+// The callback is invoked synchronously on the worker thread that owns the
+// WASM instance. The logger only needs Send/Sync to satisfy ProcessLogger's
+// cross-target trait bounds; it is not shared across browser threads.
+#[cfg(feature = "web-slicer")]
+unsafe impl Send for WasmSliceLogger {}
+#[cfg(feature = "web-slicer")]
+unsafe impl Sync for WasmSliceLogger {}
+
+#[cfg(feature = "web-slicer")]
+fn set_js_str(object: &Object, key: &str, value: &str) {
+    let _ = Reflect::set(object, &JsValue::from_str(key), &JsValue::from_str(value));
+}
+
+#[cfg(feature = "web-slicer")]
+fn set_js_num(object: &Object, key: &str, value: f64) {
+    let _ = Reflect::set(object, &JsValue::from_str(key), &JsValue::from_f64(value));
 }
 
 fn js_to_op(op: SceneOpJs) -> SceneOp {

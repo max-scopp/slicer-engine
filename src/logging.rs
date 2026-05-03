@@ -158,6 +158,8 @@ pub struct PhaseTimer<'a> {
     // std::time::Instant is not available on wasm32-unknown-unknown.
     #[cfg(not(target_arch = "wasm32"))]
     start: std::time::Instant,
+    #[cfg(target_arch = "wasm32")]
+    start_ms: f64,
 }
 
 impl<'a> PhaseTimer<'a> {
@@ -169,6 +171,8 @@ impl<'a> PhaseTimer<'a> {
             logger,
             #[cfg(not(target_arch = "wasm32"))]
             start: std::time::Instant::now(),
+            #[cfg(target_arch = "wasm32")]
+            start_ms: js_sys::Date::now(),
         }
     }
 
@@ -177,7 +181,7 @@ impl<'a> PhaseTimer<'a> {
         #[cfg(not(target_arch = "wasm32"))]
         let elapsed_ms = self.start.elapsed().as_millis() as u64;
         #[cfg(target_arch = "wasm32")]
-        let elapsed_ms = 0u64;
+        let elapsed_ms = (js_sys::Date::now() - self.start_ms).max(0.0).round() as u64;
         self.logger.log_phase_end(self.phase, elapsed_ms);
     }
 }
