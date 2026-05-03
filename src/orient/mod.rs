@@ -4,25 +4,30 @@
 //! ## Algorithm
 //!
 //! 1. **Candidate generation** — collect unique "floor direction" candidates:
-//!    - One area-weighted representative normal per coplanar face group
-//!      (covers all flat regions with O(faces) work).
+//!    - Snap all face normals to a coarse grid (≈6° resolution) and accumulate
+//!      area per bucket; keep the top [`MAX_FLAT_CANDIDATES`] directions by
+//!      total area.  This is O(faces) and merges near-duplicate normals on
+//!      curved surfaces into a single representative direction.
 //!    - If [`AutoOrientOptions::allow_rotations`] is `true`, additionally
 //!      sample ~128 directions on a Fibonacci sphere (covers organic shapes
 //!      with no prominent flat regions).
 //!
 //! 2. **Scoring** — for each candidate direction `d` (the direction that will
 //!    be rotated to face down / align with `−Z`):
-//!    - Compute `q = from_rotation_arc(d, −Z)`.
-//!    - Apply `q` to every face normal.
-//!    - Score = `OVERHANG_W × overhang_area − CONTACT_W × contact_area + HEIGHT_W × height`
+//!    - `rz(n) = −dot(d, n)` (equivalent to `(q * n).z` where
+//!      `q = from_rotation_arc(d, −Z)`, but computed with a single dot product
+//!      — no quaternion construction or matrix multiply needed).
+//!    - Score = `OVERHANG_W × net_overhang_area − CONTACT_W × contact_area + HEIGHT_W × height`
 //!      (lower is better).
+//!    - `net_overhang = overhang_area − contact_area`: bed-contact faces are
+//!      supported and must not be counted as overhangs.
+//!    - `height = max_v(dot(d, v)) − min_v(dot(d, v))` across all vertices
+//!      (no AABB transform needed).
 //!
-//! 3. **Result** — return the quaternion for the best candidate, optionally
-//!    composed with a preferred Z-rotation (e.g. 45° for CoreXY printers).
+//! 3. **Result** — build `Quat::from_rotation_arc(best_candidate, −Z)` **once**
+//!    for the winner, then optionally compose with a preferred Z-rotation.
 
-use crate::mesh::analysis::{calculate_aabb, compute_coplanar_groups};
 use crate::mesh::types::{Face, Mesh, Vertex};
-use crate::scene::transform::{transformed_aabb, Transform};
 use glam::{Quat, Vec3};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -41,6 +46,11 @@ const CONTACT_W: f64 = 0.5;
 const HEIGHT_W: f64 = 0.01;
 /// Half-angle (degrees) for "essentially flat on bed" contact detection.
 const CONTACT_ANGLE_DEG: f64 = 10.0;
+
+/// Maximum number of flat-face candidates kept from the normal histogram.
+/// Higher values give marginally better coverage at the cost of more scoring
+/// work.  64 is ample for all practical FDM models.
+const MAX_FLAT_CANDIDATES: usize = 64;
 
 /// Threshold for treating a degenerate (near-zero) triangle normal.
 /// Below this squared-length value, the cross-product result is too small
@@ -102,7 +112,7 @@ pub fn auto_orient(mesh: &Mesh, options: &AutoOrientOptions) -> Quat {
         return Quat::IDENTITY;
     }
 
-    // Pre-compute per-face normals (unit vectors) and areas.
+    // Pre-compute per-face normals (unit vectors) and areas once.
     let normals: Vec<Vec3> = mesh
         .faces
         .iter()
@@ -115,39 +125,45 @@ pub fn auto_orient(mesh: &Mesh, options: &AutoOrientOptions) -> Quat {
         return Quat::IDENTITY;
     }
 
+    // Collect all mesh vertices once for height computation.
+    let vertices: Vec<Vec3> = mesh.vertices.iter().map(vertex_to_vec3).collect();
+
     // Build candidate floor-normal directions.
-    let candidates = build_candidates(mesh, options);
+    let candidates = build_candidates(mesh, options, &normals, &areas);
     if candidates.is_empty() {
         return Quat::IDENTITY;
     }
 
-    // Convert threshold angles to float comparands used in the inner loop.
-    // A face is "overhang" if its rotated Z-component < -(sin of threshold):
-    //   angle_below_horizontal > threshold
-    //   ↔ -rotated_z > sin(threshold)  (for rotated_z < 0)
-    // `overhang_z_threshold` is sin(overhang_threshold_deg), used as the
-    // negated cutoff: rotated_z < -overhang_z_threshold → overhang.
+    // Pre-compute scoring thresholds as f32 for the hot dot-product loop.
+    //
+    // `overhang_z_threshold` = sin(overhang_threshold_deg):
+    //   rz = -dot(candidate, n); rz < -threshold  →  face is an overhang.
+    // `contact_z_threshold` = cos(CONTACT_ANGLE_DEG):
+    //   rz < -threshold  →  face is essentially flat on the bed.
     let overhang_z_threshold = options.overhang_threshold_deg.to_radians().sin() as f32;
-    // A face is "contact" (on the bed) if its rotated Z-component <
-    // -(cos of the small contact angle), i.e. nearly flat and pointing down.
-    // `contact_z_threshold` = cos(CONTACT_ANGLE_DEG); faces with
-    // rotated_z < -contact_z_threshold are essentially flat on the bed.
     let contact_z_threshold = CONTACT_ANGLE_DEG.to_radians().cos() as f32;
 
-    // AABB used for height scoring.
-    let local_aabb = calculate_aabb(mesh);
-
     let mut best_score = f64::MAX;
-    let mut best_quat = Quat::IDENTITY;
+    let mut best_candidate = Vec3::NEG_Z; // default: already pointing down
 
     for candidate in &candidates {
-        let q = Quat::from_rotation_arc(*candidate, Vec3::NEG_Z);
-
+        // ---------------------------------------------------------------------------
+        // Overhang + contact scoring
+        //
+        // Mathematical identity: (q * n).z  where  q = from_rotation_arc(c, -Z)
+        //   = -dot(c, n)
+        //
+        // Proof: q maps c → -Z, so q⁻¹ maps -Z → c and maps +Z → -c.
+        //   (q * n).z = n · (q⁻¹ * Z) = n · (-c) = -dot(c, n).
+        //
+        // This replaces a quaternion construction + multiplication per face with
+        // a single dot product — the dominant cost for large meshes.
+        // ---------------------------------------------------------------------------
         let mut overhang_area = 0.0_f64;
         let mut contact_area = 0.0_f64;
 
         for (i, n) in normals.iter().enumerate() {
-            let rz = (q * *n).z;
+            let rz = -candidate.dot(*n);
             if rz < -overhang_z_threshold {
                 overhang_area += areas[i];
             }
@@ -156,29 +172,38 @@ pub fn auto_orient(mesh: &Mesh, options: &AutoOrientOptions) -> Quat {
             }
         }
 
-        // Height of the AABB after applying this rotation.
-        let height = {
-            let t = Transform {
-                translation: [0.0, 0.0, 0.0],
-                rotation: [q.x, q.y, q.z, q.w],
-                scale: [1.0, 1.0, 1.0],
-            };
-            let w = transformed_aabb(&local_aabb, &t);
-            w.max.z - w.min.z
-        };
+        // ---------------------------------------------------------------------------
+        // Height scoring
+        //
+        // After rotating so that `candidate` points to -Z, the print height equals
+        // the range of vertex projections onto `candidate`:
+        //   height = max_v(dot(c, v)) - min_v(dot(c, v))
+        //
+        // This avoids building a Transform + running transformed_aabb per candidate.
+        // ---------------------------------------------------------------------------
+        let mut min_proj = f32::INFINITY;
+        let mut max_proj = f32::NEG_INFINITY;
+        for v in &vertices {
+            let p = candidate.dot(*v);
+            min_proj = min_proj.min(p);
+            max_proj = max_proj.max(p);
+        }
+        let height = (max_proj - min_proj) as f64;
 
-        // Bed-contact faces (rotated_z ≈ -1) are supported and must NOT be
-        // counted as overhangs. The net unsupported overhang area is the
-        // downward-facing area minus the bed-contact area.
+        // Bed-contact faces (rz ≈ -1) are supported and must NOT be counted as
+        // overhangs.  Net unsupported overhang = total downward area minus the
+        // portion that rests on the bed.
         let net_overhang = overhang_area - contact_area;
-        let score =
-            OVERHANG_W * net_overhang - CONTACT_W * contact_area + HEIGHT_W * height;
+        let score = OVERHANG_W * net_overhang - CONTACT_W * contact_area + HEIGHT_W * height;
 
         if score < best_score {
             best_score = score;
-            best_quat = q;
+            best_candidate = *candidate;
         }
     }
+
+    // Build the winning quaternion exactly once.
+    let mut best_quat = Quat::from_rotation_arc(best_candidate, Vec3::NEG_Z);
 
     // Optionally compose with a Z-rotation preference (CoreXY 45°, etc.).
     if options.preferred_z_rotation_deg.abs() > 1e-6 {
@@ -198,40 +223,75 @@ pub fn auto_orient(mesh: &Mesh, options: &AutoOrientOptions) -> Quat {
 
 /// Collect the "floor direction" candidates to evaluate.
 ///
-/// Always returns one representative direction per coplanar face group (normal
-/// direction of that group, area-weighted average).  If
-/// [`AutoOrientOptions::allow_rotations`] is `true`, also returns ~128 points
+/// Uses a fast O(F) normal-direction histogram:
+/// - Each face normal is snapped to a coarse ~6° grid.
+/// - Areas are accumulated per bucket.
+/// - The top [`MAX_FLAT_CANDIDATES`] buckets (by total area) become candidates.
+///
+/// This merges near-duplicate normals on curved surfaces into a single
+/// representative direction — avoiding the thousands of near-identical
+/// candidates that `compute_coplanar_groups` would produce for an organic
+/// mesh like a Benchy — while still capturing every significant flat region.
+///
+/// If [`AutoOrientOptions::allow_rotations`] is `true`, also adds ~128 points
 /// uniformly distributed on the sphere (Fibonacci spiral).
-fn build_candidates(mesh: &Mesh, options: &AutoOrientOptions) -> Vec<Vec3> {
-    let mut candidates: Vec<Vec3> = Vec::new();
+fn build_candidates(
+    _mesh: &Mesh,
+    options: &AutoOrientOptions,
+    normals: &[Vec3],
+    areas: &[f64],
+) -> Vec<Vec3> {
+    // -------------------------------------------------------------------------
+    // 1. Area-weighted normal histogram with ~6° angular bucketing.
+    //
+    // Each component is rounded to the nearest 0.1 step in [-1, 1], giving
+    // ≈6° angular resolution.  All near-duplicate normals (e.g., the slightly
+    // curved triangles on a Benchy hull) collapse into the same bucket, so we
+    // get one clean representative direction instead of hundreds of near-copies.
+    // -------------------------------------------------------------------------
+    let mut dir_accum: HashMap<[i32; 3], (Vec3, f64)> = HashMap::new();
 
-    // --- 1. One representative per coplanar face group -----------------------
-    let groups = compute_coplanar_groups(mesh, 1.0, 0.001);
-    // Accumulate area-weighted normal sums per group.
-    let mut group_accum: HashMap<u32, (Vec3, f32)> = HashMap::new();
-    for (face_idx, face) in mesh.faces.iter().enumerate() {
-        if let Some(n) = face_normal_vec3(face) {
-            let area = face.area() as f32;
-            let entry = group_accum
-                .entry(groups[face_idx])
-                .or_insert((Vec3::ZERO, 0.0));
-            entry.0 += n * area;
-            entry.1 += area;
-        }
+    for (i, n) in normals.iter().enumerate() {
+        let area = areas[i];
+        let key = [
+            (n.x * 10.0).round() as i32,
+            (n.y * 10.0).round() as i32,
+            (n.z * 10.0).round() as i32,
+        ];
+        let entry = dir_accum.entry(key).or_insert((Vec3::ZERO, 0.0));
+        entry.0 += *n * area as f32;
+        entry.1 += area;
     }
-    for (n_sum, area_sum) in group_accum.values() {
-        if *area_sum > 1e-10 {
-            let n = (*n_sum / *area_sum).normalize_or_zero();
+
+    // Sort buckets by accumulated area (descending), take top MAX_FLAT_CANDIDATES.
+    let mut buckets: Vec<(Vec3, f64)> = dir_accum
+        .into_values()
+        .filter(|(_, area)| *area > 1e-6)
+        .collect();
+    buckets.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    buckets.truncate(MAX_FLAT_CANDIDATES);
+
+    let mut candidates: Vec<Vec3> = buckets
+        .into_iter()
+        .filter_map(|(n_sum, area)| {
+            let n = (n_sum / area as f32).normalize_or_zero();
             // Reject near-degenerate normals whose magnitude is less than 0.5
             // (squared: 0.25). This guards against floating-point cancellation
             // when many tiny faces produce an almost-zero sum vector.
             if n.length_squared() > 0.25 {
-                candidates.push(n);
+                Some(n)
+            } else {
+                None
             }
-        }
-    }
+        })
+        .collect();
 
-    // --- 2. Fibonacci sphere (allow_rotations) --------------------------------
+    // -------------------------------------------------------------------------
+    // 2. Fibonacci sphere (allow_rotations only)
+    //
+    // Adds ~128 uniformly-distributed directions to cover organic shapes with
+    // no prominent flat regions (figurines, characters, etc.).
+    // -------------------------------------------------------------------------
     if options.allow_rotations {
         const N: usize = 128;
         let golden = (1.0 + 5.0_f64.sqrt()) / 2.0;
@@ -246,6 +306,10 @@ fn build_candidates(mesh: &Mesh, options: &AutoOrientOptions) -> Vec<Vec3> {
             ));
         }
     }
+
+    // Also always include the mesh's current –Z direction so the algorithm
+    // can choose "stay as-is" when the model is already well-oriented.
+    candidates.push(Vec3::NEG_Z);
 
     candidates
 }
@@ -390,15 +454,21 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Height of the bounding box after applying `q` to `mesh`.
+    /// Uses the same vertex-projection formula as the production code:
+    ///   height = max_v(dot(candidate, v)) − min_v(dot(candidate, v))
     fn oriented_height(mesh: &Mesh, q: Quat) -> f64 {
-        let t = Transform {
-            translation: [0.0, 0.0, 0.0],
-            rotation: [q.x, q.y, q.z, q.w],
-            scale: [1.0, 1.0, 1.0],
-        };
-        let aabb = crate::mesh::analysis::calculate_aabb(mesh);
-        let world = transformed_aabb(&aabb, &t);
-        world.max.z - world.min.z
+        // Recover the candidate direction: q maps it to -Z, so candidate = q⁻¹ * (-Z)
+        // Equivalently, the height direction after rotation is (q * v).z → use dot(q⁻¹*Z_neg, v)
+        // Simpler: just project vertices through the quaternion and measure Z span.
+        let (mut min_z, mut max_z) = (f32::INFINITY, f32::NEG_INFINITY);
+        for f in &mesh.faces {
+            for v in &f.vertices {
+                let world = q * Vec3::new(v.x as f32, v.y as f32, v.z as f32);
+                min_z = min_z.min(world.z);
+                max_z = max_z.max(world.z);
+            }
+        }
+        (max_z - min_z) as f64
     }
 
     /// Net unsupported overhang area after rotation `q`:
