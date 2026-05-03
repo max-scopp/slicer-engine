@@ -227,6 +227,17 @@ Ensures surfaces bond to walls without leaving gaps at the perimeter boundary.
     pub infill_overlap_percent: f64,
 
     #[schemars(
+        description = "Gap in mm between the innermost perimeter wall and sparse infill lines.
+
+A small gap prevents infill from pressing too hard against walls, reducing surface artefacts
+where the infill pattern shows through the outer wall.
+**Typical:** 0.0–0.2 mm. Set to `0.0` for no gap (infill touches the inner wall).",
+        extend("x-group" = "Infill")
+    )]
+    #[serde(default = "SlicingParams::default_infill_perimeter_gap_mm")]
+    pub infill_perimeter_gap_mm: f64,
+
+    #[schemars(
         description = "Maximum perpendicular deviation (mm) for path simplification (Ramer–Douglas–Peucker).
 
 Reduces the number of G-code points without visibly affecting print quality.
@@ -273,6 +284,7 @@ impl Default for SlicingParams {
             only_one_wall_first_layer: Self::default_only_one_wall_first_layer(),
             support_threshold_angle: Self::default_support_threshold_angle(),
             infill_overlap_percent: Self::default_infill_overlap_percent(),
+            infill_perimeter_gap_mm: Self::default_infill_perimeter_gap_mm(),
             path_tolerance: Self::default_path_tolerance(),
             gcode_flavor: Self::default_gcode_flavor(),
         }
@@ -358,6 +370,10 @@ impl SlicingParams {
 
     fn default_infill_overlap_percent() -> f64 {
         0.25 // 25% overlap for good bonding
+    }
+
+    fn default_infill_perimeter_gap_mm() -> f64 {
+        0.1 // 0.1 mm gap between wall and sparse infill
     }
 
     fn default_path_tolerance() -> f64 {
