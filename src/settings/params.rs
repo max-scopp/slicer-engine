@@ -99,11 +99,110 @@ Alternating layers rotate by +90° on top of this base angle to create a crossin
     #[serde(default = "SlicingParams::default_infill_base_angle")]
     pub infill_base_angle: f64,
 
-    #[schemars(description = "Print speed in mm/s.
+    #[schemars(description = "Default print speed in mm/s used as a fallback.
 
 Slower speeds improve layer adhesion and surface quality; faster speeds reduce print time.
+Role-specific speeds (perimeter_speed, infill_speed, etc.) take precedence when set to a
+positive value.
 **Typical:** 40–100 mm/s.", extend("x-group" = "Speed"))]
     pub print_speed: f64,
+
+    #[schemars(
+        description = "Speed for outer and inner perimeter (wall) extrusions in mm/s.
+
+Lower speeds improve surface quality and layer adhesion on perimeters.
+Set to `0` to fall back to `print_speed`.
+**Typical:** 40–50 mm/s.",
+        extend("x-group" = "Speed")
+    )]
+    #[serde(default = "SlicingParams::default_perimeter_speed")]
+    pub perimeter_speed: f64,
+
+    #[schemars(
+        description = "Speed for sparse infill extrusions in mm/s.
+
+Higher speeds are acceptable for infill since it is not visible.
+Set to `0` to fall back to `print_speed`.
+**Typical:** 60–80 mm/s.",
+        extend("x-group" = "Speed")
+    )]
+    #[serde(default = "SlicingParams::default_infill_speed")]
+    pub infill_speed: f64,
+
+    #[schemars(
+        description = "Speed for bridge extrusions spanning unsupported gaps in mm/s.
+
+Slower speeds with high fan cooling reduce sagging on bridges.
+Set to `0` to fall back to `print_speed`.
+**Typical:** 20–30 mm/s.",
+        extend("x-group" = "Speed")
+    )]
+    #[serde(default = "SlicingParams::default_bridge_speed")]
+    pub bridge_speed: f64,
+
+    #[schemars(
+        description = "Speed for top and bottom solid surface infill in mm/s.
+
+Slightly slower than infill to improve surface finish.
+Set to `0` to fall back to `print_speed`.
+**Typical:** 40–50 mm/s.",
+        extend("x-group" = "Speed")
+    )]
+    #[serde(default = "SlicingParams::default_top_surface_speed")]
+    pub top_surface_speed: f64,
+
+    #[schemars(
+        description = "Speed for all extrusions on the first layer in mm/s.
+
+Slower first-layer speeds improve bed adhesion.
+Set to `0` to fall back to `print_speed`.
+**Typical:** 20–30 mm/s.",
+        extend("x-group" = "Speed")
+    )]
+    #[serde(default = "SlicingParams::default_first_layer_speed")]
+    pub first_layer_speed: f64,
+
+    #[schemars(
+        description = "Part-cooling fan speed for normal extrusions as a fraction (0.0–1.0).
+
+- `0.0` = fan off
+- `1.0` = full speed
+**Typical:** 1.0 (100%).",
+        extend("x-group" = "Cooling")
+    )]
+    #[serde(default = "SlicingParams::default_fan_speed")]
+    pub fan_speed: f64,
+
+    #[schemars(
+        description = "Part-cooling fan speed when printing bridge extrusions as a fraction (0.0–1.0).
+
+High fan speeds cool bridge material rapidly, reducing sag.
+**Typical:** 1.0 (100%).",
+        extend("x-group" = "Cooling")
+    )]
+    #[serde(default = "SlicingParams::default_bridge_fan_speed")]
+    pub bridge_fan_speed: f64,
+
+    #[schemars(
+        description = "Part-cooling fan speed on the first layer as a fraction (0.0–1.0).
+
+Typically disabled on the first layer to improve bed adhesion.
+**Typical:** 0.0 (off).",
+        extend("x-group" = "Cooling")
+    )]
+    #[serde(default = "SlicingParams::default_first_layer_fan_speed")]
+    pub first_layer_fan_speed: f64,
+
+    #[schemars(
+        description = "Coasting distance in mm: stop extruding this far before the end of a perimeter.
+
+Reduces nozzle pressure at the seam, preventing blobs and improving surface quality.
+Set to `0.0` to disable.
+**Typical:** 0.1–0.3 mm.",
+        extend("x-group" = "Speed")
+    )]
+    #[serde(default = "SlicingParams::default_coasting_distance_mm")]
+    pub coasting_distance_mm: f64,
 
     #[schemars(description = "Nozzle temperature in °C.
 
@@ -259,6 +358,15 @@ impl Default for SlicingParams {
             infill_pattern: Self::default_infill_pattern(),
             infill_base_angle: Self::default_infill_base_angle(),
             print_speed: 60.0,
+            perimeter_speed: Self::default_perimeter_speed(),
+            infill_speed: Self::default_infill_speed(),
+            bridge_speed: Self::default_bridge_speed(),
+            top_surface_speed: Self::default_top_surface_speed(),
+            first_layer_speed: Self::default_first_layer_speed(),
+            fan_speed: Self::default_fan_speed(),
+            bridge_fan_speed: Self::default_bridge_fan_speed(),
+            first_layer_fan_speed: Self::default_first_layer_fan_speed(),
+            coasting_distance_mm: Self::default_coasting_distance_mm(),
             nozzle_temp: 210.0,
             bed_temp: 60.0,
             top_layers: Self::default_top_layers(),
@@ -310,6 +418,42 @@ impl SlicingParams {
 
     fn default_infill_base_angle() -> f64 {
         45.0
+    }
+
+    fn default_perimeter_speed() -> f64 {
+        45.0
+    }
+
+    fn default_infill_speed() -> f64 {
+        70.0
+    }
+
+    fn default_bridge_speed() -> f64 {
+        25.0
+    }
+
+    fn default_top_surface_speed() -> f64 {
+        40.0
+    }
+
+    fn default_first_layer_speed() -> f64 {
+        25.0
+    }
+
+    fn default_fan_speed() -> f64 {
+        1.0
+    }
+
+    fn default_bridge_fan_speed() -> f64 {
+        1.0
+    }
+
+    fn default_first_layer_fan_speed() -> f64 {
+        0.0
+    }
+
+    fn default_coasting_distance_mm() -> f64 {
+        0.2
     }
 
     fn default_top_layers() -> usize {

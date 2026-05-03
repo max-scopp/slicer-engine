@@ -268,7 +268,7 @@ pub fn process_mesh(
 
             while !remaining.is_empty() {
                 let mut best_i = 0;
-                let mut min_dist_sq = std::f64::MAX;
+                let mut min_dist_sq = f64::MAX;
                 let mut best_reverse = false;
 
                 for (i, &path_idx) in remaining.iter().enumerate() {

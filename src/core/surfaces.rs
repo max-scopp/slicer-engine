@@ -30,6 +30,18 @@ pub(crate) fn perimeter_paths_of(layer: &SliceLayer) -> Paths {
     )
 }
 
+/// Return `union(a, b)` when both are non-empty; otherwise return whichever is non-empty
+/// (or an empty `Paths` if both are empty).  Takes ownership to avoid caller clones.
+fn union_or_first(a: Paths, b: Paths) -> Paths {
+    if !a.is_empty() && !b.is_empty() {
+        union(a, b, FillRule::EvenOdd).unwrap_or_default()
+    } else if !a.is_empty() {
+        a
+    } else {
+        b
+    }
+}
+
 /// Calculate infill line spacing based on layer height.
 /// Standard extrusion width is typically 1.2× layer height for solid infill.
 const SOLID_INFILL_EXTRUSION_WIDTH_MULTIPLIER: f64 = 1.2;
@@ -312,11 +324,17 @@ pub fn generate_top_bottom_surfaces_with_interior(
     //
     // Each layer's surface regions are fully determined by `perimeters` (read-
     // only) and `interior_regions` (read-only).  Computing them is therefore
-    // embarrassingly parallel.  We collect `(bottom_region, top_region)` pairs
+    // embarrassingly parallel.  We collect `(bridge_region, bottom_region, top_region)` tuples
     // and then apply them to `layers` in a serial pass to avoid shared mutable
     // state.
-    let detect_region = |i: usize| -> (Paths, Paths) {
-        let bottom_region = if bottom_layers > 0 {
+    //
+    // Bridge detection: for layer i > 0, the "bridge region" is the portion of
+    // the computed bottom surface that has NO support from the immediately
+    // previous layer.  These areas span across a gap and require slower speed
+    // and high fan cooling.  The remaining bottom surface (which has at least
+    // some support from layer i-1) is labelled BottomSurface.
+    let detect_region = |i: usize| -> (Paths, Paths, Paths) {
+        let (bridge_region, bottom_region) = if bottom_layers > 0 {
             let mut covered = perimeters[i].clone();
             for j in 1..=bottom_layers {
                 if i < j {
@@ -346,10 +364,39 @@ pub fn generate_top_bottom_surfaces_with_interior(
                         .unwrap_or_default();
                 }
             }
-            region
+
+            // Bridge detection: split `region` into areas that are entirely
+            // unsupported by the previous layer (bridge) vs. areas that have
+            // at least some support one layer below (true bottom surface).
+            //
+            // Layer 0 has no layer below, so the entire region is BottomSurface
+            // (it is the absolute bottom of the model, not a bridge).
+            if region.is_empty() || i == 0 {
+                (Paths::new(vec![]), region)
+            } else {
+                let prev_perimeter = &perimeters[i - 1];
+                if prev_perimeter.is_empty() {
+                    // Nothing below at all → entire region is a bridge
+                    (region, Paths::new(vec![]))
+                } else {
+                    // Unsupported part = region not covered by the previous layer
+                    let unsupported =
+                        difference(region.clone(), prev_perimeter.clone(), FillRule::EvenOdd)
+                            .unwrap_or_default();
+                    // Supported part = region that does have some overlap below
+                    let supported = difference(region, unsupported.clone(), FillRule::EvenOdd)
+                        .unwrap_or_default();
+                    (unsupported, supported)
+                }
+            }
         } else {
-            Paths::new(vec![])
+            (Paths::new(vec![]), Paths::new(vec![]))
         };
+
+        // For the top-region exclusion below, use the combined bottom+bridge area.
+        // We need a clone here because bridge_region and bottom_region are returned
+        // in the tuple below; we only clone if both are non-empty (one allocation).
+        let combined_bottom = union_or_first(bridge_region.clone(), bottom_region.clone());
 
         let top_region = if top_layers > 0 {
             let mut covered = perimeters[i].clone();
@@ -373,9 +420,9 @@ pub fn generate_top_bottom_surfaces_with_interior(
             let mut top_region =
                 difference(perimeters[i].clone(), covered, FillRule::EvenOdd).unwrap_or_default();
 
-            if !bottom_region.is_empty() && !top_region.is_empty() {
-                top_region = difference(top_region, bottom_region.clone(), FillRule::EvenOdd)
-                    .unwrap_or_default();
+            if !combined_bottom.is_empty() && !top_region.is_empty() {
+                top_region =
+                    difference(top_region, combined_bottom, FillRule::EvenOdd).unwrap_or_default();
             }
 
             if let Some(interior_regions) = interior_regions {
@@ -392,25 +439,41 @@ pub fn generate_top_bottom_surfaces_with_interior(
             Paths::new(vec![])
         };
 
-        (bottom_region, top_region)
+        (bridge_region, bottom_region, top_region)
     };
 
     #[cfg(not(target_arch = "wasm32"))]
     let t_detect = Instant::now();
     #[cfg(not(target_arch = "wasm32"))]
-    let regions: Vec<(Paths, Paths)> = {
+    let regions: Vec<(Paths, Paths, Paths)> = {
         use rayon::prelude::*;
         (0..total).into_par_iter().map(detect_region).collect()
     };
     #[cfg(target_arch = "wasm32")]
-    let regions: Vec<(Paths, Paths)> = (0..total).map(detect_region).collect();
+    let regions: Vec<(Paths, Paths, Paths)> = (0..total).map(detect_region).collect();
     #[cfg(not(target_arch = "wasm32"))]
     let detection_ns = t_detect.elapsed().as_nanos();
     #[cfg(target_arch = "wasm32")]
     let detection_ns = 0u128;
 
     // ── Serial apply pass ─────────────────────────────────────────────────────
-    for (i, (bottom_region, top_region)) in regions.into_iter().enumerate() {
+    for (i, (bridge_region, bottom_region, top_region)) in regions.into_iter().enumerate() {
+        if !bridge_region.is_empty() {
+            #[cfg(not(target_arch = "wasm32"))]
+            let t = Instant::now();
+            add_solid_infill_for_region(
+                &mut layers[i],
+                &bridge_region,
+                ExtrusionRole::Bridge,
+                layer_height,
+                infill_angle,
+            );
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                infill_ns += t.elapsed().as_nanos();
+            }
+        }
+
         if !bottom_region.is_empty() {
             #[cfg(not(target_arch = "wasm32"))]
             let t = Instant::now();
@@ -445,13 +508,9 @@ pub fn generate_top_bottom_surfaces_with_interior(
 
         // Record the union of all solid-surface regions on this layer so that
         // add_infill_to_layers can exclude them from sparse infill.
-        let combined_solid = if !bottom_region.is_empty() && !top_region.is_empty() {
-            union(bottom_region, top_region, FillRule::EvenOdd).unwrap_or_default()
-        } else if !bottom_region.is_empty() {
-            bottom_region
-        } else {
-            top_region
-        };
+        // Include bridge_region in the solid union since those are solid-filled areas too.
+        let all_bottom = union_or_first(bridge_region, bottom_region);
+        let combined_solid = union_or_first(all_bottom, top_region);
         if !combined_solid.is_empty() {
             layers[i].solid_regions = combined_solid;
         }

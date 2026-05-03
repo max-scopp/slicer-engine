@@ -1065,4 +1065,117 @@ mod tests {
             paths_in_hole
         );
     }
+
+    // ── Bridge detection ──────────────────────────────────────────────────────
+
+    /// Test that unsupported bottom areas are classified as Bridge role.
+    ///
+    /// Layout (two layers):
+    /// - Layer 0: thin 1×10 strip on the left side
+    /// - Layer 1: full 10×10 square
+    ///
+    /// The 9mm region of layer 1 not covered by layer 0 has no direct support
+    /// from the previous layer and should be labelled Bridge.
+    #[test]
+    fn test_bridge_detection_assigns_bridge_role_to_unsupported_area() {
+        use clipper2::Path;
+
+        // Layer 0: thin 1×10 strip on the left side
+        let mut layer0 = SliceLayer::new(0.2);
+        let strip: Path = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 10.0), (0.0, 10.0)].into();
+        layer0.paths.push(strip);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+
+        // Layer 1: full 10×10 square
+        let mut layer1 = SliceLayer::new(0.4);
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer1.paths.push(square);
+        layer1.path_roles.push(ExtrusionRole::OuterWall);
+
+        let mut layers = vec![layer0, layer1];
+        // Use 1 bottom layer to trigger surface detection
+        generate_top_bottom_surfaces(&mut layers, 0, 1, 0.2, 45.0);
+
+        let layer1 = &layers[1];
+        let has_bridge = layer1.path_roles.contains(&ExtrusionRole::Bridge);
+
+        assert!(
+            has_bridge,
+            "unsupported area of layer 1 should be labelled Bridge: roles={:?}",
+            layer1.path_roles
+        );
+        // No BottomSurface on layer 1: the 1mm overlap is fully covered (not a surface)
+        // and the rest is Bridge.
+        let has_bottom_surface = layer1.path_roles.contains(&ExtrusionRole::BottomSurface);
+        assert!(
+            !has_bottom_surface,
+            "no BottomSurface expected when all unsupported area is Bridge: roles={:?}",
+            layer1.path_roles
+        );
+    }
+
+    /// Test that when the entire bottom surface is fully covered by the previous
+    /// layer, no Bridge role is generated (only BottomSurface for the step-down
+    /// portion from multi-layer detection, or no surface at all).
+    ///
+    /// Layout: two identical 10×10 layers.  With bottom_layers=1, the intersection
+    /// covers the entire area so region = empty → no surface infill at all.
+    #[test]
+    fn test_bridge_detection_no_bridge_when_fully_covered() {
+        use clipper2::Path;
+
+        // Both layers are identical 10×10 squares.
+        let square_path = |z: f64| {
+            let mut layer = SliceLayer::new(z);
+            let sq: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+            layer.paths.push(sq);
+            layer.path_roles.push(ExtrusionRole::OuterWall);
+            layer
+        };
+
+        let mut layers = vec![square_path(0.2), square_path(0.4)];
+        generate_top_bottom_surfaces(&mut layers, 0, 1, 0.2, 45.0);
+
+        // Layer 1 is fully covered by layer 0 → no surface infill whatsoever.
+        let has_bridge = layers[1].path_roles.contains(&ExtrusionRole::Bridge);
+        let has_bottom = layers[1].path_roles.contains(&ExtrusionRole::BottomSurface);
+
+        assert!(
+            !has_bridge,
+            "identical layers should produce no Bridge role: roles={:?}",
+            layers[1].path_roles
+        );
+        assert!(
+            !has_bottom,
+            "identical layers should produce no BottomSurface (fully covered): roles={:?}",
+            layers[1].path_roles
+        );
+    }
+
+    /// Layer 0 (no layer below it) must produce only BottomSurface, never Bridge.
+    #[test]
+    fn test_bridge_detection_first_layer_is_not_bridge() {
+        use clipper2::Path;
+
+        let mut layer0 = SliceLayer::new(0.2);
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer0.paths.push(square);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+
+        let mut layers = vec![layer0];
+        generate_top_bottom_surfaces(&mut layers, 0, 1, 0.2, 45.0);
+
+        let has_bridge = layers[0].path_roles.contains(&ExtrusionRole::Bridge);
+
+        assert!(
+            !has_bridge,
+            "layer 0 (model bottom) must not be classified as Bridge"
+        );
+
+        let has_bottom = layers[0].path_roles.contains(&ExtrusionRole::BottomSurface);
+        assert!(
+            has_bottom,
+            "layer 0 (model bottom) must have BottomSurface infill"
+        );
+    }
 }
