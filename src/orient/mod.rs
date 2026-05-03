@@ -42,6 +42,11 @@ const HEIGHT_W: f64 = 0.01;
 /// Half-angle (degrees) for "essentially flat on bed" contact detection.
 const CONTACT_ANGLE_DEG: f64 = 10.0;
 
+/// Threshold for treating a degenerate (near-zero) triangle normal.
+/// Below this squared-length value, the cross-product result is too small
+/// to reliably normalise.
+const DEGENERATE_NORMAL_SQ: f32 = 1e-12;
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -117,16 +122,17 @@ pub fn auto_orient(mesh: &Mesh, options: &AutoOrientOptions) -> Quat {
     }
 
     // Convert threshold angles to float comparands used in the inner loop.
-    // A face is "overhang" if its rotated normal Z-component < -sin(threshold):
+    // A face is "overhang" if its rotated Z-component < -(sin of threshold):
     //   angle_below_horizontal > threshold
-    //   ↔ arcsin(|rotated_z|) > threshold   (for rotated_z < 0)
-    //   ↔ |rotated_z| > sin(threshold)
-    //   ↔ rotated_z < -sin(threshold)
-    let overhang_sin = options.overhang_threshold_deg.to_radians().sin() as f32;
-    // A face is "contact" if its rotated normal is within CONTACT_ANGLE_DEG of −Z.
-    // cos(angle_from_neg_z) = -rotated_z → contact when -rotated_z > cos(contact_angle)
-    // ↔ rotated_z < -cos(contact_angle)
-    let contact_cos = CONTACT_ANGLE_DEG.to_radians().cos() as f32;
+    //   ↔ -rotated_z > sin(threshold)  (for rotated_z < 0)
+    // `overhang_z_threshold` is sin(overhang_threshold_deg), used as the
+    // negated cutoff: rotated_z < -overhang_z_threshold → overhang.
+    let overhang_z_threshold = options.overhang_threshold_deg.to_radians().sin() as f32;
+    // A face is "contact" (on the bed) if its rotated Z-component <
+    // -(cos of the small contact angle), i.e. nearly flat and pointing down.
+    // `contact_z_threshold` = cos(CONTACT_ANGLE_DEG); faces with
+    // rotated_z < -contact_z_threshold are essentially flat on the bed.
+    let contact_z_threshold = CONTACT_ANGLE_DEG.to_radians().cos() as f32;
 
     // AABB used for height scoring.
     let local_aabb = calculate_aabb(mesh);
@@ -142,10 +148,10 @@ pub fn auto_orient(mesh: &Mesh, options: &AutoOrientOptions) -> Quat {
 
         for (i, n) in normals.iter().enumerate() {
             let rz = (q * *n).z;
-            if rz < -overhang_sin {
+            if rz < -overhang_z_threshold {
                 overhang_area += areas[i];
             }
-            if rz < -contact_cos {
+            if rz < -contact_z_threshold {
                 contact_area += areas[i];
             }
         }
@@ -216,6 +222,9 @@ fn build_candidates(mesh: &Mesh, options: &AutoOrientOptions) -> Vec<Vec3> {
     for (n_sum, area_sum) in group_accum.values() {
         if *area_sum > 1e-10 {
             let n = (*n_sum / *area_sum).normalize_or_zero();
+            // Reject near-degenerate normals whose magnitude is less than 0.5
+            // (squared: 0.25). This guards against floating-point cancellation
+            // when many tiny faces produce an almost-zero sum vector.
             if n.length_squared() > 0.25 {
                 candidates.push(n);
             }
@@ -253,7 +262,7 @@ fn face_normal_vec3(face: &Face) -> Option<Vec3> {
     let c = vertex_to_vec3(&face.vertices[2]);
     let n = (b - a).cross(c - a);
     let len_sq = n.length_squared();
-    if len_sq < 1e-12 {
+    if len_sq < DEGENERATE_NORMAL_SQ {
         None
     } else {
         Some(n / len_sq.sqrt())
@@ -397,18 +406,18 @@ mod tests {
     /// on the bed (within `CONTACT_ANGLE_DEG` of -Z). The bed-contact face
     /// is always supported, so it must not be counted as an overhang.
     fn net_overhang_area(mesh: &Mesh, q: Quat, threshold_deg: f64) -> f64 {
-        let sin_t = threshold_deg.to_radians().sin() as f32;
-        let contact_cos = CONTACT_ANGLE_DEG.to_radians().cos() as f32;
+        let overhang_z_threshold = threshold_deg.to_radians().sin() as f32;
+        let contact_z_threshold = CONTACT_ANGLE_DEG.to_radians().cos() as f32;
         let mut overhang = 0.0f64;
         let mut contact = 0.0f64;
         for f in &mesh.faces {
             let n = face_normal_vec3(f).unwrap_or(Vec3::Z);
             let rz = (q * n).z;
             let area = f.area();
-            if rz < -sin_t {
+            if rz < -overhang_z_threshold {
                 overhang += area;
             }
-            if rz < -contact_cos {
+            if rz < -contact_z_threshold {
                 contact += area;
             }
         }
