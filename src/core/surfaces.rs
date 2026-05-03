@@ -857,6 +857,9 @@ pub fn generate_top_bottom_surfaces_with_interior(
             //   • `interior_regions[i]` is empty → no solid infill in this
             //     all-wall cross-section
             //   • otherwise → clip to the interior region
+            //
+            // The closure captures `i` (the current layer index) and
+            // `interior_regions` from the enclosing `detect_region` scope.
             let clip_bottom = |s: Paths| -> Paths {
                 match interior_regions {
                     None => s,

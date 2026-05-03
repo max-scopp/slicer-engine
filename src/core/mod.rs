@@ -1644,7 +1644,8 @@ mod tests {
 
         // Layer 0: 10×10 hull ring with a 2×2 porthole in the centre.
         //   Outer hull boundary (CCW): (0,0)→(10,0)→(10,10)→(0,10)
-        //   Porthole hole (CW): (4,4)→(4,6)→(6,6)→(6,4)  (hole in hull)
+        //   Porthole hole (CW): (4,4)→(4,6)→(6,6)→(6,4)  (hole in hull).
+        //   The porthole is centred: 4mm offset on each side of the 10mm hull.
         let mut layer0 = SliceLayer::new(0.2);
         let hull0: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
         let hole0: Path = vec![(4.0, 4.0), (4.0, 6.0), (6.0, 6.0), (6.0, 4.0)].into();
@@ -1662,11 +1663,12 @@ mod tests {
         let mut layers = vec![layer0, layer1];
 
         // interior_regions[1] = the cabin interior = 2×2 square at (4,4)→(6,6).
-        // This deliberately does NOT overlap the porthole bridge area
-        // (which is the 2×2 closure in the hull-wall zone).
+        // This is the same area as the porthole hole but represents the
+        // imaginary cabin inside — it deliberately does NOT overlap the bridge
+        // area (which is the 2×2 porthole closure sitting in the hull-wall zone).
         let interior_layer0 = clipper2::Paths::new(vec![]);
         let interior_layer1: clipper2::Paths = clipper2::Paths::new(vec![
-            clipper2::Path::from(vec![(4.0_f64, 4.0_f64), (4.0, 6.0), (6.0, 6.0), (6.0, 4.0)]),
+            clipper2::Path::from(vec![(4.0, 4.0), (4.0, 6.0), (6.0, 6.0), (6.0, 4.0_f64)]),
         ]);
         let interior_regions = vec![interior_layer0, interior_layer1];
 
