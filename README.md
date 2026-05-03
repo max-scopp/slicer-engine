@@ -1,8 +1,18 @@
 # Slicer Engine
 
-> **3D model slicing, in Rust.** One engine, four surfaces — CLI, WebSocket server, Angular UI (via WebAssembly), and a native desktop app (Tauri).
+🌐 **[Try the online slicer](https://max-scopp.github.io/slicer-engine/)** → no install, no account, works right now.
 
-A ground-up slicer that turns STL / OBJ / 3MF meshes into G-code for FFF 3D printers. Built on [Clipper2](https://github.com/AngusJohnson/Clipper2), bringing modern practice from Cura, PrusaSlicer, and SuperSlicer into a single, unified codebase.
+**Slice your 3D models instantly — in your browser, on your desktop, or on your own server. Your workflow, your choice.**
+
+Drop in an STL, OBJ, or 3MF and get print-ready G-code in seconds. One engine, three ways to run it:
+
+|                    | Where it runs                             | Setup                                                                   |
+| ------------------ | ----------------------------------------- | ----------------------------------------------------------------------- |
+| 🌐 **Web**         | Fully in your browser — nothing installed | None — [just open the link](https://max-scopp.github.io/slicer-engine/) |
+| 🖥️ **Desktop**     | Native app, runs entirely on your machine | Download & run                                                          |
+| ☁️ **Self-hosted** | Host it yourself, share with your team    | `cargo run -- serve`                                                    |
+
+Every mode uses the same slicing engine, so results are identical regardless of how you run it. In the browser, your files never leave your machine.
 
 📖 **Full documentation: [https://max-scopp.github.io/slicer-engine/docs/](https://max-scopp.github.io/slicer-engine/docs/)** — architecture, module guides, and contributor docs.
 
@@ -62,15 +72,15 @@ graph TB
     style G fill:#e1f5ff
 ```
 
-The same Rust core is compiled three ways — natively for CLI/server, to WebAssembly for the browser, and as a Tauri backend for the desktop — so previews and final output never disagree.
+The same engine runs in three different environments — on a server, compiled into the browser, and bundled into the desktop app — so slicing results are always identical regardless of where you run it.
 
-The Angular UI selects its **runtime mode** at startup:
+The UI selects its **runtime mode** at startup:
 
-| Mode     | Scene        | Slicing          | When               |
-| -------- | ------------ | ---------------- | ------------------ |
-| `cloud`  | WASM (local) | WebSocket server | Default web build  |
-| `web`    | WASM (local) | WASM (local)     | `web-slicer` build |
-| `native` | WASM (local) | Tauri IPC → Rust | Tauri desktop      |
+| Mode     | Where slicing happens | When               |
+| -------- | --------------------- | ------------------ |
+| `cloud`  | On your server        | Default web build  |
+| `web`    | In your browser       | `web-slicer` build |
+| `native` | On your desktop       | Desktop app        |
 
 See [Scene Engine](src/scene/README.md) and [Slicing Pipeline](src/core/README.md) for the contract.
 
@@ -111,7 +121,7 @@ Full reference → [Settings](src/settings/README.md) · [Config (TOML)](src/con
 
 ---
 
-## Web UI (cloud mode — Angular + server)
+## Self-hosted web UI
 
 ```bash
 # 1. Build WASM scene bindings
@@ -122,13 +132,15 @@ pnpm run ui:dev             # Angular dev server → http://localhost:4200
 cargo run --release -- serve # WebSocket/HTTP server → http://localhost:5201
 ```
 
-The default environment (`src/environments/environment.ts`) sets `runtimeMode: 'cloud'` so the UI sends slicing jobs to the local server while using WASM for scene management.
+The UI sends slicing jobs to the local server. Scene management runs in the browser for instant feedback.
 
 ---
 
-## Web UI (web mode — fully in-browser)
+## Browser slicer (no server needed)
 
-Includes the slicing pipeline in the WASM bundle. Requires a wasm-capable C++ toolchain (`clang++`) for `clipper2`.
+> **Live demo:** [https://max-scopp.github.io/slicer-engine/](https://max-scopp.github.io/slicer-engine/) — slice in your browser, no backend required.
+
+The full slicing pipeline runs in-browser. Building this locally requires a wasm-capable C++ toolchain (`clang++`) for the polygon clipping library.
 
 ```bash
 # Build the full WASM bundle (scene + slicer)
@@ -143,9 +155,9 @@ pnpm run ui:build:web-slicer
 
 ---
 
-## Desktop app (native mode — Tauri)
+## Desktop app
 
-Bundles the Angular UI and the full Rust engine into a native desktop application. No server required.
+Bundles the UI and the full slicing engine into a native desktop application. No server required.
 
 ```bash
 # Prerequisites: install Tauri CLI
@@ -159,7 +171,7 @@ pnpm run desktop:dev
 pnpm run desktop:build
 ```
 
-The desktop app detects `window.__TAURI__` at runtime and automatically activates `native` mode. Scene edits still use the shared WASM `SceneState` used by the browser UI; slicing receives that scene snapshot plus the selected model bytes over `tauri::invoke` and runs in the bundled native Rust engine.
+The desktop app automatically uses the bundled native engine for slicing, giving you full offline capability and the best performance. Scene management is shared with the browser UI, so the experience is identical.
 
 ---
 
@@ -194,7 +206,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for workflow, [AGENTS.md](AGENTS.md) for 
 
 ## Features
 
-STL / OBJ / 3MF input · Triangle-plane slicing · Arachne variable-width walls · Infill patterns (rectilinear, grid, honeycomb, gyroid, TPMS-D) · Multi-dialect G-code (Marlin, Klipper) · Custom start/end G-code · Lifecycle markers · Single source of truth scene engine (CLI / WS / WASM / Tauri share state) · Three runtime modes (cloud, web, native) · TOML config with deep merge · Per-object overrides · Cross-platform (Windows, macOS, Linux, browser, desktop).
+STL / OBJ / 3MF input · Variable-width walls (Arachne) · Infill patterns (rectilinear, grid, honeycomb, gyroid, TPMS-D) · G-code output for Marlin and Klipper printers · Custom start/end G-code · Per-object settings overrides · Layered config file with sensible defaults · Run in the browser, on the desktop, or self-hosted · Cross-platform (Windows, macOS, Linux).
 
 ---
 

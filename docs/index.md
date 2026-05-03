@@ -7,6 +7,9 @@ hero:
   tagline: One engine, three surfaces — CLI, WebSocket server, and Angular UI via WebAssembly. Built on Clipper2.
   actions:
     - theme: brand
+      text: Try Online — slice in your browser
+      link: https://max-scopp.github.io/slicer-engine/
+    - theme: alt
       text: Get Started
       link: /guide/
     - theme: alt
@@ -17,8 +20,10 @@ hero:
       link: https://github.com/max-scopp/slicer-engine
 
 features:
-  - title: One engine, three surfaces
-    details: The same Rust core powers the CLI, the WebSocket server, and the Angular UI via WebAssembly. No drift, no second source of truth — previews and final output agree by construction.
+  - title: Runs entirely in your browser
+    details: The web-slicer build compiles the full slicing pipeline — Arachne walls, infill, G-code — to WebAssembly. Drop in an STL, OBJ, or 3MF and get G-code back. No server, no install. Try it at max-scopp.github.io/slicer-engine/.
+  - title: One engine, four surfaces
+    details: The same Rust core powers the CLI, the WebSocket server, the Angular UI via WebAssembly, and a native Tauri desktop app. No drift, no second source of truth — previews and final output agree by construction.
   - title: Clipper2 under the hood
     details: Battle-tested polygon clipping for surfaces, infill boundaries, and wall offsets — wrapped in a clean Rust API and orchestrated by the slicing pipeline.
   - title: Scene engine SSOT
