@@ -55,7 +55,12 @@
                 "output": "/assets/monaco"
               }
             ],
-            "styles": ["src/styles/main.scss"]
+            "styles": ["src/styles/main.scss"],
+            "loader": {
+              ".ttf": "file",
+              ".woff": "file",
+              ".woff2": "file"
+            }
           },
           "configurations": {
             "production": {

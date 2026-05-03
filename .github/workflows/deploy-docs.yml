@@ -70,7 +70,7 @@ jobs:
         run: pnpm run hydrate:web-slicer
 
       - name: Build UI (web-slicer)
-        run: pnpm --filter slicer-ui build:web-slicer -- --base-href /slicer-engine/
+        run: pnpm --filter slicer-ui exec ng build --configuration web-slicer --base-href /slicer-engine/
 
       - name: Build with VitePress
         run: pnpm --filter slicer-engine-docs docs:build
