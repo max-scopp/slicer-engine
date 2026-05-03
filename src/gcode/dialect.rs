@@ -120,11 +120,16 @@ pub trait GcodeDialect: Send + Sync {
     /// 2 = chamber, 3 = auxiliary).  `speed` is a normalised fraction
     /// `0.0`–`1.0`.
     ///
+    /// `name_hint` is an optional dialect-specific fan name override.  The
+    /// Klipper dialect uses it to emit `SET_FAN_SPEED fan=<name_hint> …`
+    /// instead of the default name derived from `fan_index`; Marlin ignores it.
+    ///
     /// The default implementation emits Marlin-style `M106 P<n> S<value>`.
     /// Fan index 0 follows the `M107`/`M106 S<value>` convention (no explicit
     /// `P0`) to maximise firmware compatibility.  Other indices always include
     /// the explicit `P<n>`.
-    fn set_fan_speed_indexed(&self, fan_index: u8, speed: f64) -> String {
+    fn set_fan_speed_indexed(&self, fan_index: u8, name_hint: Option<&str>, speed: f64) -> String {
+        let _ = name_hint; // Marlin does not use fan names
         let s = (speed.clamp(0.0, 1.0) * 255.0).round() as u8;
         if fan_index == 0 {
             // P0 uses the conventional M107 / M106 S<val> form

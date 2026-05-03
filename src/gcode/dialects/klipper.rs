@@ -92,8 +92,11 @@ impl GcodeDialect for KlipperDialect {
 
     /// Klipper uses `SET_FAN_SPEED fan=<name> speed=<0.0–1.0>` instead of
     /// Marlin's `M106 P<n> S<0–255>`.
-    fn set_fan_speed_indexed(&self, fan_index: u8, speed: f64) -> String {
-        let name = Self::fan_name_for_index(fan_index);
+    ///
+    /// The fan name is resolved from `name_hint` first (custom printer config),
+    /// then falls back to the default name derived from `fan_index`.
+    fn set_fan_speed_indexed(&self, fan_index: u8, name_hint: Option<&str>, speed: f64) -> String {
+        let name = name_hint.unwrap_or_else(|| Self::fan_name_for_index(fan_index));
         let s = speed.clamp(0.0, 1.0);
         format!("SET_FAN_SPEED fan={} speed={:.4}", name, s)
     }

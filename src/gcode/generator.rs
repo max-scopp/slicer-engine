@@ -291,6 +291,8 @@ impl GcodeGenerator {
 
         // ── Per-layer contours ────────────────────────────────────────────────
         let mut e_total = 0.0_f64;
+        // Track previous fan speed per config index for rate limiting (aux overrides).
+        let mut prev_fan_speeds: Vec<Option<f64>> = vec![None; params.fan_configs.len()];
 
         for layer in layers {
             let z_str = format!("{:.3}", layer.z);
@@ -361,11 +363,27 @@ impl GcodeGenerator {
             // ── Adaptive fan speed ───────────────────────────────────────────
             if !params.fan_configs.is_empty() {
                 let layer_time = estimate_layer_time(layer, params.print_speed);
-                for fan in &params.fan_configs {
-                    let speed = fan.speed_for_layer_time(layer_time);
+                // Bridge detection: any path tagged Bridge triggers bridge boost on aux fans.
+                let has_bridges = layer
+                    .paths
+                    .iter()
+                    .enumerate()
+                    .any(|(i, _)| layer.role_for_path(i) == crate::core::ExtrusionRole::Bridge);
+
+                for (fan_idx, fan) in params.fan_configs.iter().enumerate() {
+                    let prev = prev_fan_speeds.get(fan_idx).copied().flatten();
+                    let speed = fan.compute_speed(layer_time, has_bridges, prev);
+                    // Store the emitted speed for the next layer's rate-limiting.
+                    if let Some(slot) = prev_fan_speeds.get_mut(fan_idx) {
+                        *slot = Some(speed);
+                    }
                     out.push_str(&format!(
                         "{}\n",
-                        self.dialect.set_fan_speed_indexed(fan.fan_index, speed)
+                        self.dialect.set_fan_speed_indexed(
+                            fan.fan_index,
+                            fan.klipper_name.as_deref(),
+                            speed
+                        )
                     ));
                 }
             }
@@ -1376,10 +1394,12 @@ mod tests {
         use crate::settings::params::FanConfig;
         let cfg = FanConfig {
             fan_index: 0,
+            klipper_name: None,
             min_speed: 0.35,
             max_speed: 1.0,
             layer_time_fast_s: 20.0,
             layer_time_slow_s: 20.0, // equal → degenerate
+            aux_overrides: None,
         };
         assert_eq!(cfg.speed_for_layer_time(0.0), cfg.max_speed);
         assert_eq!(cfg.speed_for_layer_time(20.0), cfg.max_speed);
@@ -1389,40 +1409,57 @@ mod tests {
     #[test]
     fn test_marlin_dialect_set_fan_speed_indexed_p0() {
         let d = MarlinDialect;
-        // P0 should use the M107 / M106 S<val> convention
-        assert_eq!(d.set_fan_speed_indexed(0, 0.0), "M107");
-        assert_eq!(d.set_fan_speed_indexed(0, 1.0), "M106 S255");
-        assert_eq!(d.set_fan_speed_indexed(0, 0.5), "M106 S128");
+        // P0 should use the M107 / M106 S<val> convention; name_hint is ignored
+        assert_eq!(d.set_fan_speed_indexed(0, None, 0.0), "M107");
+        assert_eq!(d.set_fan_speed_indexed(0, None, 1.0), "M106 S255");
+        assert_eq!(d.set_fan_speed_indexed(0, Some("rscs"), 0.5), "M106 S128");
     }
 
     #[test]
     fn test_marlin_dialect_set_fan_speed_indexed_p2() {
         let d = MarlinDialect;
-        // Indexed fans use M106 P<n> S<val>
-        assert_eq!(d.set_fan_speed_indexed(2, 0.0), "M106 P2 S0");
-        assert_eq!(d.set_fan_speed_indexed(2, 1.0), "M106 P2 S255");
-        assert_eq!(d.set_fan_speed_indexed(3, 0.6), "M106 P3 S153");
+        // Indexed fans use M106 P<n> S<val>; name_hint is ignored by Marlin
+        assert_eq!(d.set_fan_speed_indexed(2, None, 0.0), "M106 P2 S0");
+        assert_eq!(
+            d.set_fan_speed_indexed(2, Some("chamber"), 1.0),
+            "M106 P2 S255"
+        );
+        assert_eq!(d.set_fan_speed_indexed(3, None, 0.6), "M106 P3 S153");
     }
 
     #[test]
-    fn test_klipper_dialect_set_fan_speed_indexed() {
+    fn test_klipper_dialect_set_fan_speed_indexed_defaults() {
         let d = KlipperDialect;
         // P0 → fan, P1 → fan_hotend, P2 → fan_chamber, P3 → fan_aux
         assert_eq!(
-            d.set_fan_speed_indexed(0, 1.0),
+            d.set_fan_speed_indexed(0, None, 1.0),
             "SET_FAN_SPEED fan=fan speed=1.0000"
         );
         assert_eq!(
-            d.set_fan_speed_indexed(1, 0.0),
+            d.set_fan_speed_indexed(1, None, 0.0),
             "SET_FAN_SPEED fan=fan_hotend speed=0.0000"
         );
         assert_eq!(
-            d.set_fan_speed_indexed(2, 0.6),
+            d.set_fan_speed_indexed(2, None, 0.6),
             "SET_FAN_SPEED fan=fan_chamber speed=0.6000"
         );
         assert_eq!(
-            d.set_fan_speed_indexed(3, 0.6),
+            d.set_fan_speed_indexed(3, None, 0.6),
             "SET_FAN_SPEED fan=fan_aux speed=0.6000"
+        );
+    }
+
+    #[test]
+    fn test_klipper_dialect_set_fan_speed_indexed_custom_name() {
+        let d = KlipperDialect;
+        // name_hint overrides default fan name derivation
+        assert_eq!(
+            d.set_fan_speed_indexed(3, Some("rscs"), 0.8),
+            "SET_FAN_SPEED fan=rscs speed=0.8000"
+        );
+        assert_eq!(
+            d.set_fan_speed_indexed(0, Some("side_blast"), 0.5),
+            "SET_FAN_SPEED fan=side_blast speed=0.5000"
         );
     }
 
@@ -1477,17 +1514,21 @@ mod tests {
             fan_configs: vec![
                 FanConfig {
                     fan_index: 0,
+                    klipper_name: None,
                     min_speed: 0.0,
                     max_speed: 1.0,
                     layer_time_fast_s: 10.0,
                     layer_time_slow_s: 30.0,
+                    aux_overrides: None,
                 },
                 FanConfig {
                     fan_index: 2,
+                    klipper_name: None,
                     min_speed: 0.0,
                     max_speed: 0.6,
                     layer_time_fast_s: 10.0,
                     layer_time_slow_s: 30.0,
+                    aux_overrides: None,
                 },
             ],
             ..SlicingParams::default()
@@ -1516,17 +1557,21 @@ mod tests {
             fan_configs: vec![
                 FanConfig {
                     fan_index: 0,
+                    klipper_name: None,
                     min_speed: 0.0,
                     max_speed: 1.0,
                     layer_time_fast_s: 10.0,
                     layer_time_slow_s: 30.0,
+                    aux_overrides: None,
                 },
                 FanConfig {
                     fan_index: 2,
+                    klipper_name: None,
                     min_speed: 0.0,
                     max_speed: 0.6,
                     layer_time_fast_s: 10.0,
                     layer_time_slow_s: 30.0,
+                    aux_overrides: None,
                 },
             ],
             ..SlicingParams::default()
@@ -1540,6 +1585,38 @@ mod tests {
         assert!(
             gcode.contains("SET_FAN_SPEED fan=fan_chamber "),
             "expected chamber fan command in:\n{gcode}"
+        );
+    }
+
+    #[test]
+    fn test_generator_klipper_custom_fan_name() {
+        // RSCS with a custom klipper_name
+        use crate::settings::params::FanConfig;
+        use clipper2::Path;
+        let mut layer = SliceLayer::new(0.2);
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer.paths.push(square);
+
+        let params = SlicingParams {
+            fan_configs: vec![FanConfig {
+                fan_index: 3,
+                klipper_name: Some("rscs".to_string()),
+                min_speed: 0.3,
+                max_speed: 1.0,
+                layer_time_fast_s: 10.0,
+                layer_time_slow_s: 30.0,
+                aux_overrides: None,
+            }],
+            ..SlicingParams::default()
+        };
+        let gcode = GcodeGenerator::new(GcodeFlavor::Klipper).generate(&[layer], &params);
+        assert!(
+            gcode.contains("SET_FAN_SPEED fan=rscs "),
+            "expected custom fan name 'rscs' in:\n{gcode}"
+        );
+        assert!(
+            !gcode.contains("fan_aux"),
+            "should NOT use default fan_aux name when klipper_name is set"
         );
     }
 
@@ -1559,5 +1636,244 @@ mod tests {
         layer.paths.push(path);
         let t = estimate_layer_time(&layer, 60.0);
         assert!((t - 1.0).abs() < 1e-9, "expected ~1.0 s, got {t}");
+    }
+
+    // ── AuxFanOverrides ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_aux_fan_compute_speed_no_boost_no_bridge() {
+        use crate::settings::params::{AuxFanOverrides, FanConfig};
+        // Long layer → min speed, no bridge, no boost applied
+        let cfg = FanConfig {
+            fan_index: 3,
+            klipper_name: None,
+            min_speed: 0.2,
+            max_speed: 0.8,
+            layer_time_fast_s: 10.0,
+            layer_time_slow_s: 30.0,
+            aux_overrides: Some(AuxFanOverrides {
+                bridge_boost: 0.3,
+                short_layer_boost: 0.2,
+                boost_max_speed: 0.95,
+                speed_scale: 1.0,
+                max_speed_limit: 1.0,
+                max_speed_change_per_layer: 1.0, // effectively no rate limit
+            }),
+        };
+        // 30 s → min_speed (0.2), no triggers → result stays 0.2
+        let s = cfg.compute_speed(30.0, false, None);
+        assert!((s - 0.2).abs() < 1e-9, "expected min_speed 0.2, got {s}");
+    }
+
+    #[test]
+    fn test_aux_fan_bridge_boost_applied_and_capped() {
+        use crate::settings::params::{AuxFanOverrides, FanConfig};
+        let cfg = FanConfig {
+            fan_index: 3,
+            klipper_name: None,
+            min_speed: 0.2,
+            max_speed: 0.5,
+            layer_time_fast_s: 10.0,
+            layer_time_slow_s: 30.0,
+            aux_overrides: Some(AuxFanOverrides {
+                bridge_boost: 0.6, // would exceed cap alone
+                short_layer_boost: 0.0,
+                boost_max_speed: 0.8, // cap at 0.8
+                speed_scale: 1.0,
+                max_speed_limit: 1.0,
+                max_speed_change_per_layer: 1.0,
+            }),
+        };
+        // Layer time = 20 s (mid-range) → base ≈ 0.35
+        // bridge boost → 0.35 + 0.6 = 0.95, capped at 0.8
+        let base = cfg.speed_for_layer_time(20.0);
+        let s = cfg.compute_speed(20.0, true, None);
+        assert!(
+            s <= 0.8 + 1e-9,
+            "bridge-boosted speed {s} must not exceed boost_max_speed 0.8 (base was {base})"
+        );
+        assert!(
+            s > base + 0.1,
+            "bridge boost should visibly increase speed above base {base}"
+        );
+    }
+
+    #[test]
+    fn test_aux_fan_short_layer_boost() {
+        use crate::settings::params::{AuxFanOverrides, FanConfig};
+        let cfg = FanConfig {
+            fan_index: 3,
+            klipper_name: None,
+            min_speed: 0.2,
+            max_speed: 0.6,
+            layer_time_fast_s: 10.0,
+            layer_time_slow_s: 30.0,
+            aux_overrides: Some(AuxFanOverrides {
+                bridge_boost: 0.0,
+                short_layer_boost: 0.3,
+                boost_max_speed: 1.0,
+                speed_scale: 1.0,
+                max_speed_limit: 1.0,
+                max_speed_change_per_layer: 1.0,
+            }),
+        };
+        // Layer time ≤ fast threshold → base = max_speed (0.6); short-layer boost adds 0.3 → 0.9
+        let s = cfg.compute_speed(5.0, false, None);
+        assert!(
+            (s - 0.9).abs() < 1e-9,
+            "expected short-layer-boosted speed 0.9, got {s}"
+        );
+    }
+
+    #[test]
+    fn test_aux_fan_speed_scale_applied() {
+        use crate::settings::params::{AuxFanOverrides, FanConfig};
+        let cfg = FanConfig {
+            fan_index: 3,
+            klipper_name: None,
+            min_speed: 0.0,
+            max_speed: 1.0,
+            layer_time_fast_s: 10.0,
+            layer_time_slow_s: 30.0,
+            aux_overrides: Some(AuxFanOverrides {
+                bridge_boost: 0.0,
+                short_layer_boost: 0.0,
+                boost_max_speed: 1.0,
+                speed_scale: 0.5, // halve the computed speed
+                max_speed_limit: 1.0,
+                max_speed_change_per_layer: 1.0,
+            }),
+        };
+        // Short layer → base = 1.0 × 0.5 = 0.5
+        let s = cfg.compute_speed(5.0, false, None);
+        assert!(
+            (s - 0.5).abs() < 1e-9,
+            "expected 0.5 after speed_scale, got {s}"
+        );
+    }
+
+    #[test]
+    fn test_aux_fan_max_speed_limit_enforced() {
+        use crate::settings::params::{AuxFanOverrides, FanConfig};
+        let cfg = FanConfig {
+            fan_index: 3,
+            klipper_name: None,
+            min_speed: 0.0,
+            max_speed: 1.0,
+            layer_time_fast_s: 10.0,
+            layer_time_slow_s: 30.0,
+            aux_overrides: Some(AuxFanOverrides {
+                bridge_boost: 0.0,
+                short_layer_boost: 0.0,
+                boost_max_speed: 1.0,
+                speed_scale: 1.0,
+                max_speed_limit: 0.6, // material safety cap
+                max_speed_change_per_layer: 1.0,
+            }),
+        };
+        // max_speed = 1.0, but material safety cap at 0.6
+        let s = cfg.compute_speed(5.0, false, None);
+        assert!(
+            (s - 0.6).abs() < 1e-9,
+            "expected max_speed_limit 0.6 to be enforced, got {s}"
+        );
+    }
+
+    #[test]
+    fn test_aux_fan_rate_limiter_clamps_increase() {
+        use crate::settings::params::{AuxFanOverrides, FanConfig};
+        let cfg = FanConfig {
+            fan_index: 3,
+            klipper_name: None,
+            min_speed: 0.0,
+            max_speed: 1.0,
+            layer_time_fast_s: 10.0,
+            layer_time_slow_s: 30.0,
+            aux_overrides: Some(AuxFanOverrides {
+                bridge_boost: 0.0,
+                short_layer_boost: 0.0,
+                boost_max_speed: 1.0,
+                speed_scale: 1.0,
+                max_speed_limit: 1.0,
+                max_speed_change_per_layer: 0.15, // max 15% change
+            }),
+        };
+        // Prev = 0.0, target = 1.0. Rate limit → max 0.15.
+        let s = cfg.compute_speed(5.0, false, Some(0.0));
+        assert!(
+            (s - 0.15).abs() < 1e-9,
+            "expected rate-limited speed 0.15, got {s}"
+        );
+    }
+
+    #[test]
+    fn test_aux_fan_rate_limiter_clamps_decrease() {
+        use crate::settings::params::{AuxFanOverrides, FanConfig};
+        let cfg = FanConfig {
+            fan_index: 3,
+            klipper_name: None,
+            min_speed: 0.0,
+            max_speed: 0.1,
+            layer_time_fast_s: 10.0,
+            layer_time_slow_s: 30.0,
+            aux_overrides: Some(AuxFanOverrides {
+                bridge_boost: 0.0,
+                short_layer_boost: 0.0,
+                boost_max_speed: 1.0,
+                speed_scale: 1.0,
+                max_speed_limit: 1.0,
+                max_speed_change_per_layer: 0.15,
+            }),
+        };
+        // Prev = 0.9, target = 0.1 (slow layer). Rate limit → min 0.9 - 0.15 = 0.75.
+        let s = cfg.compute_speed(30.0, false, Some(0.9));
+        assert!(
+            (s - 0.75).abs() < 1e-9,
+            "expected rate-limited speed 0.75, got {s}"
+        );
+    }
+
+    #[test]
+    fn test_generator_aux_fan_bridge_boost_on_bridge_layer() {
+        // A layer with Bridge paths should trigger bridge_boost on aux fan.
+        use crate::settings::params::{AuxFanOverrides, FanConfig};
+        use clipper2::Path;
+        let mut layer = SliceLayer::new(0.2);
+        let sq: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer.paths.push(sq);
+        layer.path_roles.push(crate::core::ExtrusionRole::Bridge);
+
+        // Aux fan with very distinctive bridge_boost speed so we can assert it's used
+        let params = SlicingParams {
+            fan_configs: vec![FanConfig {
+                fan_index: 3,
+                klipper_name: Some("rscs".to_string()),
+                min_speed: 0.0,
+                max_speed: 0.0, // base is 0 for very long layers
+                layer_time_fast_s: 0.0,
+                layer_time_slow_s: 0.001, // force min_speed regime
+                aux_overrides: Some(AuxFanOverrides {
+                    bridge_boost: 0.8, // distinctive value
+                    short_layer_boost: 0.0,
+                    boost_max_speed: 0.8,
+                    speed_scale: 1.0,
+                    max_speed_limit: 1.0,
+                    max_speed_change_per_layer: 1.0,
+                }),
+            }],
+            ..SlicingParams::default()
+        };
+        let gcode = GcodeGenerator::new(GcodeFlavor::Klipper).generate(&[layer], &params);
+        // The bridge boost should push the speed to 0.8 (204/255 ≈ S204 in Marlin,
+        // but we're checking Klipper which uses fractional speed)
+        assert!(
+            gcode.contains("SET_FAN_SPEED fan=rscs"),
+            "expected rscs fan command in:\n{gcode}"
+        );
+        // Speed should reflect the boost, not zero
+        assert!(
+            !gcode.contains("speed=0.0000"),
+            "bridge boost should raise speed above 0 in:\n{gcode}"
+        );
     }
 }
