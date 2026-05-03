@@ -1216,6 +1216,9 @@ mod tests {
                 infill_angle: 0.0,
                 nozzle_diameter_mm,
                 bridge_flow_ratio,
+                bridge_min_area_mm2: 0.0,
+                bridge_noise_filter_mm: 0.0,
+                bridge_anchor_mm: 0.0,
             },
             None,
         );
@@ -1434,6 +1437,213 @@ mod tests {
             "Infill with gap ({} paths) should not have more paths than no-gap ({} paths)",
             gap_count,
             no_gap_count
+        );
+    }
+
+    // ── Bridge filter pipeline (issue: noisy bridges & overhang walls) ──────
+
+    /// A tiny sliver of unsupported area (sub-mm) must be reclassified as
+    /// `BottomSurface`, not `Bridge`, when `bridge_min_area_mm2` is set.
+    #[test]
+    fn test_bridge_min_area_filter_reclassifies_tiny_sliver() {
+        use crate::core::surfaces::{generate_top_bottom_surfaces_with_interior, SurfaceConfig};
+        use clipper2::Path;
+
+        // Layer 0: 10×10 square minus a 0.5×0.5 mm cut-out at the corner (so
+        // layer 1 has a 0.25 mm² unsupported sliver). Easiest: make layer 0
+        // slightly smaller than layer 1.
+        let mut layer0 = SliceLayer::new(0.2);
+        // 10×10 minus a 0.5mm corner = covers everything except a 0.5×0.5 corner
+        let l_shape: Path = vec![
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 9.5),
+            (9.5, 9.5),
+            (9.5, 10.0),
+            (0.0, 10.0),
+        ]
+        .into();
+        layer0.paths.push(l_shape);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+
+        // Layer 1: full 10×10 square
+        let mut layer1 = SliceLayer::new(0.4);
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer1.paths.push(square);
+        layer1.path_roles.push(ExtrusionRole::OuterWall);
+
+        let mut layers = vec![layer0, layer1];
+
+        // Min-area filter at 1.0 mm² is well above the 0.25 mm² sliver.
+        // Disable the noise filter / anchor so we isolate the area test.
+        generate_top_bottom_surfaces_with_interior(
+            &mut layers,
+            &SurfaceConfig {
+                top_layers: 0,
+                bottom_layers: 1,
+                layer_height: 0.2,
+                infill_angle: 45.0,
+                nozzle_diameter_mm: 0.4,
+                bridge_flow_ratio: 0.8,
+                bridge_min_area_mm2: 1.0,
+                bridge_noise_filter_mm: 0.0,
+                bridge_anchor_mm: 0.0,
+            },
+            None,
+        );
+
+        let layer1 = &layers[1];
+        let has_bridge = layer1.path_roles.contains(&ExtrusionRole::Bridge);
+        assert!(
+            !has_bridge,
+            "0.25mm² sliver must NOT be classified as Bridge with min_area=1.0: roles={:?}",
+            layer1.path_roles
+        );
+    }
+
+    /// The morphological-opening filter must wipe out a thread-thin spur
+    /// connecting two larger unsupported regions, while preserving the
+    /// larger regions themselves.
+    #[test]
+    fn test_bridge_noise_filter_removes_thin_spurs() {
+        use crate::core::surfaces::{generate_top_bottom_surfaces_with_interior, SurfaceConfig};
+        use clipper2::Path;
+
+        // Layer 0: support strip in the middle. Layer 1 covers more →
+        // unsupported region is the area outside the strip.
+        let mut layer0 = SliceLayer::new(0.2);
+        let support: Path = vec![(0.0, 4.95), (10.0, 4.95), (10.0, 5.05), (0.0, 5.05)].into();
+        layer0.paths.push(support);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+
+        // Layer 1: full 10×10 square. Without the support's tiny 0.1mm
+        // height, the entire layer 1 would be a big bridge. Verify the
+        // opening filter hammers down the thinness and the result is small.
+        let mut layer1 = SliceLayer::new(0.4);
+        let sq: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer1.paths.push(sq);
+        layer1.path_roles.push(ExtrusionRole::OuterWall);
+
+        let mut layers = vec![layer0, layer1];
+
+        // A 0.5 mm opening filter is easily larger than the 0.1mm-wide
+        // sub-pixel artefacts but smaller than the genuine 4.95mm-wide
+        // unsupported zones, so the genuine bridges survive.
+        generate_top_bottom_surfaces_with_interior(
+            &mut layers,
+            &SurfaceConfig {
+                top_layers: 0,
+                bottom_layers: 1,
+                layer_height: 0.2,
+                infill_angle: 0.0,
+                nozzle_diameter_mm: 0.4,
+                bridge_flow_ratio: 0.8,
+                bridge_min_area_mm2: 0.0,
+                bridge_noise_filter_mm: 0.5,
+                bridge_anchor_mm: 0.0,
+            },
+            None,
+        );
+
+        // Both genuine bridge halves (≈4.95×10 each = 49.5mm² each) must
+        // survive the 0.5mm opening filter.
+        let bridge_count = layers[1]
+            .path_roles
+            .iter()
+            .filter(|r| **r == ExtrusionRole::Bridge)
+            .count();
+        assert!(
+            bridge_count > 0,
+            "Genuine wide unsupported regions must still be classified as Bridge"
+        );
+    }
+
+    /// `bridge_anchor_mm` must dilate the unsupported region into the
+    /// supported area, increasing the area filled with bridge infill.
+    #[test]
+    fn test_bridge_anchor_expands_into_supported_area() {
+        use crate::core::surfaces::{generate_top_bottom_surfaces_with_interior, SurfaceConfig};
+        use clipper2::Path;
+
+        // Layer 0: 1×10 support strip on the left
+        let strip: Path = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 10.0), (0.0, 10.0)].into();
+        // Layer 1: full 10×10 square (9mm unsupported gap)
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+
+        let mut layers_no_anchor = vec![SliceLayer::new(0.2), SliceLayer::new(0.4)];
+        layers_no_anchor[0].paths.push(strip.clone());
+        layers_no_anchor[0]
+            .path_roles
+            .push(ExtrusionRole::OuterWall);
+        layers_no_anchor[1].paths.push(square.clone());
+        layers_no_anchor[1]
+            .path_roles
+            .push(ExtrusionRole::OuterWall);
+
+        let mut layers_anchor = vec![SliceLayer::new(0.2), SliceLayer::new(0.4)];
+        layers_anchor[0].paths.push(strip);
+        layers_anchor[0].path_roles.push(ExtrusionRole::OuterWall);
+        layers_anchor[1].paths.push(square);
+        layers_anchor[1].path_roles.push(ExtrusionRole::OuterWall);
+
+        let cfg = |anchor| SurfaceConfig {
+            top_layers: 0,
+            bottom_layers: 1,
+            layer_height: 0.2,
+            infill_angle: 0.0,
+            nozzle_diameter_mm: 0.4,
+            bridge_flow_ratio: 0.8,
+            bridge_min_area_mm2: 0.0,
+            bridge_noise_filter_mm: 0.0,
+            bridge_anchor_mm: anchor,
+        };
+
+        generate_top_bottom_surfaces_with_interior(&mut layers_no_anchor, &cfg(0.0), None);
+        generate_top_bottom_surfaces_with_interior(&mut layers_anchor, &cfg(2.0), None);
+
+        // The anchored bridge region must enclose more layer-1 area than the
+        // un-anchored one (it bites 2mm into the supported strip on the left).
+        let bridge_area = |layers: &[SliceLayer]| -> f64 {
+            // solid_regions includes Bridge by design.
+            layers[1].solid_regions.signed_area().abs()
+        };
+        let no_anchor = bridge_area(&layers_no_anchor);
+        let with_anchor = bridge_area(&layers_anchor);
+        assert!(
+            with_anchor > no_anchor + 1.0,
+            "anchor expansion must add at least ~1mm² of bridge area (no_anchor={} with_anchor={})",
+            no_anchor,
+            with_anchor
+        );
+    }
+
+    /// `unsupported_regions` must be populated on each layer (except layer 0)
+    /// so the wall-classification post-pass can use it.
+    #[test]
+    fn test_unsupported_regions_field_is_populated() {
+        use clipper2::Path;
+
+        let mut layer0 = SliceLayer::new(0.2);
+        let strip: Path = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 10.0), (0.0, 10.0)].into();
+        layer0.paths.push(strip);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+
+        let mut layer1 = SliceLayer::new(0.4);
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer1.paths.push(square);
+        layer1.path_roles.push(ExtrusionRole::OuterWall);
+
+        let mut layers = vec![layer0, layer1];
+        generate_top_bottom_surfaces(&mut layers, 0, 1, 0.2, 45.0);
+
+        assert!(
+            layers[0].unsupported_regions.is_empty(),
+            "Layer 0 must have empty unsupported_regions (no layer below)"
+        );
+        let area1 = layers[1].unsupported_regions.signed_area().abs();
+        assert!(
+            (area1 - 90.0).abs() < 0.5,
+            "Layer 1 unsupported area should be ~90 mm² (10×10 minus 1×10 strip), got {area1}"
         );
     }
 }

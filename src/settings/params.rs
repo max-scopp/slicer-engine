@@ -422,6 +422,47 @@ gap with less sag.
     pub bridge_flow_ratio: f64,
 
     #[schemars(
+        description = "Minimum area in mm² for an unsupported region to be classified as a bridge.
+
+Tiny slivers of unsupported area (caused by sub-millimetre layer-to-layer wall
+jitter on features like embossed text or fine ridges) below this threshold are
+classified as ordinary `BottomSurface` solid infill instead of `Bridge`.  This
+matches OrcaSlicer's `min_bridge_area` filter and prevents stippling of the
+preview with one-line bridge fragments.
+**Default:** 1.0 mm² (≈ a 1 × 1 mm sliver). Set to `0.0` to disable.",
+        extend("x-group" = "Quality")
+    )]
+    #[serde(default = "SlicingParams::default_bridge_min_area_mm2")]
+    pub bridge_min_area_mm2: f64,
+
+    #[schemars(
+        description = "Morphological-opening radius in mm applied to bridge regions.
+
+The unsupported area is eroded inward by this amount and then dilated back —
+removing thin slivers and filament-thin connecting strands that arise from
+sub-pixel layer-to-layer geometry differences.  Cleans up the noisy bridges
+that show up around fine surface features (e.g. Benchy's embossed name).
+**Default:** 0.15 mm (≈ ⅓ of a 0.4 mm nozzle).  Set to `0.0` to disable.",
+        extend("x-group" = "Quality")
+    )]
+    #[serde(default = "SlicingParams::default_bridge_noise_filter_mm")]
+    pub bridge_noise_filter_mm: f64,
+
+    #[schemars(
+        description = "Anchor expansion length in mm at each end of every bridge.
+
+After detecting the unsupported region, it is dilated by this amount and
+re-clipped to the layer footprint so each bridge strand bites into the
+adjacent supported solid material.  Without this the bridge ends mid-air at
+the wall edge instead of being anchored, causing droopy strands.  Matches
+PrusaSlicer / OrcaSlicer `bridge_anchor` behaviour.
+**Default:** 2.0 mm.  Set to `0.0` to disable anchoring.",
+        extend("x-group" = "Quality")
+    )]
+    #[serde(default = "SlicingParams::default_bridge_anchor_mm")]
+    pub bridge_anchor_mm: f64,
+
+    #[schemars(
         description = "Speed for top and bottom solid surface infill in mm/s.
 
 Slightly slower than infill to improve surface finish.
@@ -684,6 +725,9 @@ impl Default for SlicingParams {
             infill_speed: Self::default_infill_speed(),
             bridge_speed: Self::default_bridge_speed(),
             bridge_flow_ratio: Self::default_bridge_flow_ratio(),
+            bridge_min_area_mm2: Self::default_bridge_min_area_mm2(),
+            bridge_noise_filter_mm: Self::default_bridge_noise_filter_mm(),
+            bridge_anchor_mm: Self::default_bridge_anchor_mm(),
             top_surface_speed: Self::default_top_surface_speed(),
             first_layer_speed: Self::default_first_layer_speed(),
             fan_speed: Self::default_fan_speed(),
@@ -760,6 +804,18 @@ impl SlicingParams {
 
     fn default_bridge_flow_ratio() -> f64 {
         0.8
+    }
+
+    fn default_bridge_min_area_mm2() -> f64 {
+        1.0
+    }
+
+    fn default_bridge_noise_filter_mm() -> f64 {
+        0.15
+    }
+
+    fn default_bridge_anchor_mm() -> f64 {
+        2.0
     }
 
     fn default_top_surface_speed() -> f64 {

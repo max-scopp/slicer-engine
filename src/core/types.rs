@@ -12,6 +12,13 @@ pub enum ExtrusionRole {
     OuterWall,
     /// Inner perimeter / wall contours.
     InnerWall,
+    /// Perimeter (outer or inner) that crosses unsupported air below it.
+    ///
+    /// Treated as a bridge in the G-code generator (slow speed, reduced flow,
+    /// high fan cooling) so the wall strand cools and tensions before the
+    /// next layer lands on it.  Unlike [`Self::Bridge`] (which is bridge
+    /// **infill** spanning a gap), this is a **wall** path printed in air.
+    OverhangPerimeter,
     /// Sparse infill pattern (low-density interior fill).
     Infill,
     /// Bridge extrusion spanning a gap with no support below.
@@ -36,6 +43,7 @@ impl ExtrusionRole {
         match self {
             Self::OuterWall => "Outer wall",
             Self::InnerWall => "Inner wall",
+            Self::OverhangPerimeter => "Overhang wall",
             Self::Infill => "Sparse infill",
             Self::Bridge => "Bridge",
             Self::TopSurface => "Top surface",
@@ -52,6 +60,7 @@ impl ExtrusionRole {
         match self {
             Self::OuterWall
             | Self::InnerWall
+            | Self::OverhangPerimeter
             | Self::Infill
             | Self::Bridge
             | Self::TopSurface
@@ -86,6 +95,20 @@ pub struct SliceLayer {
     /// [`add_infill_to_layers`] to prevent sparse infill from being placed on
     /// areas already filled with solid top/bottom surface infill.
     pub solid_regions: Paths,
+    /// The unsupported area on this layer — portions of the layer footprint
+    /// that have no solid material directly below them in the previous layer.
+    ///
+    /// Populated by [`generate_top_bottom_surfaces`] (its surface-detection
+    /// pass already computes this).  Used after surface generation to
+    /// classify wall paths that cross air as
+    /// [`ExtrusionRole::OverhangPerimeter`].
+    ///
+    /// This is the *raw* unsupported area — it includes the area covered by
+    /// the perimeter walls themselves, **before** clipping to the wall
+    /// interior.  This is intentional: an overhanging wall path lies on the
+    /// perimeter of the layer, so detecting it requires the full footprint
+    /// view rather than just the inside-the-walls interior.
+    pub unsupported_regions: Paths,
 }
 
 impl SliceLayer {
@@ -97,6 +120,7 @@ impl SliceLayer {
             path_roles: Vec::new(),
             path_widths: Vec::new(),
             solid_regions: Paths::default(),
+            unsupported_regions: Paths::default(),
         }
     }
 

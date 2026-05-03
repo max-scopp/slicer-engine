@@ -55,11 +55,13 @@ classDiagram
         +path_roles: Vec~ExtrusionRole~
         +path_widths: Vec~Option~f64~~
         +solid_regions: Paths
+        +unsupported_regions: Paths
     }
     class ExtrusionRole {
         <<enum>>
         OuterWall
         InnerWall
+        OverhangPerimeter
         Infill
         Bridge
         TopSurface
@@ -73,7 +75,10 @@ classDiagram
 `paths`, `path_roles`, and `path_widths` are parallel arrays — index `i`
 identifies the same emitted contour across all three. `solid_regions` is a
 union of every top / bottom surface area on this layer; sparse infill
-subtracts from it to avoid double-printing.
+subtracts from it to avoid double-printing. `unsupported_regions` is the raw
+layer footprint that has nothing solid in the layer below; the wall-
+classification post-pass uses it to flag walls printed in air as
+`OverhangPerimeter`.
 
 ---
 
@@ -88,10 +93,43 @@ flowchart TD
     S3 -->|otherwise| W
     SN --> W[apply_single_wall_restrictions<br/>per-island]
     W --> I[interior_regions<br/>= calculate_interior_region per layer]
-    I --> SF[generate_top_bottom_surfaces_with_interior]
-    SF --> IN[add_infill_to_layers<br/>uses pre-strip regions − solid_regions]
+    I --> SF[generate_top_bottom_surfaces_with_interior<br/>3-stage bridge filter + PCA angle]
+    SF --> OV[classify_overhang_perimeters<br/>walls in air → OverhangPerimeter]
+    OV --> IN[add_infill_to_layers<br/>uses pre-strip regions − solid_regions]
     IN --> L[Vec~SliceLayer~]
 ```
+
+### Bridge & overhang quality
+
+Bridge detection lives inside `generate_top_bottom_surfaces_with_interior`
+and runs a three-stage filter on the raw "footprint with no support below"
+region (matching OrcaSlicer / PrusaSlicer behaviour):
+
+1. **Morphological opening** (`bridge_noise_filter_mm`, default 0.15 mm) —
+   erode then dilate to wipe out thin slivers and hair-fine connecting
+   strands caused by sub-pixel layer-to-layer geometry differences (the
+   "Benchy embossed text" stippling pattern).
+2. **Minimum-area filter** (`bridge_min_area_mm2`, default 1.0 mm²) — drop
+   surviving islands smaller than the threshold; they get reclassified as
+   ordinary `BottomSurface` so the layer remains fully solid below the gap.
+3. **Anchor expansion** (`bridge_anchor_mm`, default 2.0 mm) — dilate the
+   surviving regions outward and clip back to the layer's full footprint
+   so each strand bites into the supported solid material on either side
+   of the gap instead of ending mid-air.
+
+Bridge **direction** uses principal-axis analysis (PCA) of the unsupported
+region. Strands print perpendicular to the dominant axis so the shortest
+possible span is bridged, even when the gap is rotated relative to the
+print bed. Falls back to bounding-box short-axis when the region is
+square / circular.
+
+After surfaces are assigned, `classify_overhang_perimeters` re-tags each
+`OuterWall` / `InnerWall` whose centerline is ≥ 50% inside the layer's
+`unsupported_regions` as `OverhangPerimeter`. Those paths inherit the
+bridge speed (`bridge_speed`) and reduced-flow width
+(`nozzle_diameter_mm × bridge_flow_ratio`) in the G-code generator and
+trigger the bridge fan boost via `has_bridges`. This eliminates sagging
+walls printed across windows, slots, and similar mid-air features.
 
 Two things to note:
 

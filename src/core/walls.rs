@@ -202,3 +202,151 @@ fn remove_inner_walls_from_layer(layer: &mut SliceLayer) {
     layer.path_roles = new_roles;
     layer.path_widths = new_widths;
 }
+
+/// Classify wall paths whose centerline lies mostly inside an unsupported
+/// region as [`ExtrusionRole::OverhangPerimeter`].
+///
+/// A wall (`OuterWall` or `InnerWall`) is reclassified when at least
+/// `OVERHANG_VERTEX_THRESHOLD` (50%) of its vertices fall inside the layer's
+/// `unsupported_regions` polygon set (even-odd rule).  The classification
+/// runs **after** [`generate_top_bottom_surfaces_with_interior`] so that
+/// `unsupported_regions` is populated; it operates on whole paths only —
+/// path splitting at the supported/unsupported boundary is left for a
+/// future enhancement.
+///
+/// Without this step, a wall printed in mid-air (the top frame of the
+/// Benchy steering-wheel window, for example) carries the normal wall
+/// speed and 100% flow, which sags badly.  After this step it is treated
+/// as a bridge by the G-code generator (slow speed, reduced flow, fan
+/// boost) so it lands cleanly on the supported anchor at each end.
+pub(crate) fn classify_overhang_perimeters(layers: &mut [SliceLayer]) {
+    /// Minimum fraction of a wall path's vertices that must lie in air for
+    /// the whole path to be reclassified as `OverhangPerimeter`.
+    const OVERHANG_VERTEX_THRESHOLD: f64 = 0.5;
+
+    for layer in layers.iter_mut() {
+        if layer.unsupported_regions.is_empty() {
+            continue;
+        }
+        let air = layer.unsupported_regions.clone();
+
+        // Make sure path_roles is at least as long as paths so we can write
+        // back without panicking.  Defaults preserve existing behaviour.
+        while layer.path_roles.len() < layer.paths.len() {
+            layer.path_roles.push(ExtrusionRole::OuterWall);
+        }
+
+        for (i, path) in layer.paths.iter().enumerate() {
+            let role = layer.path_roles[i];
+            if role != ExtrusionRole::OuterWall && role != ExtrusionRole::InnerWall {
+                continue;
+            }
+            let mut total = 0_usize;
+            let mut inside = 0_usize;
+            for pt in path.iter() {
+                total += 1;
+                if point_in_paths_eo(pt.x(), pt.y(), &air) {
+                    inside += 1;
+                }
+            }
+            if total > 0 && (inside as f64) / (total as f64) >= OVERHANG_VERTEX_THRESHOLD {
+                layer.path_roles[i] = ExtrusionRole::OverhangPerimeter;
+            }
+        }
+    }
+}
+
+/// Even-odd point-in-polygon test against a `Paths` set.
+///
+/// Returns `true` when the point lies inside an *odd* number of sub-paths,
+/// matching Clipper2's `EvenOdd` fill rule (so nested holes are correctly
+/// excluded).  Boundary points count as inside.
+fn point_in_paths_eo(x: f64, y: f64, paths: &Paths) -> bool {
+    let mut inside_count = 0_usize;
+    for path in paths.iter() {
+        let result = clipper2::point_in_polygon(clipper2::Point::new(x, y), path);
+        match result {
+            clipper2::PointInPolygonResult::IsInside | clipper2::PointInPolygonResult::IsOn => {
+                inside_count += 1;
+            }
+            clipper2::PointInPolygonResult::IsOutside => {}
+        }
+    }
+    inside_count % 2 == 1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clipper2::{Path, Paths};
+
+    /// A wall path entirely inside the unsupported region must be reclassified
+    /// as `OverhangPerimeter`.
+    #[test]
+    fn test_classify_overhang_perimeters_in_air() {
+        // 5×5 wall path centred at (5, 5).
+        let wall: Path = vec![(2.5, 2.5), (7.5, 2.5), (7.5, 7.5), (2.5, 7.5)].into();
+        let mut layer = SliceLayer::new(0.4);
+        layer.paths.push(wall);
+        layer.path_roles.push(ExtrusionRole::OuterWall);
+
+        // Unsupported region: the entire 10×10 layer footprint is in air.
+        let air: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer.unsupported_regions = Paths::new(vec![air]);
+
+        let mut layers = vec![layer];
+        classify_overhang_perimeters(&mut layers);
+
+        assert_eq!(
+            layers[0].path_roles[0],
+            ExtrusionRole::OverhangPerimeter,
+            "Wall fully in air must be reclassified to OverhangPerimeter"
+        );
+    }
+
+    /// A wall path entirely outside the unsupported region must keep its
+    /// original role.
+    #[test]
+    fn test_classify_overhang_perimeters_keeps_supported_walls() {
+        // Wall path at (0..2, 0..2)
+        let wall: Path = vec![(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)].into();
+        let mut layer = SliceLayer::new(0.4);
+        layer.paths.push(wall);
+        layer.path_roles.push(ExtrusionRole::InnerWall);
+
+        // Unsupported region is far away (5..10, 5..10) — wall is fully supported.
+        let air: Path = vec![(5.0, 5.0), (10.0, 5.0), (10.0, 10.0), (5.0, 10.0)].into();
+        layer.unsupported_regions = Paths::new(vec![air]);
+
+        let mut layers = vec![layer];
+        classify_overhang_perimeters(&mut layers);
+
+        assert_eq!(
+            layers[0].path_roles[0],
+            ExtrusionRole::InnerWall,
+            "Supported wall must keep its InnerWall role"
+        );
+    }
+
+    /// Non-wall roles (Infill, Bridge, …) must never be reclassified, even when
+    /// they happen to lie inside `unsupported_regions`.
+    #[test]
+    fn test_classify_overhang_perimeters_skips_non_wall_roles() {
+        let path: Path = vec![(2.5, 2.5), (7.5, 2.5), (7.5, 7.5), (2.5, 7.5)].into();
+        let mut layer = SliceLayer::new(0.4);
+        layer.paths.push(path);
+        layer.path_roles.push(ExtrusionRole::Infill);
+
+        let air: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer.unsupported_regions = Paths::new(vec![air]);
+
+        let mut layers = vec![layer];
+        classify_overhang_perimeters(&mut layers);
+
+        assert_eq!(
+            layers[0].path_roles[0],
+            ExtrusionRole::Infill,
+            "Infill paths must never be reclassified as OverhangPerimeter"
+        );
+    }
+}

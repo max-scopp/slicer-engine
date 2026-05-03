@@ -39,9 +39,15 @@ pub(super) enum Role {
 impl Role {
     pub(super) fn from_type_comment(s: &str) -> Self {
         let lower = s.to_ascii_lowercase();
-        // Check bridge before any "bottom" test so "Bridge" isn't confused with
-        // "Bottom surface".
+        // Check bridge / overhang before any "bottom" or "outer" test so
+        // "Bridge" isn't confused with "Bottom surface", and "Overhang wall"
+        // isn't confused with a normal outer/inner wall.
         if lower == "bridge" {
+            return Self::Bridge;
+        }
+        if lower.contains("overhang") {
+            // OrcaSlicer-style overhang walls span air just like bridges,
+            // so we colour them the same way in the viewer.
             return Self::Bridge;
         }
         if lower.contains("skirt") || lower.contains("brim") {

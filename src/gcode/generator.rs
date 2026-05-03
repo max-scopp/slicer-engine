@@ -271,7 +271,7 @@ impl GcodeGenerator {
                     fallback
                 }
             }
-            ExtrusionRole::Bridge => {
+            ExtrusionRole::Bridge | ExtrusionRole::OverhangPerimeter => {
                 let s = params.bridge_speed;
                 if s > 0.0 {
                     s * 60.0
@@ -423,12 +423,16 @@ impl GcodeGenerator {
             // ── Adaptive fan speed ───────────────────────────────────────────
             if !params.fan_configs.is_empty() {
                 let layer_time = estimate_layer_time(layer, params.print_speed);
-                // Bridge detection: any path tagged Bridge triggers bridge boost on aux fans.
-                let has_bridges = layer
-                    .paths
-                    .iter()
-                    .enumerate()
-                    .any(|(i, _)| layer.role_for_path(i) == crate::core::ExtrusionRole::Bridge);
+                // Bridge detection: any path tagged Bridge or OverhangPerimeter
+                // triggers bridge boost on aux fans (overhanging walls cool just
+                // like bridge infill does).
+                let has_bridges = layer.paths.iter().enumerate().any(|(i, _)| {
+                    matches!(
+                        layer.role_for_path(i),
+                        crate::core::ExtrusionRole::Bridge
+                            | crate::core::ExtrusionRole::OverhangPerimeter
+                    )
+                });
 
                 for (fan_idx, fan) in params.fan_configs.iter().enumerate() {
                     let prev = prev_fan_speeds.get(fan_idx).copied().flatten();

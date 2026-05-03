@@ -81,6 +81,137 @@ pub(super) fn add_solid_infill_for_region(
     }
 }
 
+/// Compute the principal-axis angle (in degrees, 0–180) of a polygon set
+/// using PCA on its vertices.
+///
+/// Returns the angle of the **dominant axis** (the eigenvector with the
+/// larger eigenvalue) measured CCW from +X.  Bridge lines should be printed
+/// **perpendicular** to this angle so each strand spans the *short* dimension
+/// of the unsupported region — even when that region is rotated relative to
+/// the print bed.
+///
+/// Falls back to `None` when the input is empty, has fewer than two distinct
+/// points, or is a perfect square (eigenvalues nearly equal — no preferred
+/// direction); callers should default to a sensible angle in that case.
+fn principal_axis_angle_deg(paths: &Paths) -> Option<f64> {
+    let mut n = 0_u64;
+    let mut sum_x = 0.0_f64;
+    let mut sum_y = 0.0_f64;
+    for path in paths.iter() {
+        for pt in path.iter() {
+            sum_x += pt.x();
+            sum_y += pt.y();
+            n += 1;
+        }
+    }
+    if n < 2 {
+        return None;
+    }
+    let nf = n as f64;
+    let mx = sum_x / nf;
+    let my = sum_y / nf;
+
+    let mut sxx = 0.0_f64;
+    let mut syy = 0.0_f64;
+    let mut sxy = 0.0_f64;
+    for path in paths.iter() {
+        for pt in path.iter() {
+            let dx = pt.x() - mx;
+            let dy = pt.y() - my;
+            sxx += dx * dx;
+            syy += dy * dy;
+            sxy += dx * dy;
+        }
+    }
+
+    let trace = sxx + syy;
+    if trace < 1e-9 {
+        return None;
+    }
+    let det = sxx * syy - sxy * sxy;
+    let disc = (trace * trace * 0.25 - det).max(0.0).sqrt();
+    let lam_max = trace * 0.5 + disc;
+    let lam_min = trace * 0.5 - disc;
+    // Square / circle: no preferred direction.
+    if (lam_max - lam_min) / lam_max < 0.05 {
+        return None;
+    }
+
+    // Dominant eigenvector for symmetric 2×2 matrix.
+    let angle_rad = if sxy.abs() > 1e-9 {
+        (lam_max - sxx).atan2(sxy)
+    } else if sxx >= syy {
+        0.0
+    } else {
+        std::f64::consts::FRAC_PI_2
+    };
+
+    let mut deg = angle_rad.to_degrees();
+    // Normalise to [0, 180): direction is undirected.
+    while deg < 0.0 {
+        deg += 180.0;
+    }
+    while deg >= 180.0 {
+        deg -= 180.0;
+    }
+    Some(deg)
+}
+
+/// Morphological opening (erode → dilate) of a polygon set by `radius_mm`.
+///
+/// Removes thin features (slivers, hair-thin connecting strands) narrower
+/// than `2 × radius_mm` while preserving larger regions almost unchanged.
+/// A no-op when `radius_mm <= 0`.
+fn morphological_open(paths: Paths, radius_mm: f64) -> Paths {
+    if radius_mm <= 1e-6 || paths.is_empty() {
+        return paths;
+    }
+    let eroded = clipper2::inflate(paths, -radius_mm, JoinType::Round, EndType::Polygon, 2.0);
+    if eroded.is_empty() {
+        return eroded;
+    }
+    clipper2::inflate(eroded, radius_mm, JoinType::Round, EndType::Polygon, 2.0)
+}
+
+/// Drop sub-paths whose absolute signed area is below `min_area_mm2`.
+///
+/// `Paths::signed_area()` would only sum the whole set; we filter individually.
+/// Hole sub-paths (CW winding, negative area) are kept when their absolute
+/// area exceeds the threshold so they continue carving the corresponding
+/// solid sub-path; a tiny hole would pop in/out with the noise filter, so
+/// removing it has the same regularising effect.
+fn filter_small_islands(paths: &Paths, min_area_mm2: f64) -> Paths {
+    if min_area_mm2 <= 0.0 {
+        return paths.clone();
+    }
+    let kept: Vec<clipper2::Path> = paths
+        .iter()
+        .filter(|p| p.signed_area().abs() >= min_area_mm2)
+        .cloned()
+        .collect();
+    Paths::new(kept)
+}
+
+/// Anchor expansion: dilate `unsupported` by `anchor_mm` (clipped to the
+/// `bounds` polygon set) so the resulting bridge has a bite of supported
+/// material on either side.  Returns the original input when `anchor_mm <= 0`.
+fn expand_to_anchor(unsupported: Paths, bounds: &Paths, anchor_mm: f64) -> Paths {
+    if anchor_mm <= 1e-6 || unsupported.is_empty() || bounds.is_empty() {
+        return unsupported;
+    }
+    let expanded = clipper2::inflate(
+        unsupported,
+        anchor_mm,
+        JoinType::Round,
+        EndType::Polygon,
+        2.0,
+    );
+    if expanded.is_empty() {
+        return expanded;
+    }
+    intersect(expanded, bounds.clone(), FillRule::EvenOdd).unwrap_or_default()
+}
+
 /// Add bridge infill for an unsupported `region` to a layer.
 ///
 /// Unlike solid surface infill (`add_solid_infill_for_region`), bridge infill:
@@ -102,33 +233,51 @@ pub(super) fn add_bridge_infill_for_region(
         return;
     }
 
-    // Compute axis-aligned bounding box of the region.
-    let (mut x_min, mut x_max, mut y_min, mut y_max) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
-    for path in region.iter() {
-        for pt in path.iter() {
-            let (x, y) = (pt.x(), pt.y());
-            if x < x_min {
-                x_min = x;
+    // Bridge direction: use principal-axis analysis (PCA) of the unsupported
+    // region.  Bridge lines are printed **perpendicular** to the dominant axis
+    // so each strand spans the *short* dimension of the gap — correctly
+    // handling rotated rectangular bridges that an axis-aligned bounding box
+    // would mis-orient.  Falls back to bounding-box short-axis when the region
+    // is square/circular (no dominant axis).
+    let bridge_angle = match principal_axis_angle_deg(region) {
+        Some(major_deg) => {
+            // Strands run perpendicular to the long axis.
+            let mut perp = major_deg + 90.0;
+            while perp >= 180.0 {
+                perp -= 180.0;
             }
-            if x > x_max {
-                x_max = x;
+            perp
+        }
+        None => {
+            // Axis-aligned bounding box fallback for square/circular regions.
+            let (mut x_min, mut x_max, mut y_min, mut y_max) =
+                (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+            for path in region.iter() {
+                for pt in path.iter() {
+                    let (x, y) = (pt.x(), pt.y());
+                    if x < x_min {
+                        x_min = x;
+                    }
+                    if x > x_max {
+                        x_max = x;
+                    }
+                    if y < y_min {
+                        y_min = y;
+                    }
+                    if y > y_max {
+                        y_max = y;
+                    }
+                }
             }
-            if y < y_min {
-                y_min = y;
-            }
-            if y > y_max {
-                y_max = y;
+            let width = x_max - x_min;
+            let height = y_max - y_min;
+            if height <= width {
+                0.0_f64
+            } else {
+                90.0_f64
             }
         }
-    }
-
-    let width = x_max - x_min;
-    let height = y_max - y_min;
-
-    // Bridge direction = perpendicular to the shortest unsupported span.
-    // If the region is wider than tall, the shorter span is vertical → print
-    // horizontal lines (angle 0°).  Otherwise print vertical lines (angle 90°).
-    let bridge_angle = if height <= width { 0.0_f64 } else { 90.0_f64 };
+    };
 
     // Bridge line spacing = nozzle diameter (no overlapping beads on air).
     let line_spacing = nozzle_diameter_mm.max(0.1);
@@ -444,6 +593,9 @@ pub fn generate_top_bottom_surfaces(
             infill_angle,
             nozzle_diameter_mm: 0.4,
             bridge_flow_ratio: 0.8,
+            bridge_min_area_mm2: 1.0,
+            bridge_noise_filter_mm: 0.15,
+            bridge_anchor_mm: 2.0,
         },
         None, // No interior regions - use full perimeters
     );
@@ -475,6 +627,22 @@ pub struct SurfaceConfig {
     ///
     /// Reducing flow stiffens bridge strands in mid-air, reducing sag.
     pub bridge_flow_ratio: f64,
+    /// Minimum area in mm² for an unsupported region to count as a bridge.
+    ///
+    /// Smaller fragments are reclassified as ordinary `BottomSurface`.  Filters
+    /// stippling noise from sub-pixel layer-to-layer geometry differences.
+    pub bridge_min_area_mm2: f64,
+    /// Morphological-opening radius in mm for the unsupported region.
+    ///
+    /// The region is eroded inward by this amount and then dilated back,
+    /// removing thin spurs and thread-like connecting strands.
+    pub bridge_noise_filter_mm: f64,
+    /// Anchor expansion length in mm at each end of every bridge.
+    ///
+    /// The detected unsupported region is dilated by this amount (clipped to
+    /// the layer footprint) so each strand bites into the supported solid
+    /// material on either side.
+    pub bridge_anchor_mm: f64,
 }
 
 /// Generate top and bottom solid surface infill for layers.
@@ -512,6 +680,9 @@ pub fn generate_top_bottom_surfaces_with_interior(
     let infill_angle = config.infill_angle;
     let nozzle_diameter_mm = config.nozzle_diameter_mm;
     let bridge_flow_ratio = config.bridge_flow_ratio;
+    let bridge_min_area_mm2 = config.bridge_min_area_mm2;
+    let bridge_noise_filter_mm = config.bridge_noise_filter_mm;
+    let bridge_anchor_mm = config.bridge_anchor_mm;
     if layers.is_empty() || (top_layers == 0 && bottom_layers == 0) {
         return SurfaceSubTimings {
             perimeter_snapshot_ms: 0,
@@ -551,7 +722,29 @@ pub fn generate_top_bottom_surfaces_with_interior(
     // previous layer.  These areas span across a gap and require slower speed
     // and high fan cooling.  The remaining bottom surface (which has at least
     // some support from layer i-1) is labelled BottomSurface.
-    let detect_region = |i: usize| -> (Paths, Paths, Paths) {
+    // For each layer the closure returns:
+    //   (bridge_region, bottom_region, top_region, raw_unsupported)
+    // where `raw_unsupported` is the un-filtered, un-anchored, un-clipped
+    // air-below footprint (`perimeters[i] − perimeters[i-1]`) used **only**
+    // for OverhangPerimeter wall classification — never for infill.
+    let detect_region = |i: usize| -> (Paths, Paths, Paths, Paths) {
+        // ── Raw unsupported area — for wall classification only ──────────────
+        // This is the layer footprint that has nothing in the layer below.
+        // We deliberately do *not* clip it to interior_regions: walls live on
+        // the layer's outer edge, so their classification needs the full
+        // footprint view.
+        let raw_unsupported = if i == 0 {
+            Paths::new(vec![])
+        } else {
+            let prev = &perimeters[i - 1];
+            if prev.is_empty() {
+                perimeters[i].clone()
+            } else {
+                difference(perimeters[i].clone(), prev.clone(), FillRule::EvenOdd)
+                    .unwrap_or_default()
+            }
+        };
+
         let (bridge_region, bottom_region) = if bottom_layers > 0 {
             let mut covered = perimeters[i].clone();
             for j in 1..=bottom_layers {
@@ -589,22 +782,63 @@ pub fn generate_top_bottom_surfaces_with_interior(
             //
             // Layer 0 has no layer below, so the entire region is BottomSurface
             // (it is the absolute bottom of the model, not a bridge).
+            //
+            // The unsupported sub-region is then run through three filters
+            // (matching OrcaSlicer / PrusaSlicer behaviour) before becoming a
+            // bridge:
+            //   1. **Morphological opening** removes thin slivers and
+            //      hair-fine connecting strands caused by sub-pixel layer-to-
+            //      layer geometry differences (the "Benchy embossed text"
+            //      noise pattern).
+            //   2. **Minimum-area filter** discards remaining tiny islands
+            //      below `bridge_min_area_mm2`.  Such islands would print as
+            //      lone bridge dots ("infills cannot be infill patterns").
+            //   3. **Anchor expansion** dilates the surviving regions outward
+            //      by `bridge_anchor_mm` (clipped to `region`) so each strand
+            //      bites into the supported solid material on either side
+            //      instead of ending mid-air at the wall.
+            // Material rejected by stages 1–2 is reclassified as
+            // BottomSurface so the layer remains fully solid below the gap.
             if region.is_empty() || i == 0 {
                 (Paths::new(vec![]), region)
             } else {
                 let prev_perimeter = &perimeters[i - 1];
                 if prev_perimeter.is_empty() {
-                    // Nothing below at all → entire region is a bridge
-                    (region, Paths::new(vec![]))
+                    // Nothing below at all → entire region is candidate bridge.
+                    let raw = region.clone();
+                    let opened = morphological_open(raw, bridge_noise_filter_mm);
+                    let big = filter_small_islands(&opened, bridge_min_area_mm2);
+                    // Anchor bounds = the full layer footprint (so the
+                    // expansion bites into the supported solid material that
+                    // sits *outside* the bottom-only region but still inside
+                    // the wall envelope).
+                    let anchored = expand_to_anchor(big, &perimeters[i], bridge_anchor_mm);
+                    let supported = if anchored.is_empty() {
+                        region
+                    } else {
+                        difference(region, anchored.clone(), FillRule::EvenOdd).unwrap_or_default()
+                    };
+                    (anchored, supported)
                 } else {
-                    // Unsupported part = region not covered by the previous layer
-                    let unsupported =
-                        difference(region.clone(), prev_perimeter.clone(), FillRule::EvenOdd)
-                            .unwrap_or_default();
-                    // Supported part = region that does have some overlap below
-                    let supported = difference(region, unsupported.clone(), FillRule::EvenOdd)
+                    // Step 0 — raw unsupported within the inside-walls region.
+                    let raw = difference(region.clone(), prev_perimeter.clone(), FillRule::EvenOdd)
                         .unwrap_or_default();
-                    (unsupported, supported)
+                    // Step 1 — morphological opening (noise filter).
+                    let opened = morphological_open(raw, bridge_noise_filter_mm);
+                    // Step 2 — drop islands below the area threshold.
+                    let big = filter_small_islands(&opened, bridge_min_area_mm2);
+                    // Step 3 — anchor expansion clipped to the full layer
+                    // footprint so the bridge bites into the supported solid
+                    // material on either side of the gap.
+                    let anchored = expand_to_anchor(big, &perimeters[i], bridge_anchor_mm);
+                    // Supported part = whatever is left of the bottom region
+                    // after the (filtered + anchored) bridge has been removed.
+                    let supported = if anchored.is_empty() {
+                        region
+                    } else {
+                        difference(region, anchored.clone(), FillRule::EvenOdd).unwrap_or_default()
+                    };
+                    (anchored, supported)
                 }
             }
         } else {
@@ -657,25 +891,27 @@ pub fn generate_top_bottom_surfaces_with_interior(
             Paths::new(vec![])
         };
 
-        (bridge_region, bottom_region, top_region)
+        (bridge_region, bottom_region, top_region, raw_unsupported)
     };
 
     #[cfg(not(target_arch = "wasm32"))]
     let t_detect = Instant::now();
     #[cfg(not(target_arch = "wasm32"))]
-    let regions: Vec<(Paths, Paths, Paths)> = {
+    let regions: Vec<(Paths, Paths, Paths, Paths)> = {
         use rayon::prelude::*;
         (0..total).into_par_iter().map(detect_region).collect()
     };
     #[cfg(target_arch = "wasm32")]
-    let regions: Vec<(Paths, Paths, Paths)> = (0..total).map(detect_region).collect();
+    let regions: Vec<(Paths, Paths, Paths, Paths)> = (0..total).map(detect_region).collect();
     #[cfg(not(target_arch = "wasm32"))]
     let detection_ns = t_detect.elapsed().as_nanos();
     #[cfg(target_arch = "wasm32")]
     let detection_ns = 0u128;
 
     // ── Serial apply pass ─────────────────────────────────────────────────────
-    for (i, (bridge_region, bottom_region, top_region)) in regions.into_iter().enumerate() {
+    for (i, (bridge_region, bottom_region, top_region, raw_unsupported)) in
+        regions.into_iter().enumerate()
+    {
         if !bridge_region.is_empty() {
             #[cfg(not(target_arch = "wasm32"))]
             let t = Instant::now();
@@ -730,6 +966,13 @@ pub fn generate_top_bottom_surfaces_with_interior(
         let combined_solid = union_or_first(all_bottom, top_region);
         if !combined_solid.is_empty() {
             layers[i].solid_regions = combined_solid;
+        }
+
+        // Stash the *raw* unsupported area (the layer-footprint air below)
+        // for the post-pass that classifies wall paths in air as
+        // OverhangPerimeter.  Empty for layer 0 by design.
+        if !raw_unsupported.is_empty() {
+            layers[i].unsupported_regions = raw_unsupported;
         }
     }
 

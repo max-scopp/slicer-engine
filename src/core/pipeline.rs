@@ -8,7 +8,7 @@ use super::infill::{add_infill_to_layers, calculate_interior_region};
 use super::slicer::slice_mesh;
 use super::surfaces::{generate_top_bottom_surfaces_with_interior, SurfaceConfig};
 use super::types::SliceLayer;
-use super::walls::apply_single_wall_restrictions;
+use super::walls::{apply_single_wall_restrictions, classify_overhang_perimeters};
 
 /// Central entry point for the complete slicing pipeline.
 ///
@@ -192,6 +192,9 @@ pub fn process_mesh(
                 infill_angle: params.surface_infill_angle,
                 nozzle_diameter_mm: params.nozzle_diameter_mm,
                 bridge_flow_ratio: params.bridge_flow_ratio,
+                bridge_min_area_mm2: params.bridge_min_area_mm2,
+                bridge_noise_filter_mm: params.bridge_noise_filter_mm,
+                bridge_anchor_mm: params.bridge_anchor_mm,
             },
             Some(&interior_regions),
         );
@@ -203,6 +206,15 @@ pub fn process_mesh(
             surface_timings.detection_ms,
             surface_timings.infill_gen_ms,
         ));
+
+        // Classify wall paths that lie mostly over unsupported air as
+        // OverhangPerimeter so the G-code generator prints them with bridge
+        // speed/flow/cooling.  Requires unsupported_regions populated by
+        // the surface-generation pass above.
+        logger.log_debug("classifying overhang perimeters");
+        let t_overhang = PhaseTimer::start("Overhang Perimeter Classification", logger);
+        classify_overhang_perimeters(&mut layers);
+        t_overhang.finish();
     }
 
     // Add infill
@@ -268,6 +280,7 @@ pub fn process_mesh(
                 role,
                 crate::core::ExtrusionRole::OuterWall
                     | crate::core::ExtrusionRole::InnerWall
+                    | crate::core::ExtrusionRole::OverhangPerimeter
                     | crate::core::ExtrusionRole::Skirt
             );
 
