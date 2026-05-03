@@ -65,6 +65,8 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build web-slicer WASM
+        env:
+          CXX_wasm32_unknown_unknown: ${{ github.workspace }}/tools/wasm32-clang++.js
         run: pnpm run hydrate:web-slicer
 
       - name: Build UI (web-slicer)

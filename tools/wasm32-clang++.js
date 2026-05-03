@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * Compiler wrapper for building C++ code targeting wasm32-unknown-unknown.
  *
@@ -9,7 +10,9 @@
  * Clipper2 is pure computation with no OS calls, so the resulting WASM object
  * files are compatible with wasm32-unknown-unknown.
  *
- * Usage: Set CXX_wasm32_unknown_unknown to the path of wasm32-clang++.cmd
+ * Usage:
+ * - Windows: Set CXX_wasm32_unknown_unknown to tools/wasm32-clang++.cmd
+ * - Linux/macOS: Set CXX_wasm32_unknown_unknown to tools/wasm32-clang++.js
  */
 
 "use strict";
