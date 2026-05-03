@@ -5,9 +5,9 @@
 //!
 //! 1. **Candidate generation** — collect unique "floor direction" candidates:
 //!    - Snap all face normals to a coarse grid (≈6° resolution) and accumulate
-//!      area per bucket; keep the top [`MAX_FLAT_CANDIDATES`] directions by
-//!      total area.  This is O(faces) and merges near-duplicate normals on
-//!      curved surfaces into a single representative direction.
+//!      area per bucket; keep the top [`candidates::MAX_FLAT_CANDIDATES`]
+//!      directions by total area.  This is O(faces) and merges near-duplicate
+//!      normals on curved surfaces into a single representative direction.
 //!    - If [`AutoOrientOptions::allow_rotations`] is `true`, additionally
 //!      sample ~128 directions on a Fibonacci sphere (covers organic shapes
 //!      with no prominent flat regions).
@@ -27,12 +27,14 @@
 //! 3. **Result** — build `Quat::from_rotation_arc(best_candidate, −Z)` **once**
 //!    for the winner, then optionally compose with a preferred Z-rotation.
 
-use crate::mesh::types::{Face, Mesh, Vertex};
+mod candidates;
+mod geometry;
+mod types;
+
+pub use types::AutoOrientOptions;
+
+use crate::mesh::types::Mesh;
 use glam::{Quat, Vec3};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
 // Scoring weights — intentionally not exposed; tune here if needed.
@@ -46,53 +48,6 @@ const CONTACT_W: f64 = 0.5;
 const HEIGHT_W: f64 = 0.01;
 /// Half-angle (degrees) for "essentially flat on bed" contact detection.
 const CONTACT_ANGLE_DEG: f64 = 10.0;
-
-/// Maximum number of flat-face candidates kept from the normal histogram.
-/// Higher values give marginally better coverage at the cost of more scoring
-/// work.  64 is ample for all practical FDM models.
-const MAX_FLAT_CANDIDATES: usize = 64;
-
-/// Threshold for treating a degenerate (near-zero) triangle normal.
-/// Below this squared-length value, the cross-product result is too small
-/// to reliably normalise.
-const DEGENERATE_NORMAL_SQ: f32 = 1e-12;
-
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
-
-/// Options controlling the auto-orient algorithm.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
-pub struct AutoOrientOptions {
-    /// When `true`, additionally sample a Fibonacci-sphere grid (~128
-    /// candidates) in addition to the flat-face candidates.  Recommended for
-    /// organic shapes with no large flat faces, e.g. figurines.  When
-    /// `false` (default), only unique flat-face-normal directions are tested —
-    /// fast and correct for box-like objects.
-    pub allow_rotations: bool,
-
-    /// After finding the best face-down orientation, additionally rotate the
-    /// object around Z by this many degrees.  Set to `45.0` for CoreXY
-    /// printers to align the seam line with the stepper axes.  `0.0` =
-    /// disabled (default).
-    pub preferred_z_rotation_deg: f64,
-
-    /// Faces whose outward normal points more than this many degrees below
-    /// horizontal are counted as overhanging (and penalised).  Should match
-    /// the printer's support angle threshold.  **Default: 45°.**
-    pub overhang_threshold_deg: f64,
-}
-
-impl Default for AutoOrientOptions {
-    fn default() -> Self {
-        Self {
-            allow_rotations: false,
-            preferred_z_rotation_deg: 0.0,
-            overhang_threshold_deg: 45.0,
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Core function
@@ -116,7 +71,7 @@ pub fn auto_orient(mesh: &Mesh, options: &AutoOrientOptions) -> Quat {
     let normals: Vec<Vec3> = mesh
         .faces
         .iter()
-        .map(|f| face_normal_vec3(f).unwrap_or(Vec3::Z))
+        .map(|f| geometry::face_normal_vec3(f).unwrap_or(Vec3::Z))
         .collect();
 
     let areas: Vec<f64> = mesh.faces.iter().map(|f| f.area()).collect();
@@ -126,11 +81,11 @@ pub fn auto_orient(mesh: &Mesh, options: &AutoOrientOptions) -> Quat {
     }
 
     // Collect all mesh vertices once for height computation.
-    let vertices: Vec<Vec3> = mesh.vertices.iter().map(vertex_to_vec3).collect();
+    let vertices: Vec<Vec3> = mesh.vertices.iter().map(geometry::vertex_to_vec3).collect();
 
     // Build candidate floor-normal directions.
-    let candidates = build_candidates(mesh, options, &normals, &areas);
-    if candidates.is_empty() {
+    let cands = candidates::build_candidates(mesh, options, &normals, &areas);
+    if cands.is_empty() {
         return Quat::IDENTITY;
     }
 
@@ -146,7 +101,7 @@ pub fn auto_orient(mesh: &Mesh, options: &AutoOrientOptions) -> Quat {
     let mut best_score = f64::MAX;
     let mut best_candidate = Vec3::NEG_Z; // default: already pointing down
 
-    for candidate in &candidates {
+    for candidate in &cands {
         // ---------------------------------------------------------------------------
         // Overhang + contact scoring
         //
@@ -218,132 +173,12 @@ pub fn auto_orient(mesh: &Mesh, options: &AutoOrientOptions) -> Quat {
 }
 
 // ---------------------------------------------------------------------------
-// Candidate generation
-// ---------------------------------------------------------------------------
-
-/// Collect the "floor direction" candidates to evaluate.
-///
-/// Uses a fast O(F) normal-direction histogram:
-/// - Each face normal is snapped to a coarse ~6° grid.
-/// - Areas are accumulated per bucket.
-/// - The top [`MAX_FLAT_CANDIDATES`] buckets (by total area) become candidates.
-///
-/// This merges near-duplicate normals on curved surfaces into a single
-/// representative direction — avoiding the thousands of near-identical
-/// candidates that `compute_coplanar_groups` would produce for an organic
-/// mesh like a Benchy — while still capturing every significant flat region.
-///
-/// If [`AutoOrientOptions::allow_rotations`] is `true`, also adds ~128 points
-/// uniformly distributed on the sphere (Fibonacci spiral).
-fn build_candidates(
-    _mesh: &Mesh,
-    options: &AutoOrientOptions,
-    normals: &[Vec3],
-    areas: &[f64],
-) -> Vec<Vec3> {
-    // -------------------------------------------------------------------------
-    // 1. Area-weighted normal histogram with ~6° angular bucketing.
-    //
-    // Each component is rounded to the nearest 0.1 step in [-1, 1], giving
-    // ≈6° angular resolution.  All near-duplicate normals (e.g., the slightly
-    // curved triangles on a Benchy hull) collapse into the same bucket, so we
-    // get one clean representative direction instead of hundreds of near-copies.
-    // -------------------------------------------------------------------------
-    let mut dir_accum: HashMap<[i32; 3], (Vec3, f64)> = HashMap::new();
-
-    for (i, n) in normals.iter().enumerate() {
-        let area = areas[i];
-        let key = [
-            (n.x * 10.0).round() as i32,
-            (n.y * 10.0).round() as i32,
-            (n.z * 10.0).round() as i32,
-        ];
-        let entry = dir_accum.entry(key).or_insert((Vec3::ZERO, 0.0));
-        entry.0 += *n * area as f32;
-        entry.1 += area;
-    }
-
-    // Sort buckets by accumulated area (descending), take top MAX_FLAT_CANDIDATES.
-    let mut buckets: Vec<(Vec3, f64)> = dir_accum
-        .into_values()
-        .filter(|(_, area)| *area > 1e-6)
-        .collect();
-    buckets.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    buckets.truncate(MAX_FLAT_CANDIDATES);
-
-    let mut candidates: Vec<Vec3> = buckets
-        .into_iter()
-        .filter_map(|(n_sum, area)| {
-            let n = (n_sum / area as f32).normalize_or_zero();
-            // Reject near-degenerate normals whose magnitude is less than 0.5
-            // (squared: 0.25). This guards against floating-point cancellation
-            // when many tiny faces produce an almost-zero sum vector.
-            if n.length_squared() > 0.25 {
-                Some(n)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    // -------------------------------------------------------------------------
-    // 2. Fibonacci sphere (allow_rotations only)
-    //
-    // Adds ~128 uniformly-distributed directions to cover organic shapes with
-    // no prominent flat regions (figurines, characters, etc.).
-    // -------------------------------------------------------------------------
-    if options.allow_rotations {
-        const N: usize = 128;
-        let golden = (1.0 + 5.0_f64.sqrt()) / 2.0;
-        for i in 0..N {
-            let cos_theta = 1.0 - 2.0 * (i as f64 + 0.5) / N as f64;
-            let theta = cos_theta.acos() as f32;
-            let phi = (2.0 * PI * i as f64 / golden) as f32;
-            candidates.push(Vec3::new(
-                theta.sin() * phi.cos(),
-                theta.sin() * phi.sin(),
-                theta.cos(),
-            ));
-        }
-    }
-
-    // Also always include the mesh's current –Z direction so the algorithm
-    // can choose "stay as-is" when the model is already well-oriented.
-    candidates.push(Vec3::NEG_Z);
-
-    candidates
-}
-
-// ---------------------------------------------------------------------------
-// Geometry helpers
-// ---------------------------------------------------------------------------
-
-/// Compute the geometric unit normal of a triangular face.
-/// Returns `None` for degenerate (zero-area) triangles.
-fn face_normal_vec3(face: &Face) -> Option<Vec3> {
-    let a = vertex_to_vec3(&face.vertices[0]);
-    let b = vertex_to_vec3(&face.vertices[1]);
-    let c = vertex_to_vec3(&face.vertices[2]);
-    let n = (b - a).cross(c - a);
-    let len_sq = n.length_squared();
-    if len_sq < DEGENERATE_NORMAL_SQ {
-        None
-    } else {
-        Some(n / len_sq.sqrt())
-    }
-}
-
-#[inline]
-fn vertex_to_vec3(v: &Vertex) -> Vec3 {
-    Vec3::new(v.x as f32, v.y as f32, v.z as f32)
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
+    use super::geometry::face_normal_vec3;
     use super::*;
     use crate::mesh::types::{Face, Mesh, Vertex};
 
