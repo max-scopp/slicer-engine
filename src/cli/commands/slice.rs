@@ -8,7 +8,7 @@ use crate::infill::InfillPattern;
 use crate::logging::{phases, PhaseTimer, ProcessLogger};
 use crate::mesh::analysis::{calculate_aabb, calculate_surface_area, calculate_volume};
 use crate::scene::{apply_transform, BedConfig, SceneOp, SceneState};
-use crate::settings::params::LifecycleMarkerConfig;
+use crate::settings::params::{LifecycleMarkerConfig, MeshQuality};
 use clap::Parser;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -175,6 +175,17 @@ pub struct SliceCommand {
     /// When omitted, uses the value from settings (default: 45°).
     #[arg(long)]
     pub infill_angle: Option<f64>,
+
+    /// Mesh preprocessing quality (normal, high-quality, draft).
+    ///
+    /// - `normal` — no decimation, full mesh used (default).
+    /// - `high-quality` — no decimation, maximum geometric fidelity.
+    /// - `draft` — aggressive vertex-clustering decimation for faster slicing
+    ///   of high-polygon-count models.
+    ///
+    /// When omitted, uses the value from settings (default: normal).
+    #[arg(long, value_name = "QUALITY")]
+    pub mesh_quality: Option<String>,
 }
 
 /// Result payload emitted by the `slice` command.
@@ -261,6 +272,20 @@ impl SliceCommand {
         }
         if let Some(angle) = self.infill_angle {
             slice_params.infill_base_angle = angle;
+        }
+        if let Some(ref quality_str) = self.mesh_quality {
+            slice_params.mesh_quality = match quality_str.to_lowercase().as_str() {
+                "normal" => MeshQuality::Normal,
+                "high-quality" => MeshQuality::HighQuality,
+                "draft" => MeshQuality::Draft,
+                other => {
+                    return Err(format!(
+                        "Unknown mesh quality: '{}'. Supported: normal, high-quality, draft",
+                        other
+                    )
+                    .into())
+                }
+            };
         }
 
         // Validate input file exists
@@ -351,7 +376,24 @@ impl SliceCommand {
 
         // Bake the scene transform into the mesh that the slicer pipeline sees.
         let scene_object = scene.get(object_id).expect("object just added");
-        let mesh = apply_transform(scene_object.mesh.as_ref(), &scene_object.transform);
+        let baked_mesh = apply_transform(scene_object.mesh.as_ref(), &scene_object.transform);
+
+        // Apply optional mesh decimation. The original (baked) mesh is kept
+        // in `baked_mesh` for reference; only the pipeline receives the
+        // potentially-decimated copy.
+        let mesh = if slice_params.mesh_quality == MeshQuality::Draft {
+            let before = baked_mesh.faces.len();
+            let decimated =
+                crate::mesh::transforms::decimate_mesh(&baked_mesh, slice_params.mesh_quality);
+            logger.log_debug(&format!(
+                "mesh decimation (draft): {} → {} faces",
+                before,
+                decimated.faces.len()
+            ));
+            decimated
+        } else {
+            baked_mesh
+        };
 
         // Compute and log mesh geometry (verbose detail available to this CLI request).
         {
@@ -515,6 +557,7 @@ mod tests {
             rotate: Vec::new(),
             scale: None,
             align_face: None,
+            mesh_quality: None,
         };
         assert_eq!(cmd.layer_height, Some(0.2));
         assert_eq!(cmd.gcode_flavor.as_deref(), Some("marlin"));
@@ -543,6 +586,7 @@ mod tests {
             rotate: Vec::new(),
             scale: None,
             align_face: None,
+            mesh_quality: None,
         };
         assert!(cmd.gcode_flavor.is_none());
     }
@@ -570,6 +614,7 @@ mod tests {
             rotate: Vec::new(),
             scale: None,
             align_face: None,
+            mesh_quality: None,
         };
         assert_eq!(cmd.gcode_flavor.as_deref(), Some("klipper"));
     }
@@ -597,6 +642,7 @@ mod tests {
             rotate: Vec::new(),
             scale: None,
             align_face: None,
+            mesh_quality: None,
         };
         assert_eq!(
             cmd.start_print_gcode.as_deref(),
@@ -628,6 +674,7 @@ mod tests {
             rotate: Vec::new(),
             scale: None,
             align_face: None,
+            mesh_quality: None,
         };
         assert!(cmd_on.lifecycle_markers);
         assert!(!cmd_on.no_lifecycle_markers);
@@ -653,6 +700,7 @@ mod tests {
             rotate: Vec::new(),
             scale: None,
             align_face: None,
+            mesh_quality: None,
         };
         assert!(!cmd_off.lifecycle_markers);
         assert!(cmd_off.no_lifecycle_markers);

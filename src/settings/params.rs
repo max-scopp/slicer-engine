@@ -5,6 +5,30 @@ use crate::infill::InfillPattern;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Controls optional mesh decimation applied before slicing.
+///
+/// Decimation reduces the triangle count of the input mesh as a preprocessing
+/// step. Fewer triangles speed up all subsequent slicing operations; the
+/// trade-off is reduced geometric accuracy on very fine surface details.
+///
+/// The original mesh is never modified; only the copy handed to the slicing
+/// pipeline is decimated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum MeshQuality {
+    /// No decimation. Full input mesh is used for slicing (default).
+    #[default]
+    Normal,
+    /// No decimation. Identical to `normal` in behaviour; signals that the
+    /// caller wants maximum geometric fidelity.
+    HighQuality,
+    /// Aggressive polygon reduction via vertex clustering.
+    ///
+    /// Significantly reduces triangle count for faster slicing of
+    /// high-density models. Fine surface details may be smoothed away.
+    Draft,
+}
+
 /// Parameters that control how a model is sliced and printed.
 ///
 /// All dimensional values are in millimeters; speeds in mm/s;
@@ -242,6 +266,13 @@ Reduces the number of G-code points without visibly affecting print quality.
     )]
     #[serde(default = "SlicingParams::default_gcode_flavor")]
     pub gcode_flavor: GcodeFlavor,
+
+    #[schemars(
+        description = "Optional mesh decimation applied before slicing.\n\nSupported values:\n- `normal` — no decimation (default)\n- `high-quality` — no decimation, signals maximum fidelity\n- `draft` — aggressive polygon reduction for faster slicing",
+        extend("x-group" = "Mesh")
+    )]
+    #[serde(default = "SlicingParams::default_mesh_quality")]
+    pub mesh_quality: MeshQuality,
 }
 
 impl Default for SlicingParams {
@@ -275,6 +306,7 @@ impl Default for SlicingParams {
             infill_overlap_percent: Self::default_infill_overlap_percent(),
             path_tolerance: Self::default_path_tolerance(),
             gcode_flavor: Self::default_gcode_flavor(),
+            mesh_quality: Self::default_mesh_quality(),
         }
     }
 }
@@ -366,6 +398,10 @@ impl SlicingParams {
 
     fn default_gcode_flavor() -> GcodeFlavor {
         GcodeFlavor::Marlin
+    }
+
+    fn default_mesh_quality() -> MeshQuality {
+        MeshQuality::Normal
     }
 }
 
