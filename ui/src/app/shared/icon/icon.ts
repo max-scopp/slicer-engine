@@ -1,4 +1,4 @@
-import { APP_BASE_HREF } from '@angular/common';
+import { APP_BASE_HREF, DOCUMENT } from '@angular/common';
 import { Component, effect, ElementRef, inject, input } from '@angular/core';
 import { IconCache } from './icon-cache';
 
@@ -26,7 +26,9 @@ export class Icon {
 
   private readonly cache = inject(IconCache);
   private readonly el = inject(ElementRef<HTMLElement>);
-  private readonly baseHref = inject(APP_BASE_HREF, { optional: true }) ?? '/';
+  private readonly appBaseHref = inject(APP_BASE_HREF, { optional: true });
+  private readonly document = inject(DOCUMENT);
+  private readonly baseHref = this.resolveBaseHref();
 
   private lastRenderedUrl: string | null = null;
 
@@ -48,5 +50,22 @@ export class Icon {
         },
       });
     });
+  }
+
+  private resolveBaseHref(): string {
+    if (this.appBaseHref && this.appBaseHref.trim().length > 0) {
+      return this.appBaseHref;
+    }
+
+    const baseTagHref = this.document.querySelector('base')?.getAttribute('href')?.trim();
+    if (!baseTagHref) {
+      return '/';
+    }
+
+    try {
+      return new URL(baseTagHref, this.document.baseURI).pathname;
+    } catch {
+      return baseTagHref;
+    }
   }
 }
