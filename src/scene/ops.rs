@@ -315,6 +315,15 @@ impl SceneState {
                 // Drop to floor: shift Z so the world-AABB min sits at z = 0.
                 let world = self.get(id).unwrap().world_aabb();
                 self.get_mut(id).unwrap().transform.translation[2] -= world.min.z as f32;
+                // Center on bed: shift XY so the world-AABB center aligns with
+                // the bed centre.  Mirrors what CenterOnBed does so the object
+                // lands in a sensible position regardless of where it started.
+                let world = self.get(id).unwrap().world_aabb();
+                let world_center = world.center();
+                let (bx, by) = self.bed.center_xy();
+                let t = &mut self.get_mut(id).unwrap().transform;
+                t.translation[0] += (bx - world_center.x) as f32;
+                t.translation[1] += (by - world_center.y) as f32;
                 Ok(OpReceipt {
                     inverse: SceneOp::SetTransform {
                         id,
