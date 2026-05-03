@@ -5,6 +5,273 @@ use crate::infill::InfillPattern;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Fan index constants for indexed M106 Pn commands.
+pub mod fan_index {
+    /// Part-cooling fan (default, P0).
+    pub const PART_COOLING: u8 = 0;
+    /// Hotend cooling fan (P1).
+    pub const HOTEND: u8 = 1;
+    /// Chamber fan (P2).
+    pub const CHAMBER: u8 = 2;
+    /// Auxiliary fan (P3).
+    pub const AUX: u8 = 3;
+}
+
+/// Bounded override settings for auxiliary cooling fans (e.g. RSCS).
+///
+/// Aux fans operate in *hybrid* mode: a baseline speed is computed from the
+/// normal adaptive cooling curve, then constrained triggers can temporarily
+/// raise it for bridges or short layers.  Several safety bounds prevent
+/// over-cooling sensitive materials or creating thermal shock from abrupt
+/// speed changes.
+///
+/// # Computation order
+/// ```text
+/// 1. base       ← speed_for_layer_time(layer_time)
+/// 2. boost      ← bridge_boost (if bridging) + short_layer_boost (if short layer)
+/// 3. boosted    ← min(base + boost, boost_max_speed)
+/// 4. scaled     ← boosted × speed_scale
+/// 5. capped     ← min(scaled, max_speed_limit)
+/// 6. rate-limited ← clamp(capped, prev − max_speed_change_per_layer, prev + …)
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct AuxFanOverrides {
+    /// Additional speed fraction added when printing bridge spans.
+    ///
+    /// Bridges cool fast and tend to sag — a short burst of extra airflow
+    /// improves bridging quality.  **Example:** `0.40` = +40%.
+    #[schemars(
+        description = "Additional fan speed fraction (0.0–1.0) added when printing bridges."
+    )]
+    pub bridge_boost: f64,
+
+    /// Additional speed fraction added when the layer time is ≤ `layer_time_fast_s`.
+    ///
+    /// Short layers accumulate heat quickly; a small extra boost prevents
+    /// layer adhesion problems and warping.  **Example:** `0.20` = +20%.
+    #[schemars(
+        description = "Additional fan speed fraction (0.0–1.0) added on very short layers."
+    )]
+    pub short_layer_boost: f64,
+
+    /// Speed cap applied after all boosts, before scaling.
+    ///
+    /// Prevents the combined boost from exceeding a sensible ceiling even if
+    /// both bridge and short-layer triggers fire simultaneously.
+    #[schemars(description = "Maximum fan speed fraction (0.0–1.0) after applying all boosts.")]
+    pub boost_max_speed: f64,
+
+    /// Multiplicative scale applied to the final boosted speed.
+    ///
+    /// Useful when an aux fan (RSCS, side-blast, etc.) has different airflow
+    /// characteristics than a direct part-cooling fan.  **Example:** `0.8` = 80% of
+    /// computed speed.
+    #[schemars(description = "Multiplier applied to the final speed (e.g. 0.8 = 80%).")]
+    pub speed_scale: f64,
+
+    /// Hard maximum speed limit for material safety (0.0–1.0).
+    ///
+    /// Each filament has a safe maximum cooling rate; exceeding it can cause
+    /// layer delamination or warping.  This cap is enforced *after* scaling.
+    #[schemars(description = "Hard maximum speed fraction (0.0–1.0) for material safety.")]
+    pub max_speed_limit: f64,
+
+    /// Maximum allowed speed change between consecutive layers (0.0–1.0).
+    ///
+    /// Prevents thermal shock from jumping from near-zero to full speed in one
+    /// layer.  **Example:** `0.15` = at most 15% change per layer.
+    #[schemars(description = "Maximum speed change per layer (0.0–1.0) to prevent thermal shock.")]
+    pub max_speed_change_per_layer: f64,
+}
+
+impl AuxFanOverrides {
+    /// Sensible defaults for an RSCS-style auxiliary cooling fan.
+    pub fn default_rscs() -> Self {
+        Self {
+            bridge_boost: 0.40,
+            short_layer_boost: 0.20,
+            boost_max_speed: 0.95,
+            speed_scale: 1.0,
+            max_speed_limit: 1.0,
+            max_speed_change_per_layer: 0.15,
+        }
+    }
+}
+
+/// Configuration for a single fan in a multi-fan printer system.
+///
+/// Fan speed is automatically adapted to the estimated layer print time:
+/// fast layers (small features) get maximum cooling; slow layers get minimum.
+///
+/// For auxiliary fans (RSCS and similar systems) set `aux_overrides` to enable
+/// bounded boost triggers and rate limiting on top of the baseline curve.
+///
+/// # Layer-time thresholds
+/// ```text
+/// layer_time ≤ layer_time_fast_s  →  speed = max_speed
+/// layer_time ≥ layer_time_slow_s  →  speed = min_speed
+/// between                         →  linear interpolation
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct FanConfig {
+    /// Fan index for indexed M106 `Pn` commands.
+    ///
+    /// - `0` — part-cooling fan (default, `M106 S…`)
+    /// - `1` — hotend fan
+    /// - `2` — chamber fan
+    /// - `3` — auxiliary fan
+    #[schemars(
+        description = "Fan index (P parameter in M106). 0=part-cooling, 1=hotend, 2=chamber, 3=aux."
+    )]
+    pub fan_index: u8,
+
+    /// Custom Klipper fan object name.
+    ///
+    /// When set, overrides the default name derived from `fan_index` in the
+    /// Klipper dialect (`fan`, `fan_hotend`, `fan_chamber`, `fan_aux`).
+    /// Use this to map a fan index to a printer-specific Klipper fan object,
+    /// e.g. `"rscs"`, `"side_blast"`, or any `[fan]`/`[fan_generic]` name
+    /// defined in your `printer.cfg`.
+    ///
+    /// Ignored by Marlin/RepRap firmware — those use `fan_index` exclusively.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "Optional Klipper fan object name override (e.g. 'rscs', 'side_blast'). Overrides the default name derived from fan_index."
+    )]
+    pub klipper_name: Option<String>,
+
+    /// Minimum fan speed as a fraction `0.0`–`1.0`.
+    ///
+    /// Applied when the layer takes longer than `layer_time_slow_s` to print.
+    #[schemars(description = "Minimum fan speed fraction (0.0–1.0) for slow/large layers.")]
+    pub min_speed: f64,
+
+    /// Maximum fan speed as a fraction `0.0`–`1.0`.
+    ///
+    /// Applied when the layer takes less than `layer_time_fast_s` to print.
+    #[schemars(description = "Maximum fan speed fraction (0.0–1.0) for fast/small layers.")]
+    pub max_speed: f64,
+
+    /// Layer time threshold in seconds below which maximum fan speed is used.
+    #[schemars(description = "Layer time (seconds) at or below which max_speed is used.")]
+    pub layer_time_fast_s: f64,
+
+    /// Layer time threshold in seconds above which minimum fan speed is used.
+    #[schemars(description = "Layer time (seconds) at or above which min_speed is used.")]
+    pub layer_time_slow_s: f64,
+
+    /// Optional auxiliary fan bounded overrides (RSCS-style hybrid cooling).
+    ///
+    /// When `Some`, this fan operates in hybrid mode: the baseline adaptive
+    /// speed is computed normally, then bridge/short-layer boosts and safety
+    /// caps are applied on top.  `None` means pure adaptive cooling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "Optional auxiliary fan boost and safety overrides. Enables RSCS-style hybrid cooling with bridge boost, short-layer boost, speed scaling, material safety cap, and rate limiting."
+    )]
+    pub aux_overrides: Option<AuxFanOverrides>,
+}
+
+impl FanConfig {
+    /// Default configuration for a single part-cooling fan (P0).
+    ///
+    /// Uses 35% as the minimum speed — below this threshold most centrifugal
+    /// part-cooling fans stall or become ineffective.  Maximum is 100%.
+    /// Layer times are set to 10 s (fast) and 30 s (slow), matching
+    /// typical OrcaSlicer defaults.
+    pub fn default_part_cooling() -> Self {
+        Self {
+            fan_index: fan_index::PART_COOLING,
+            klipper_name: None,
+            min_speed: 0.35,
+            max_speed: 1.0,
+            layer_time_fast_s: 10.0,
+            layer_time_slow_s: 30.0,
+            aux_overrides: None,
+        }
+    }
+
+    /// Compute the baseline fan speed fraction for the given layer time in seconds.
+    ///
+    /// Returns `max_speed` for short layers, `min_speed` for long layers,
+    /// and a linearly interpolated value in between.
+    ///
+    /// When `layer_time_fast_s >= layer_time_slow_s` (degenerate configuration),
+    /// returns `max_speed` for all layer times.
+    ///
+    /// This is the *baseline* speed before any [`AuxFanOverrides`] are applied.
+    /// Use [`FanConfig::compute_speed`] to get the final speed including boosts,
+    /// scaling, safety caps, and rate limiting.
+    pub fn speed_for_layer_time(&self, layer_time_s: f64) -> f64 {
+        if layer_time_s <= self.layer_time_fast_s
+            || self.layer_time_fast_s >= self.layer_time_slow_s
+        {
+            self.max_speed
+        } else if layer_time_s >= self.layer_time_slow_s {
+            self.min_speed
+        } else {
+            let t = (layer_time_s - self.layer_time_fast_s)
+                / (self.layer_time_slow_s - self.layer_time_fast_s);
+            self.max_speed + t * (self.min_speed - self.max_speed)
+        }
+    }
+
+    /// Compute the final fan speed for emission, applying any [`AuxFanOverrides`].
+    ///
+    /// # Arguments
+    /// * `layer_time_s` — estimated layer print time in seconds
+    /// * `has_bridges` — `true` if the current layer contains bridge paths
+    /// * `prev_speed` — the speed emitted on the previous layer (for rate limiting)
+    ///
+    /// When `aux_overrides` is `None`, returns `speed_for_layer_time(layer_time_s)`
+    /// unchanged.
+    pub fn compute_speed(
+        &self,
+        layer_time_s: f64,
+        has_bridges: bool,
+        prev_speed: Option<f64>,
+    ) -> f64 {
+        let base = self.speed_for_layer_time(layer_time_s);
+
+        let Some(aux) = &self.aux_overrides else {
+            return base;
+        };
+
+        // 1. Accumulate boost from triggers
+        let is_short_layer = layer_time_s <= self.layer_time_fast_s;
+        let mut boost = 0.0_f64;
+        if has_bridges {
+            boost += aux.bridge_boost;
+        }
+        if is_short_layer {
+            boost += aux.short_layer_boost;
+        }
+
+        // 2. Apply boost, capped at boost_max_speed
+        let boosted = if boost > 0.0 {
+            (base + boost).min(aux.boost_max_speed)
+        } else {
+            base
+        };
+
+        // 3. Apply speed scale
+        let scaled = (boosted * aux.speed_scale).clamp(0.0, 1.0);
+
+        // 4. Apply hard material safety cap
+        let capped = scaled.min(aux.max_speed_limit);
+
+        // 5. Apply rate limiting
+        let rate_limited = if let Some(prev) = prev_speed {
+            let delta = aux.max_speed_change_per_layer;
+            capped.clamp(prev - delta, prev + delta)
+        } else {
+            capped
+        };
+
+        rate_limited.clamp(0.0, 1.0)
+    }
+}
+
 /// Parameters that control how a model is sliced and printed.
 ///
 /// All dimensional values are in millimeters; speeds in mm/s;
@@ -253,6 +520,24 @@ Reduces the number of G-code points without visibly affecting print quality.
     )]
     #[serde(default = "SlicingParams::default_gcode_flavor")]
     pub gcode_flavor: GcodeFlavor,
+
+    #[schemars(
+        description = "Fan configurations for layer-time-based adaptive cooling.
+
+Each entry describes one physical fan in the printer. For multi-fan printers
+(e.g. Bambu Lab X1C with 4 fans) add an entry per fan with the appropriate
+`fan_index` (P0–P3).
+
+Fan speed is adapted to the estimated layer print time:
+- Short layers (< `layer_time_fast_s`): `max_speed`
+- Long layers (> `layer_time_slow_s`): `min_speed`
+- Between: smooth linear interpolation
+
+**Default:** single part-cooling fan (P0) at 35%–100% speed.",
+        extend("x-group" = "Cooling")
+    )]
+    #[serde(default = "SlicingParams::default_fan_configs")]
+    pub fan_configs: Vec<FanConfig>,
 }
 
 impl Default for SlicingParams {
@@ -287,6 +572,7 @@ impl Default for SlicingParams {
             infill_perimeter_gap_mm: Self::default_infill_perimeter_gap_mm(),
             path_tolerance: Self::default_path_tolerance(),
             gcode_flavor: Self::default_gcode_flavor(),
+            fan_configs: Self::default_fan_configs(),
         }
     }
 }
@@ -382,6 +668,10 @@ impl SlicingParams {
 
     fn default_gcode_flavor() -> GcodeFlavor {
         GcodeFlavor::Marlin
+    }
+
+    fn default_fan_configs() -> Vec<FanConfig> {
+        vec![FanConfig::default_part_cooling()]
     }
 }
 
