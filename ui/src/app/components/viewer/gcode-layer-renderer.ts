@@ -1,16 +1,16 @@
 import {
-  BufferAttribute,
-  BufferGeometry,
-  Color,
-  CylinderGeometry,
-  Group,
-  InstancedMesh,
-  LineBasicMaterial,
-  LineSegments,
-  MeshStandardMaterial,
-  Object3D,
-  SphereGeometry,
-  Vector3,
+    BufferAttribute,
+    BufferGeometry,
+    Color,
+    CylinderGeometry,
+    Group,
+    InstancedMesh,
+    LineBasicMaterial,
+    LineSegments,
+    MeshStandardMaterial,
+    Object3D,
+    SphereGeometry,
+    Vector3,
 } from 'three';
 import type { GcodeLayerBuffer } from '../../../generated/scene-wasm/scene_engine';
 import { ROLE_COLORS, ROLE_ORDER, type RoleName } from '../../services/gcode-preview';
@@ -56,6 +56,7 @@ const ROLE_ID_TO_NAME: Record<number, RoleName> = {
   8: 'skirt',
   9: 'support',
   10: 'seam',
+  11: 'overhangPerimeter',
 };
 
 const _dummy = new Object3D();
@@ -87,6 +88,7 @@ export function buildLayerGroup(buf: GcodeLayerBuffer): LayerBuild {
     travel: 0,
     other: 0,
     bridge: 0,
+    overhangPerimeter: 0,
     skirt: 0,
     support: 0,
     seam: 0,
@@ -165,6 +167,7 @@ export function buildLayerGroup(buf: GcodeLayerBuffer): LayerBuild {
     travel: 0,
     other: 0,
     bridge: 0,
+    overhangPerimeter: 0,
     skirt: 0,
     support: 0,
     seam: 0,
@@ -315,6 +318,7 @@ export function applySegmentProgress(
     travel: 0,
     other: 0,
     bridge: 0,
+    overhangPerimeter: 0,
     skirt: 0,
     support: 0,
     seam: 0,

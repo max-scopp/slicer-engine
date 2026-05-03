@@ -13,6 +13,7 @@ export const ROLE_COLORS = {
   travel: 0x334466, // dark slate    (legend: travel)
   other: 0x44ffaa, // mint-green    (twist: stands apart)
   bridge: 0x0057ff, // vivid azure   (legend: bridge)
+  overhangPerimeter: 0x008a4b, // emerald       (legend: overhang perimeter)
   skirt: 0x888888, // mid-gray      (legend: skirt/brim)
   support: 0x7dff00, // neon lime     (legend: support material)
   seam: 0xffffff, // white         (legend: seam point)
@@ -29,6 +30,7 @@ export const ROLE_LABELS: Record<RoleName, string> = {
   travel: 'Travel',
   other: 'Other',
   bridge: 'Bridge',
+  overhangPerimeter: 'Overhang Perimeter',
   skirt: 'Skirt / Brim',
   support: 'Support',
   seam: 'Seam',
@@ -45,6 +47,7 @@ export const ROLE_ORDER: readonly RoleName[] = [
   'topSurface',
   'bottomSurface',
   'bridge',
+  'overhangPerimeter',
   'skirt',
   'support',
   'travel',

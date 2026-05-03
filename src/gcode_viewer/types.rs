@@ -15,6 +15,7 @@
 /// - 8  Skirt
 /// - 9  Support
 /// - 10 Seam  (synthetic — point marker at the outer-wall seam/start)
+/// - 11 OverhangPerimeter
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Role {
     OuterWall,
@@ -34,6 +35,8 @@ pub(super) enum Role {
     /// Stored as a degenerate zero-length segment so the viewer can render it
     /// as a white dot without special-casing the block data format.
     Seam,
+    /// Outer wall that is printed as an overhang perimeter.
+    OverhangPerimeter,
 }
 
 impl Role {
@@ -49,9 +52,7 @@ impl Role {
         // like "non-overhang" or "overhang setting" cannot accidentally
         // promote a normal perimeter to bridge colouring.
         if lower == "overhang wall" || lower == "overhang perimeter" {
-            // OrcaSlicer-style overhang walls span air just like bridges,
-            // so we colour them the same way in the viewer.
-            return Self::Bridge;
+            return Self::OverhangPerimeter;
         }
         if lower.contains("skirt") || lower.contains("brim") {
             return Self::Skirt;
@@ -90,6 +91,7 @@ impl Role {
             Role::Skirt => 8,
             Role::Support => 9,
             Role::Seam => 10,
+            Role::OverhangPerimeter => 11,
         }
     }
 }
