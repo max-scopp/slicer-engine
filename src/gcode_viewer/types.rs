@@ -2,6 +2,19 @@
 ///
 /// Derived from `;TYPE:` comment lines emitted by our slicer and by
 /// OrcaSlicer-compatible slicers.
+///
+/// Role ID mapping (used by the TypeScript viewer):
+/// - 0  OuterWall
+/// - 1  InnerWall
+/// - 2  Infill
+/// - 3  TopSurface
+/// - 4  BottomSurface
+/// - 5  Travel
+/// - 6  Other
+/// - 7  Bridge
+/// - 8  Skirt
+/// - 9  Support
+/// - 10 Seam  (synthetic — point marker at the outer-wall seam/start)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Role {
     OuterWall,
@@ -11,11 +24,32 @@ pub(super) enum Role {
     BottomSurface,
     Travel,
     Other,
+    /// Bridge extrusion spanning an unsupported gap.
+    Bridge,
+    /// Skirt or brim line printed around the model.
+    Skirt,
+    /// Support structure material.
+    Support,
+    /// Synthetic point-marker at the seam (start/end) of each outer-wall loop.
+    /// Stored as a degenerate zero-length segment so the viewer can render it
+    /// as a white dot without special-casing the block data format.
+    Seam,
 }
 
 impl Role {
     pub(super) fn from_type_comment(s: &str) -> Self {
         let lower = s.to_ascii_lowercase();
+        // Check bridge before any "bottom" test so "Bridge" isn't confused with
+        // "Bottom surface".
+        if lower == "bridge" {
+            return Self::Bridge;
+        }
+        if lower.contains("skirt") || lower.contains("brim") {
+            return Self::Skirt;
+        }
+        if lower.contains("support") {
+            return Self::Support;
+        }
         if lower.contains("outer") || lower.contains("perimeter") && !lower.contains("inner") {
             return Self::OuterWall;
         }
@@ -43,6 +77,10 @@ impl Role {
             Role::BottomSurface => 4,
             Role::Travel => 5,
             Role::Other => 6,
+            Role::Bridge => 7,
+            Role::Skirt => 8,
+            Role::Support => 9,
+            Role::Seam => 10,
         }
     }
 }

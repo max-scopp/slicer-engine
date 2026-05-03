@@ -1,5 +1,8 @@
 use super::types::{InternalLayer, Role};
 
+/// Radius (in mm) of the white dot rendered at each outer-wall seam point.
+const SEAM_DOT_RADIUS: f32 = 0.6;
+
 /// Parse `bytes` as UTF-8 GCode and return one [`InternalLayer`] per detected
 /// layer change, plus any segments that appear before the first layer marker
 /// in layer 0.
@@ -25,6 +28,7 @@ pub(super) fn parse_gcode_bytes(bytes: &[u8]) -> Vec<InternalLayer> {
     let mut seen_layer_change_comment = false;
 
     for raw_line in text.lines() {
+        let prev_role = role;
         let line = match raw_line.find(';') {
             Some(pos) => {
                 let comment = raw_line[pos + 1..].trim();
@@ -42,6 +46,21 @@ pub(super) fn parse_gcode_bytes(bytes: &[u8]) -> Vec<InternalLayer> {
             }
             None => raw_line.trim(),
         };
+
+        // Detect `;TYPE:` transitions: when the role changes FROM OuterWall to
+        // anything else, or TO OuterWall from anything else, inject a white
+        // seam-point marker at the current nozzle position.  The seam is
+        // traditionally placed at the loop start (the point where the outer
+        // wall begins and closes back on itself).
+        if role != prev_role {
+            let entering_outer_wall = role == Role::OuterWall;
+            let leaving_outer_wall = prev_role == Role::OuterWall;
+            if entering_outer_wall || leaving_outer_wall {
+                // Emit a degenerate (zero-length) segment at the current nozzle
+                // position.  The viewer renders Seam blocks as white dot spheres.
+                current.push_segment(Role::Seam, x, y, z, x, y, z, SEAM_DOT_RADIUS, SEAM_DOT_RADIUS);
+            }
+        }
 
         if line.is_empty() {
             continue;
@@ -209,6 +228,12 @@ G1 X10 Y10 Z0.4 E6.0 F1800
 G1 X20 Y10 Z0.4 E7.0
 "#;
 
+    fn has_role(layers: &[InternalLayer], role: Role) -> bool {
+        layers
+            .iter()
+            .any(|l| l.blocks.iter().any(|b| b.role == role))
+    }
+
     #[test]
     fn test_layer_count() {
         let layers = parse_gcode_bytes(SAMPLE_GCODE.as_bytes());
@@ -222,15 +247,13 @@ G1 X20 Y10 Z0.4 E7.0
     #[test]
     fn test_outer_wall_segments() {
         let layers = parse_gcode_bytes(SAMPLE_GCODE.as_bytes());
-        let has_outer = layers.iter().any(|l| !l.outer_wall.is_empty());
-        assert!(has_outer, "expected outer wall segments");
+        assert!(has_role(&layers, Role::OuterWall), "expected outer wall segments");
     }
 
     #[test]
     fn test_infill_segments() {
         let layers = parse_gcode_bytes(SAMPLE_GCODE.as_bytes());
-        let has_infill = layers.iter().any(|l| !l.infill.is_empty());
-        assert!(has_infill, "expected infill segments");
+        assert!(has_role(&layers, Role::Infill), "expected infill segments");
     }
 
     #[test]
@@ -256,6 +279,11 @@ G1 X20 Y10 Z0.4 E7.0
             Role::from_type_comment("Bottom surface"),
             Role::BottomSurface
         );
+        assert_eq!(Role::from_type_comment("Bridge"), Role::Bridge);
+        assert_eq!(Role::from_type_comment("bridge"), Role::Bridge);
+        assert_eq!(Role::from_type_comment("Skirt"), Role::Skirt);
+        assert_eq!(Role::from_type_comment("Brim"), Role::Skirt);
+        assert_eq!(Role::from_type_comment("Support material"), Role::Support);
     }
 
     #[test]
@@ -266,5 +294,44 @@ G1 X20 Y10 Z0.4 E7.0
             1,
             "empty input should produce exactly 1 (empty) layer"
         );
+    }
+
+    /// When the parser sees `;TYPE:Outer wall` followed by another type, a
+    /// `Seam` point block must appear in that layer.
+    #[test]
+    fn test_seam_points_emitted_for_outer_wall_transitions() {
+        let layers = parse_gcode_bytes(SAMPLE_GCODE.as_bytes());
+        assert!(
+            has_role(&layers, Role::Seam),
+            "expected Seam point blocks around the Outer wall section"
+        );
+    }
+
+    /// Bridge role should be parsed from `;TYPE:Bridge` comments.
+    #[test]
+    fn test_bridge_role_parsed() {
+        let gcode = b"
+;LAYER_CHANGE
+;Z:0.400
+;TYPE:Bridge
+G1 X10 Y10 Z0.4 E1.0 F1800
+G1 X20 Y10 Z0.4 E2.0
+";
+        let layers = parse_gcode_bytes(gcode);
+        assert!(has_role(&layers, Role::Bridge), "expected Bridge role");
+    }
+
+    /// Skirt role should be parsed from `;TYPE:Skirt` comments.
+    #[test]
+    fn test_skirt_role_parsed() {
+        let gcode = b"
+;LAYER_CHANGE
+;Z:0.200
+;TYPE:Skirt
+G1 X5 Y5 Z0.2 E1.0 F1800
+G1 X15 Y5 Z0.2 E2.0
+";
+        let layers = parse_gcode_bytes(gcode);
+        assert!(has_role(&layers, Role::Skirt), "expected Skirt role");
     }
 }
