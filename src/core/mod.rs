@@ -1802,4 +1802,94 @@ mod tests {
             layers[0].path_roles
         );
     }
+
+    /// **Regression** — on the bridge *closing* layer the outer hull path must
+    /// not survive as an `OverhangPerimeter` arc inside the bridge zone.
+    ///
+    /// Geometry:
+    /// * Layer 0: 10×10 hull ring with a 2×2 porthole hole (the porthole is
+    ///   *open* on this layer, so the next layer must bridge across it).
+    /// * Layer 1: solid 10×10 hull (the porthole *closes* here — this is the
+    ///   bridge layer).
+    ///
+    /// On layer 1 the bridge region covers the porthole void + anchor_mm strip.
+    /// Any outer hull path segments that run along the bridge zone outer
+    /// boundary would — before this fix — survive `clip_walls_against_bridge_region`
+    /// (IsOn = outside in the old strict test), then be classified as
+    /// `OverhangPerimeter`, and finally be extruded again when bridge infill
+    /// printed on top: double-extrusion.
+    ///
+    /// After the fix (IsOn = inside), those boundary segments are removed and
+    /// no `OverhangPerimeter` paths appear at the bridge layer.
+    #[test]
+    fn test_bridge_closing_layer_has_no_overhang_in_bridge_zone() {
+        use crate::core::surfaces::{
+            generate_top_bottom_surfaces_with_interior, SurfaceConfig,
+        };
+        use crate::core::walls::classify_overhang_perimeters;
+        use clipper2::Path;
+
+        // Layer 0: 10×10 hull (CCW outer) with a 2×2 porthole hole (CW inner).
+        // Porthole at (4,4)-(6,6).
+        let mut layer0 = SliceLayer::new(0.2);
+        let hull0: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        // CW winding for the hole
+        let hole0: Path = vec![(4.0, 4.0), (4.0, 6.0), (6.0, 6.0), (6.0, 4.0)].into();
+        layer0.paths.push(hull0);
+        layer0.paths.push(hole0);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+
+        // Layer 1: solid 10×10 hull — this is the bridge (closing) layer.
+        let mut layer1 = SliceLayer::new(0.4);
+        let hull1: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer1.paths.push(hull1);
+        layer1.path_roles.push(ExtrusionRole::OuterWall);
+
+        let mut layers = vec![layer0, layer1];
+
+        generate_top_bottom_surfaces_with_interior(
+            &mut layers,
+            &SurfaceConfig {
+                top_layers: 0,
+                bottom_layers: 1,
+                layer_height: 0.2,
+                infill_angle: 45.0,
+                nozzle_diameter_mm: 0.4,
+                bridge_flow_ratio: 0.8,
+                bridge_min_area_mm2: 0.0,
+                bridge_noise_filter_mm: 0.0,
+                bridge_anchor_mm: 0.4,
+            },
+            None,
+        );
+
+        // Bridge infill must have been generated on layer 1.
+        assert!(
+            layers[1].path_roles.contains(&ExtrusionRole::Bridge),
+            "Bridge must be detected at the porthole closing layer; \
+             roles={:?}",
+            layers[1].path_roles
+        );
+
+        // Now classify overhang perimeters (uses unsupported_regions set above).
+        classify_overhang_perimeters(&mut layers, 0.4);
+
+        // After clipping and overhang classification, no OuterWall or InnerWall
+        // paths that were *inside the bridge zone* should carry OverhangPerimeter.
+        // The fix ensures that wall segments running along the bridge zone outer
+        // boundary are removed by clip_walls_against_bridge_region so they cannot
+        // be reclassified as OverhangPerimeter and double-extruded by the bridge.
+        //
+        // For this simple geometry the outer hull vertices are far from the
+        // porthole bridge zone, so no OverhangPerimeter should appear on layer 1
+        // at all.
+        assert!(
+            !layers[1].path_roles.contains(&ExtrusionRole::OverhangPerimeter),
+            "No OverhangPerimeter must exist on the bridge closing layer; \
+             double-extrusion with bridge infill would result. \
+             roles={:?}",
+            layers[1].path_roles
+        );
+    }
 }

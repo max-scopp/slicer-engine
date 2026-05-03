@@ -229,11 +229,24 @@ fn expand_to_anchor(unsupported: Paths, bounds: &Paths, anchor_mm: f64) -> Paths
 /// bound the bridge void are placed d/2 (≈ 0.2 mm) *inside* the material from
 /// the void surface, so they land strictly inside the anchor strip rather than
 /// on its boundary — they are correctly identified and clipped.
-fn vertex_strictly_inside_paths_eo(x: f64, y: f64, paths: &Paths) -> bool {
+/// Returns true when the vertex is inside **or on the boundary of** the region
+/// (even-odd fill rule).  `IsOn` counts the same as `IsInside`.
+///
+/// Using `IsOn = inside` ensures that wall path vertices that sit exactly on the
+/// bridge zone outer boundary (the hull face where `expand(void, anchor)` is
+/// clipped by `perimeters[i]`) are treated as *inside* and removed during
+/// `clip_walls_against_bridge_region`.  Without this, an `IsOn` vertex is treated
+/// as "outside" (strict test), so the wall survives into
+/// `classify_overhang_perimeters` and becomes an `OverhangPerimeter` arc that
+/// later gets extruded again when bridge infill covers the same area.
+fn vertex_inside_or_on_paths_eo(x: f64, y: f64, paths: &Paths) -> bool {
     let mut inside_count = 0_usize;
     for path in paths.iter() {
         let result = clipper2::point_in_polygon(clipper2::Point::new(x, y), path);
-        if matches!(result, clipper2::PointInPolygonResult::IsInside) {
+        if matches!(
+            result,
+            clipper2::PointInPolygonResult::IsInside | clipper2::PointInPolygonResult::IsOn
+        ) {
             inside_count += 1;
         }
     }
@@ -308,16 +321,24 @@ pub(crate) fn clip_walls_against_bridge_region(layer: &mut SliceLayer, bridge_re
             continue;
         }
 
-        // Test each vertex against the bridge region using a **strict**
-        // point-in-polygon test (IsOn = outside).  Outer model-boundary paths
-        // (whose vertices sit exactly on the anchor region's outer edge after
-        // the `intersect(expanded, perimeters[i])` clip) must NOT be removed.
-        // Arachne centerlines adjacent to the bridge void are placed d/2 ≈ 0.2 mm
-        // inside the material from the void surface, so they land strictly
-        // inside the anchor strip and are correctly identified for removal.
+        // Test each vertex against the bridge region.  We count `IsOn`
+        // (exactly on the boundary) as *inside*, not outside.
+        //
+        // The bridge zone's outer boundary is formed by
+        // `intersect(expand(void, anchor), perimeters[i])`, which clips the
+        // expansion to the hull polygon.  Outer hull path vertices that sit
+        // on this hull boundary are therefore exactly `IsOn` the bridge zone
+        // outer edge.  A wall segment that runs *along* the bridge zone outer
+        // boundary (both endpoints `IsOn`) must still be removed: bridge
+        // infill lines extend to that same boundary, so keeping the wall
+        // would cause the wall arc to be classified as `OverhangPerimeter`
+        // and then extruded again when the bridge infill prints on top.
+        // Using `IsOn = inside` ensures every vertex at or within the bridge
+        // zone boundary is clipped, regardless of whether it is strictly
+        // inside or exactly on the edge.
         let in_bridge: Vec<bool> = pts
             .iter()
-            .map(|p| vertex_strictly_inside_paths_eo(p.x(), p.y(), bridge_region))
+            .map(|p| vertex_inside_or_on_paths_eo(p.x(), p.y(), bridge_region))
             .collect();
 
         // Fast path: no vertex inside bridge zone — keep entire path.
@@ -1513,5 +1534,38 @@ mod tests {
         assert_eq!(layer.paths.len(), 1, "Bridge path must not be removed");
         assert_eq!(layer.path_roles[0], ExtrusionRole::Bridge);
         assert!(!layer.is_path_open(0));
+    }
+
+    /// **Regression** — a wall path whose vertices lie exactly on the bridge
+    /// zone outer boundary (all `IsOn`, none strictly inside) must be **dropped**.
+    ///
+    /// This is the "outer hull segment running along the bridge zone clipping
+    /// face" case.  Before the fix, the strict point-in-polygon test treated
+    /// `IsOn` as "outside", so the "no vertex inside" fast path fired and kept
+    /// the path unchanged.  That path would then be classified as
+    /// `OverhangPerimeter` and printed again when bridge infill covered the same
+    /// area — double-extrusion.  The fix counts `IsOn` as *inside* via
+    /// `vertex_inside_or_on_paths_eo`, so boundary-only paths are dropped.
+    #[test]
+    fn test_clip_walls_drops_boundary_on_path() {
+        // Bridge zone: 4×4 square at (3,3)-(7,7).
+        let bridge: Path = vec![(3.0, 3.0), (7.0, 3.0), (7.0, 7.0), (3.0, 7.0)].into();
+        let bridge_region = Paths::new(vec![bridge]);
+
+        // Wall path that traces the bridge zone boundary exactly.
+        // All four vertices are IsOn the bridge zone polygon.
+        let wall: Path = vec![(3.0, 3.0), (7.0, 3.0), (7.0, 7.0), (3.0, 7.0)].into();
+        let mut layer = SliceLayer::new(0.4);
+        layer.paths.push(wall);
+        layer.path_roles.push(ExtrusionRole::OuterWall);
+
+        clip_walls_against_bridge_region(&mut layer, &bridge_region);
+
+        assert!(
+            layer.paths.is_empty(),
+            "Wall path exactly on bridge zone boundary must be dropped to prevent \
+             bridge/wall double-extrusion; got {} paths",
+            layer.paths.len()
+        );
     }
 }

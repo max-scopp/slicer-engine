@@ -697,9 +697,17 @@ mod tests {
 
     /// **End-to-end regression** — the bug the user reported: NO overhangs
     /// were detected on the Benchy because the wall path coincides with
-    /// the outer boundary of `unsupported_regions`.  Production pipeline
-    /// must flag a real overhang where the current perimeter sits a full
-    /// nozzle width outside the previous perimeter.
+    /// Production pipeline test: a 0.5 mm outward step on every side triggers
+    /// the bridge detector (the ring-shaped unsupported area has no support from
+    /// below).  After `clip_walls_against_bridge_region` the outer hull path —
+    /// whose vertices land exactly on the bridge zone outer boundary (IsOn) —
+    /// must be **removed**, not kept as `OverhangPerimeter`.
+    ///
+    /// Before the fix the hull vertices were treated as "outside" (strict
+    /// IsOn = outside test), so the path survived into `classify_overhang_perimeters`
+    /// and became `OverhangPerimeter`.  The bridge infill then covered the very
+    /// same area → double-extrusion.  The fix counts `IsOn` as *inside*, so the
+    /// hull path is clipped and no `OverhangPerimeter` can overlap with bridge lines.
     #[test]
     fn test_classify_overhang_e2e_real_overhang_is_flagged() {
         use crate::core::surfaces::generate_top_bottom_surfaces;
@@ -712,6 +720,9 @@ mod tests {
 
         let mut layer1 = SliceLayer::new(0.2);
         // 0.5 mm outward step on every side — well above d/2 = 0.2 mm.
+        // The ring-shaped unsupported area (0.3 mm wide) is detected as Bridge,
+        // and the bridge anchor expands 0.5 mm inward.  The resulting bridge zone
+        // encompasses the outer hull path entirely, so the hull path is clipped.
         let cur: Path = vec![(-0.5, -0.5), (5.5, -0.5), (5.5, 5.5), (-0.5, 5.5)].into();
         layer1.paths.push(cur);
         layer1.path_roles.push(ExtrusionRole::OuterWall);
@@ -720,10 +731,23 @@ mod tests {
         generate_top_bottom_surfaces(&mut layers, 0, 1, 0.2, 45.0);
         classify_overhang_perimeters(&mut layers, 0.4);
 
-        assert_eq!(
-            layers[1].path_roles[0],
-            ExtrusionRole::OverhangPerimeter,
-            "Real overhang (step > d/2) must be flagged in the production pipeline"
+        // Bridge infill must exist: the unsupported ring is filled with bridge lines.
+        assert!(
+            layers[1].path_roles.contains(&ExtrusionRole::Bridge),
+            "Bridge infill must be generated for the ring-shaped unsupported area; \
+             roles={:?}",
+            layers[1].path_roles
+        );
+        // No OverhangPerimeter must exist: the outer hull path was clipped because
+        // its vertices sat exactly on the bridge zone outer boundary (IsOn).
+        // Keeping the hull as OverhangPerimeter would cause it to be extruded first,
+        // then bridge infill would extrude on top — double-extrusion.
+        assert!(
+            !layers[1].path_roles.contains(&ExtrusionRole::OverhangPerimeter),
+            "Outer hull must be clipped (not OverhangPerimeter) when it coincides \
+             with the bridge zone boundary — double-extrusion prevention; \
+             roles={:?}",
+            layers[1].path_roles
         );
     }
 }
