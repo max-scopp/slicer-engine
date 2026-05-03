@@ -200,86 +200,94 @@ pub(super) fn generate_rectilinear_infill(
 
     // ── Phase 2: chain adjacent scan lines into serpentine paths ─────────────
     //
-    // We maintain a set of "open chains" — paths whose last point has not yet
-    // been connected to a segment on the next scan line.  For each new scan
-    // line we greedily match its segments to the best open chain, connecting
-    // them via a short U-turn (the distance between adjacent scan lines is
-    // exactly `line_spacing`).  When no open chain is close enough, a new
-    // chain is started.
+    // Active chains are sorted left-to-right by their last printed X coordinate
+    // and matched to scan-line segments in the same sorted order (j-th chain ↔
+    // j-th segment).  This **sorted-index correspondence** keeps each chain
+    // within the same polygon island — critical for complex cross-sections (e.g.
+    // a Benchy hull) where multiple disjoint segments appear per scan line.
     //
-    // Threshold: accept a U-turn connection when the horizontal gap between
-    // the chain's last X and the closest segment endpoint is ≤ 2× line_spacing.
-    // This handles small shape variations between consecutive scan lines while
-    // refusing to bridge large gaps that would print across void areas.
+    // A chain that has no corresponding segment on the current scan line is
+    // **immediately finalised**.  Letting a chain survive a missed scan line
+    // would allow it to reconnect many rows later, producing a long diagonal
+    // extrusion across already-printed material (the "sporadic jump / plows
+    // through" bugs).
+    //
+    // If the horizontal distance from the chain's last point to the nearest
+    // endpoint of its matched segment exceeds `connect_threshold`, the chain is
+    // also finalised and the segment starts a fresh chain.  This handles the
+    // (rare) case where an island shifts further than the threshold in a single
+    // scan line step.
     let connect_threshold = line_spacing * SERPENTINE_CONNECT_THRESHOLD;
 
-    // Each chain is a list of points in the *rotated* coordinate system.
-    // `chain_last_x[i]` caches the X coordinate of the final point of chain i.
-    let mut chains: Vec<Vec<(f64, f64)>> = Vec::new();
-    let mut chain_last_x: Vec<f64> = Vec::new();
+    // Each element: (accumulated path points in rotated coords, last_x).
+    let mut active: Vec<(Vec<(f64, f64)>, f64)> = Vec::new();
+    // Completed chains — converted to output paths in Phase 3.
+    let mut finished: Vec<Vec<(f64, f64)>> = Vec::new();
 
     for (sy, segments) in &scan_line_data {
-        // For each segment on this scan line, find the best chain to attach to.
-        // Track which segments have been consumed so we don't double-attach.
-        let mut consumed = vec![false; segments.len()];
+        // Sort active chains left-to-right so they align with sorted segments.
+        active.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
 
-        // Match each open chain to its best segment on this scan line.
-        // We iterate over chains in order; each chain is matched at most once.
-        for ci in 0..chains.len() {
-            let lx = chain_last_x[ci];
+        let n_chains = active.len();
+        let n_segs = segments.len();
+        let n_pair = n_chains.min(n_segs);
 
-            // Find the closest endpoint among unconsumed segments
-            let mut best_seg = None;
-            let mut best_dist = connect_threshold;
-            for (si, &(xs, xe)) in segments.iter().enumerate() {
-                if consumed[si] {
-                    continue;
-                }
-                let dist_start = (lx - xs).abs();
-                let dist_end = (lx - xe).abs();
-                let (dist, reversed) = if dist_start <= dist_end {
-                    (dist_start, false)
-                } else {
-                    (dist_end, true)
-                };
-                if dist < best_dist {
-                    best_dist = dist;
-                    best_seg = Some((si, reversed));
-                }
-            }
-
-            if let Some((si, reversed)) = best_seg {
-                consumed[si] = true;
-                let (xs, xe) = segments[si];
-                // Extend the chain: first point lands on the scan line (U-turn),
-                // second point is the far end of the segment.
-                if reversed {
-                    // Approach from the right end, extrude leftward
-                    chains[ci].push((xe, *sy));
-                    chains[ci].push((xs, *sy));
-                    chain_last_x[ci] = xs;
-                } else {
-                    // Approach from the left end, extrude rightward
-                    chains[ci].push((xs, *sy));
-                    chains[ci].push((xe, *sy));
-                    chain_last_x[ci] = xe;
-                }
+        // Chains with index ≥ n_segs have no corresponding segment → close them.
+        for (pts, _) in active.drain(n_pair..) {
+            if pts.len() >= 2 {
+                finished.push(pts);
             }
         }
 
-        // Any unmatched segment on this scan line starts a new chain.
-        for (si, &(xs, xe)) in segments.iter().enumerate() {
-            if consumed[si] {
-                continue;
+        // Match the remaining n_pair chains to segments by sorted index.
+        // Consuming `active` entirely lets us move Vecs without cloning.
+        let paired: Vec<(Vec<(f64, f64)>, f64)> = std::mem::take(&mut active);
+        let mut new_active: Vec<(Vec<(f64, f64)>, f64)> = Vec::with_capacity(n_segs);
+
+        for (j, (mut pts, lx)) in paired.into_iter().enumerate() {
+            let (xs, xe) = segments[j];
+
+            // Choose the "near" endpoint — whichever is closest to `lx` — as
+            // the U-turn landing point; the other end is the far end of the line.
+            let (near, far) = if (lx - xe).abs() <= (lx - xs).abs() {
+                (xe, xs)
+            } else {
+                (xs, xe)
+            };
+
+            if (lx - near).abs() <= connect_threshold {
+                // Valid U-turn: step to `near`, then extrude to `far`.
+                pts.push((near, *sy));
+                pts.push((far, *sy));
+                new_active.push((pts, far));
+            } else {
+                // Boundary shifted too far to bridge without crossing a void.
+                // Finalise the existing chain and begin a fresh one for this segment.
+                if pts.len() >= 2 {
+                    finished.push(pts);
+                }
+                new_active.push((vec![(xs, *sy), (xe, *sy)], xe));
             }
-            chains.push(vec![(xs, *sy), (xe, *sy)]);
-            chain_last_x.push(xe);
+        }
+
+        // Segments beyond n_pair represent newly appeared islands.
+        for &(xs, xe) in &segments[n_pair..] {
+            new_active.push((vec![(xs, *sy), (xe, *sy)], xe));
+        }
+
+        active = new_active;
+    }
+
+    // Finalise all chains still open after the last scan line.
+    for (pts, _) in active {
+        if pts.len() >= 2 {
+            finished.push(pts);
         }
     }
 
     // ── Phase 3: convert chains back to original coordinates ─────────────────
     let mut result_paths = Paths::new(vec![]);
-    for chain in chains {
+    for chain in finished {
         if chain.len() < 2 {
             continue;
         }

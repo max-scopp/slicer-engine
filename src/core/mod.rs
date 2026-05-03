@@ -1112,6 +1112,108 @@ mod tests {
         }
     }
 
+    /// For a region with two disjoint rectangles, the serpentine chaining must
+    /// NEVER emit a connector that crosses the void between them.
+    ///
+    /// The old buggy algorithm used global nearest-X matching: a chain from the
+    /// left rectangle could "reach across" to grab a segment from the right
+    /// rectangle, creating an extrusion line through the empty gap.
+    ///
+    /// The fixed algorithm uses sorted-index matching: j-th chain → j-th
+    /// segment (both sorted left-to-right), so each chain stays in one island.
+    #[test]
+    fn test_generate_rectilinear_infill_no_cross_island_connector() {
+        use clipper2::Path;
+
+        // Two 3×5 rectangles separated by a 4mm gap (x=3 to x=7 is void).
+        let left: Path = vec![(0.0, 0.0), (3.0, 0.0), (3.0, 5.0), (0.0, 5.0)].into();
+        let right: Path = vec![(7.0, 0.0), (10.0, 0.0), (10.0, 5.0), (7.0, 5.0)].into();
+        let mut contours = Paths::new(vec![]);
+        contours.push(left);
+        contours.push(right);
+
+        let infill = generate_rectilinear_infill(&contours, 0.5, 0.0);
+        assert!(!infill.is_empty(), "expected infill to be generated");
+
+        // Every point in the infill must be inside one of the two rectangles.
+        // Any point in the gap (x ∈ (3, 7)) is a cross-island connector — a bug.
+        let gap_x_lo = 3.0 + 1e-6;
+        let gap_x_hi = 7.0 - 1e-6;
+        for (pi, path) in infill.iter().enumerate() {
+            for pt in path.iter() {
+                let x = pt.x();
+                assert!(
+                    !(x > gap_x_lo && x < gap_x_hi),
+                    "infill path {} has a point at x={:.4} which is in the void gap \
+                     between the two rectangles — cross-island connector detected",
+                    pi,
+                    x
+                );
+            }
+        }
+    }
+
+    /// Stale-chain regression: a chain that has no matching segment on scan
+    /// line N must be closed immediately.  The old algorithm kept it open, and
+    /// it could reconnect on scan line N+K, producing a long diagonal extrusion
+    /// that "plows through" all the material printed between the two rows.
+    #[test]
+    fn test_generate_rectilinear_infill_no_stale_chain_jump() {
+        use clipper2::Path;
+
+        // A C-shape: full rectangle with a rectangular notch cut from the right
+        // side at y=[2, 3], creating a scan line with a single shorter segment
+        // in that band, while adjacent scan lines are full-width.
+        //
+        //  ┌──────────┐
+        //  │          │  y=0..2  (full width 0..10)
+        //  │   ┌──────┘  y=2..3  (only left half: 0..5)
+        //  │   │
+        //  │   └──────┐  y=3..5  (full width 0..10)
+        //  └──────────┘
+
+        // Full-width rectangle (the outer frame)
+        let outer: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 5.0), (0.0, 5.0)].into();
+        // Notch cut out of the right side (CW winding = hole)
+        let notch: Path = vec![(5.0, 2.0), (5.0, 3.0), (10.0, 3.0), (10.0, 2.0)].into();
+        let mut contours = Paths::new(vec![]);
+        contours.push(outer);
+        contours.push(notch);
+
+        let infill = generate_rectilinear_infill(&contours, 0.5, 0.0);
+        assert!(!infill.is_empty(), "expected infill to be generated");
+
+        // No infill point should be in the notched-out region (x>5, y∈[2,3]).
+        for (pi, path) in infill.iter().enumerate() {
+            for pt in path.iter() {
+                let x = pt.x();
+                let y = pt.y();
+                assert!(
+                    !(x > 5.0 + 1e-6 && y > 2.0 + 1e-6 && y < 3.0 - 1e-6),
+                    "infill path {} has a point ({:.4}, {:.4}) inside the notch void",
+                    pi,
+                    x,
+                    y
+                );
+            }
+        }
+
+        // Additionally, no single infill path should have a Y span larger than
+        // the shape height (~5mm) — a stale chain reattaching after many scan
+        // lines would create a path spanning the entire Y range.
+        for (pi, path) in infill.iter().enumerate() {
+            let ys: Vec<f64> = path.iter().map(|pt| pt.y()).collect();
+            let y_span = ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+                - ys.iter().cloned().fold(f64::INFINITY, f64::min);
+            assert!(
+                y_span <= 5.5,
+                "infill path {} has a Y span of {:.4}mm which suggests a stale-chain jump",
+                pi,
+                y_span
+            );
+        }
+    }
+
     /// Infill perimeter gap: with a positive gap, the infill area should be
     /// smaller (fewer infill paths) than with gap=0.
     #[test]
