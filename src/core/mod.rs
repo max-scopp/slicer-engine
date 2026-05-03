@@ -1696,4 +1696,110 @@ mod tests {
             layers[1].path_roles
         );
     }
+
+    /// **Regression** — a hull that grows slightly outward (step < d/2) must
+    /// NOT produce bridge infill in the wall zone.  Before the `+d/2` inflate
+    /// fix, `difference(region, prev_perimeter)` returned the thin new-area
+    /// strip as "unsupported" even though it is within the previous bead's
+    /// physical extent.
+    #[test]
+    fn test_no_false_bridge_for_thin_outward_lean() {
+        use crate::core::surfaces::{
+            generate_top_bottom_surfaces_with_interior, SurfaceConfig,
+        };
+        use clipper2::Path;
+
+        // Layer 0: solid 10×10 hull.
+        let mut layer0 = SliceLayer::new(0.2);
+        let hull0: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer0.paths.push(hull0);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+
+        // Layer 1: hull grown by 0.05 mm on every side (step = 0.05 mm < d/2 = 0.2 mm).
+        // The new thin annular strip IS physically supported by the previous bead.
+        let mut layer1 = SliceLayer::new(0.2);
+        let hull1: Path = vec![
+            (-0.05, -0.05),
+            (10.05, -0.05),
+            (10.05, 10.05),
+            (-0.05, 10.05),
+        ]
+        .into();
+        layer1.paths.push(hull1);
+        layer1.path_roles.push(ExtrusionRole::OuterWall);
+
+        let mut layers = vec![layer0, layer1];
+
+        // Disable area and noise filters so only the d/2 inflate guard can
+        // suppress the false bridge.
+        generate_top_bottom_surfaces_with_interior(
+            &mut layers,
+            &SurfaceConfig {
+                top_layers: 0,
+                bottom_layers: 1,
+                layer_height: 0.2,
+                infill_angle: 45.0,
+                nozzle_diameter_mm: 0.4,
+                bridge_flow_ratio: 0.8,
+                bridge_min_area_mm2: 0.0,
+                bridge_noise_filter_mm: 0.0,
+                bridge_anchor_mm: 0.0,
+            },
+            None,
+        );
+
+        let has_bridge = layers[1].path_roles.contains(&ExtrusionRole::Bridge);
+        assert!(
+            !has_bridge,
+            "Thin outward lean (step < d/2) must NOT produce bridge infill in the wall zone. \
+             roles={:?}",
+            layers[1].path_roles
+        );
+    }
+
+    /// **Regression** — a closed wall loop that crosses over an air gap on
+    /// only one side must be **split**: the in-air sub-segment gets
+    /// `OverhangPerimeter`; the supported sub-segment keeps the original
+    /// `OuterWall` role.  The whole-path 50%-threshold would never flag this.
+    #[test]
+    fn test_classify_overhang_perimeters_splits_mixed_path() {
+        use super::walls::classify_overhang_perimeters;
+        use clipper2::Path;
+
+        // 10×10 outer wall square.  Air region: a 10×3 strip covering the top
+        // side (y ∈ [8, 11]).  Two of the four vertices sit in this strip.
+        let wall: Path =
+            vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        let mut layer = SliceLayer::new(0.4);
+        layer.paths.push(wall);
+        layer.path_roles.push(ExtrusionRole::OuterWall);
+
+        let air: Path = vec![(0.0, 8.0), (10.0, 8.0), (10.0, 11.0), (0.0, 11.0)].into();
+        layer.unsupported_regions = Paths::new(vec![air]);
+
+        let mut layers = vec![layer];
+        classify_overhang_perimeters(&mut layers, 0.4);
+
+        // After splitting there must be at least two separate paths.
+        let path_count = layers[0].paths.iter().count();
+        assert!(
+            path_count >= 2,
+            "Mixed path must be split into at least 2 sub-segments; got {path_count}"
+        );
+        // One segment must carry OverhangPerimeter (the top-side crossing).
+        assert!(
+            layers[0]
+                .path_roles
+                .contains(&ExtrusionRole::OverhangPerimeter),
+            "Split must produce at least one OverhangPerimeter segment. \
+             roles={:?}",
+            layers[0].path_roles
+        );
+        // The remaining segment(s) must keep OuterWall.
+        assert!(
+            layers[0].path_roles.contains(&ExtrusionRole::OuterWall),
+            "Split must keep at least one OuterWall segment. roles={:?}",
+            layers[0].path_roles
+        );
+    }
 }

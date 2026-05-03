@@ -906,8 +906,40 @@ pub fn generate_top_bottom_surfaces_with_interior(
                     (anchored, clip_bottom(supported_raw))
                 } else {
                     // Step 0 — raw unsupported area.
-                    let raw = difference(region.clone(), prev_perimeter.clone(), FillRule::EvenOdd)
-                        .unwrap_or_default();
+                    //
+                    // Inflate `prev_perimeter` by the bead half-width
+                    // (`nozzle_diameter_mm / 2`) before differencing.  This
+                    // matches the `raw_unsupported` geometry used for overhang
+                    // classification and gives a natural ~45° threshold:
+                    //
+                    // • Slight outward lean (step `S < d/2`): the inflated
+                    //   previous perimeter fully covers the new area → `raw`
+                    //   is empty → no false bridge in the wall zone.
+                    // • Genuine hole closure (porthole, window bar, door
+                    //   header): the hole area is inside the inflation of the
+                    //   hull-with-hole (the hole itself grows), so the hole
+                    //   area is NOT subtracted → `raw` correctly contains
+                    //   the hole closure area → bridge detected.
+                    let bridge_support_envelope = inflate(
+                        prev_perimeter.clone(),
+                        nozzle_diameter_mm * 0.5,
+                        JoinType::Round,
+                        EndType::Polygon,
+                        2.0,
+                    );
+                    let raw = if bridge_support_envelope.is_empty() {
+                        // Degenerate case: inflate produced nothing (e.g., all
+                        // geometry collapsed to a point).  Fall back to treating
+                        // the entire region as unsupported — conservative but
+                        // safe.  Note: the prev_perimeter.is_empty() fast-path
+                        // above already handles the first-layer / no-previous-
+                        // geometry case, so reaching here with an empty envelope
+                        // is unexpected in normal operation.
+                        region.clone()
+                    } else {
+                        difference(region.clone(), bridge_support_envelope, FillRule::EvenOdd)
+                            .unwrap_or_default()
+                    };
                     // Step 1 — morphological opening (noise filter).
                     let opened = morphological_open(raw, bridge_noise_filter_mm);
                     // Step 2 — drop islands below the area threshold.

@@ -203,21 +203,33 @@ fn remove_inner_walls_from_layer(layer: &mut SliceLayer) {
     layer.path_widths = new_widths;
 }
 
-/// Classify wall paths whose centerline lies inside an unsupported region
-/// as [`ExtrusionRole::OverhangPerimeter`].
+/// Classify wall paths whose centerline crosses unsupported air as
+/// [`ExtrusionRole::OverhangPerimeter`], splitting paths at the
+/// supported/unsupported boundary so that only the in-air sub-segment
+/// receives bridge settings.
 ///
-/// A wall (`OuterWall` or `InnerWall`) is reclassified when at least
-/// `OVERHANG_VERTEX_THRESHOLD` (50 %) of its vertices fall **inside or on
-/// the boundary of** the layer's `unsupported_regions` polygon set.
+/// ## What this does
 ///
-/// ## Geometry contract — read this before changing the test policy
+/// For each `OuterWall` / `InnerWall` path in a layer that has a non-empty
+/// `unsupported_regions`:
 ///
-/// `perimeters[i]` is built by `perimeter_paths_of(layer)` and contains
-/// the **OuterWall paths themselves** — i.e. the same closed centerline
-/// polygons that the wall classifier is iterating over.  Consequently,
-/// every wall vertex lies *exactly on* the boundary of `perimeters[i]`
-/// and therefore on the **outer** boundary of any region derived from it
-/// by subtracting another polygon set.
+/// 1. Every vertex is tested against `unsupported_regions` with an even-odd
+///    point-in-polygon query (`IsOn` counts as inside — see geometry note).
+/// 2. If **no** vertex is in air: path kept unchanged.
+/// 3. If **all** vertices are in air: entire path reclassified as
+///    `OverhangPerimeter`.
+/// 4. If the path is **mixed** (some vertices in air, some on support): the
+///    path is split at each air/support transition.  Each sub-segment is
+///    emitted as either `OverhangPerimeter` (in-air run) or the original
+///    wall role (supported run).  The two parts together cover the original
+///    closed loop.
+///
+/// Splitting correctly handles real-world cases where a large hull loop has
+/// only a short segment crossing over a gap (e.g. the top bar of a Benchy
+/// window frame): the 50 %-threshold whole-path heuristic would never flag
+/// that small segment, but per-segment classification does.
+///
+/// ## Geometry contract — read before changing the boundary policy
 ///
 /// `unsupported_regions` is computed in
 /// [`generate_top_bottom_surfaces_with_interior`] as
@@ -226,81 +238,173 @@ fn remove_inner_walls_from_layer(layer: &mut SliceLayer) {
 /// perimeters[i] − inflate(perimeters[i-1], +nozzle_diameter / 2)
 /// ```
 ///
-/// The inflation by `d/2` encodes the fact that the previous-layer bead
-/// extends `d/2` beyond its centerline — that is the actual material a
-/// current-layer wall can land on.  This means:
+/// The `+d/2` inflation encodes the physical bead width: the previous layer's
+/// bead extends `d/2` beyond its centerline.  Consequences:
 ///
-/// * For a slight outward lean (horizontal step `S < d/2`) the inflated
-///   previous perimeter fully contains `perimeters[i]`, so
-///   `unsupported_regions` is empty → no wall flagged.  This kills the
-///   "80 % of the Benchy is overhang" false positive without any vertex-
-///   fraction tuning.
-/// * For a real overhang (`S > d/2`, ≈ 45° lean for 0.2 mm layer / 0.4 mm
-///   nozzle) a meaningful air strip exists.  The wall centerline lies on
-///   its outer boundary, so the parity test must count `IsOn` as
-///   **inside** to flag it.
+/// * Slight outward lean (`S < d/2`): inflated envelope fully covers the new
+///   area → `unsupported_regions` is empty → nothing flagged.
+/// * Real overhang (`S > d/2`, ≈ 45°): a meaningful air strip appears.  Wall
+///   vertices lie on the **outer boundary** of that strip, so the parity test
+///   **must** count `IsOn` as inside — do not change this policy.
 ///
-/// **Do not change `IsOn` to count as outside.**  That was tried as a
-/// "stricter" guard against false positives — it instead suppresses
-/// **all** overhang detection, because every wall vertex is on the
-/// strip's outer boundary by construction.
-///
-/// **Do not pre-erode `unsupported_regions`.**  An earlier version
-/// eroded by `0.6 × nozzle_diameter`, which moves the strip's outer
-/// boundary past the wall centerline and likewise suppresses all
-/// detection.
-///
-/// The classification runs **after**
-/// [`generate_top_bottom_surfaces_with_interior`] so that
-/// `unsupported_regions` is populated; it operates on whole paths only —
-/// path splitting at the supported / unsupported boundary is left for a
-/// future enhancement.
-///
-/// Without this step, a wall printed in mid-air (the top frame of the
-/// Benchy steering-wheel window, for example) carries the normal wall
-/// speed and 100 % flow, which sags badly.  After this step it is treated
-/// as a bridge by the G-code generator (slow speed, reduced flow, fan
-/// boost) so it lands cleanly on the supported anchor at each end.
+/// **Do not pre-erode `unsupported_regions`.**  An earlier version eroded by
+/// `0.6 × d`, which moves the strip's outer boundary past the wall centerline
+/// and suppresses all detection.
 pub(crate) fn classify_overhang_perimeters(layers: &mut [SliceLayer], _nozzle_diameter_mm: f64) {
-    /// Minimum fraction of a wall path's vertices that must lie inside or
-    /// on the boundary of `unsupported_regions` for the whole path to be
-    /// reclassified as `OverhangPerimeter`.
-    ///
-    /// A simple majority (50 %) is appropriate because we classify whole
-    /// paths — without splitting, the choice is binary, and the geometric
-    /// `+d/2` support envelope already biases against false positives on
-    /// slightly outward-leaning hulls.
-    const OVERHANG_VERTEX_THRESHOLD: f64 = 0.5;
-
     for layer in layers.iter_mut() {
         if layer.unsupported_regions.is_empty() {
             continue;
         }
-        let air = &layer.unsupported_regions;
+        // Clone required: we need to read `air` throughout the path loop
+        // below while also mutably rebuilding `layer.paths` / `layer.path_roles`
+        // / `layer.path_widths` at the end.  A shared reference would prevent
+        // the later mutable assignment.
+        let air = layer.unsupported_regions.clone();
 
-        // Make sure path_roles is at least as long as paths so we can write
-        // back without panicking.  Defaults preserve existing behaviour.
+        // Pad roles/widths so indices are always valid.
         while layer.path_roles.len() < layer.paths.len() {
             layer.path_roles.push(ExtrusionRole::OuterWall);
         }
+        while layer.path_widths.len() < layer.paths.len() {
+            layer.path_widths.push(None);
+        }
 
-        for (i, path) in layer.paths.iter().enumerate() {
-            let role = layer.path_roles[i];
+        let mut new_paths = Paths::new(vec![]);
+        let mut new_roles: Vec<ExtrusionRole> = Vec::new();
+        let mut new_widths: Vec<Option<f64>> = Vec::new();
+
+        for (path_idx, path) in layer.paths.iter().enumerate() {
+            let role = layer.path_roles[path_idx];
+            let width = layer.path_widths.get(path_idx).copied().flatten();
+
+            // Only wall roles can be reclassified.
             if role != ExtrusionRole::OuterWall && role != ExtrusionRole::InnerWall {
+                new_paths.push(path.clone());
+                new_roles.push(role);
+                new_widths.push(width);
                 continue;
             }
-            let mut total = 0_usize;
-            let mut inside = 0_usize;
-            for pt in path.iter() {
-                total += 1;
-                if point_inside_or_on_paths_eo(pt.x(), pt.y(), air) {
-                    inside += 1;
+
+            let pts: Vec<_> = path.iter().collect();
+            let n = pts.len();
+            if n < 2 {
+                new_paths.push(path.clone());
+                new_roles.push(role);
+                new_widths.push(width);
+                continue;
+            }
+
+            // Per-vertex air/support status.
+            let in_air: Vec<bool> = pts
+                .iter()
+                .map(|p| point_inside_or_on_paths_eo(p.x(), p.y(), &air))
+                .collect();
+
+            let any_air = in_air.iter().any(|&b| b);
+            if !any_air {
+                // Entirely supported — keep as-is.
+                new_paths.push(path.clone());
+                new_roles.push(role);
+                new_widths.push(width);
+                continue;
+            }
+
+            let any_supported = in_air.iter().any(|&b| !b);
+            if !any_supported {
+                // Entirely in air — whole path becomes OverhangPerimeter.
+                new_paths.push(path.clone());
+                new_roles.push(ExtrusionRole::OverhangPerimeter);
+                new_widths.push(width);
+                continue;
+            }
+
+            // ── Mixed path: split at air / support transitions ────────────
+            //
+            // Strategy: find the first transition point in the closed loop
+            // and start the walk there so the first and last segments belong
+            // to different roles.  After collecting all segments, merge the
+            // first and last ones if they accidentally share the same role
+            // (this can happen when the wrap-around creates a micro-segment
+            // at the starting vertex).
+            //
+            // The shared "overlap" vertex at each transition ensures no gap
+            // in the printed path and that the entry/exit edges of the air
+            // zone both receive overhang settings.
+
+            // Find the first transition (last vertex of a run before the
+            // status changes), then start at the first vertex of the next run.
+            let first_trans = (0..n)
+                .find(|&i| in_air[i] != in_air[(i + 1) % n])
+                .unwrap(); // safe: any_air && any_supported guarantees ≥ 1 transition
+            let start = (first_trans + 1) % n;
+
+            let mut segs: Vec<(Vec<(f64, f64)>, bool)> = Vec::new();
+            let mut seg: Vec<(f64, f64)> = vec![(pts[start].x(), pts[start].y())];
+            let mut seg_air = in_air[start];
+
+            for k in 1..=n {
+                let idx = (start + k) % n;
+                let v = (pts[idx].x(), pts[idx].y());
+                let v_air = in_air[idx];
+
+                if v_air == seg_air {
+                    seg.push(v);
+                } else {
+                    // Transition: capture the shared overlap vertex so there
+                    // is no gap at the seam, then start the new segment.
+                    // `seg` is initialised with at least one vertex (pts[start])
+                    // and every push keeps it non-empty, so last() never fails.
+                    let last_v = *seg.last().unwrap();
+                    segs.push((seg, seg_air));
+                    seg = vec![last_v, v];
+                    seg_air = v_air;
                 }
             }
-            if total > 0 && (inside as f64) / (total as f64) >= OVERHANG_VERTEX_THRESHOLD {
-                layer.path_roles[i] = ExtrusionRole::OverhangPerimeter;
+            segs.push((seg, seg_air));
+
+            // Merge first and last segments when they have the same role.
+            // This handles the wrap-around case where walking a closed loop
+            // from the middle of a run produces a short "closing" fragment
+            // of the same type as the first segment.
+            if segs.len() >= 2 && segs[0].1 == segs.last().unwrap().1 {
+                let last = segs.pop().unwrap();
+                // Invariant: the last element of `last.0` equals `segs[0].0[0]`
+                // because every segment starts with the last vertex of its
+                // predecessor (the shared seam vertex from the transition loop
+                // above), and at k=n the walk lands back on `pts[start]` which
+                // seeded `segs[0]`.  The `[1..]` skip removes that duplicate.
+                debug_assert_eq!(
+                    last.0.last(),
+                    segs[0].0.first(),
+                    "merge invariant: last segment's final vertex must equal \
+                     first segment's opening vertex (shared seam)"
+                );
+                let first = &mut segs[0];
+                let mut merged = last.0;
+                merged.extend_from_slice(&first.0[1..]);
+                first.0 = merged;
+            }
+
+            // Emit all segments.
+            for (verts, is_air_seg) in segs {
+                if verts.len() < 2 {
+                    continue;
+                }
+                let seg_role = if is_air_seg {
+                    ExtrusionRole::OverhangPerimeter
+                } else {
+                    role
+                };
+                let seg_path: Path = verts.into();
+                new_paths.push(seg_path);
+                new_roles.push(seg_role);
+                new_widths.push(width);
             }
         }
+
+        layer.paths = new_paths;
+        layer.path_roles = new_roles;
+        layer.path_widths = new_widths;
     }
 }
 
