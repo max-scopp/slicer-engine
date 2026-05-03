@@ -277,13 +277,16 @@ pub(crate) fn classify_overhang_perimeters(layers: &mut [SliceLayer], _nozzle_di
         for (path_idx, path) in layer.paths.iter().enumerate() {
             let role = layer.path_roles[path_idx];
             let width = layer.path_widths.get(path_idx).copied().flatten();
+            // Whether this path was already split into an open arc by an
+            // earlier pass (e.g. clip_walls_against_bridge_region).
+            let is_already_open = layer.is_path_open(path_idx);
 
             // Only wall roles can be reclassified.
             if role != ExtrusionRole::OuterWall && role != ExtrusionRole::InnerWall {
                 new_paths.push(path.clone());
                 new_roles.push(role);
                 new_widths.push(width);
-                new_is_open.push(layer.is_path_open(path_idx));
+                new_is_open.push(is_already_open);
                 continue;
             }
 
@@ -293,7 +296,7 @@ pub(crate) fn classify_overhang_perimeters(layers: &mut [SliceLayer], _nozzle_di
                 new_paths.push(path.clone());
                 new_roles.push(role);
                 new_widths.push(width);
-                new_is_open.push(layer.is_path_open(path_idx));
+                new_is_open.push(is_already_open);
                 continue;
             }
 
@@ -308,7 +311,14 @@ pub(crate) fn classify_overhang_perimeters(layers: &mut [SliceLayer], _nozzle_di
             // (e.g. the horizontal top-bar of a window frame) where the
             // corner vertices sit exactly on the inflate(perimeters[i-1], d/2)
             // boundary while the edge interior is clearly above an open gap.
-            for i in 0..n {
+            //
+            // For already-open arc paths, skip the phantom closing edge
+            // (last vertex → first vertex).  That edge doesn't exist in the
+            // arc and its midpoint may cross the bridge zone or some other
+            // removed area, which would incorrectly propagate in-air status
+            // to the arc endpoints.
+            let midpoint_edges = if is_already_open { n - 1 } else { n };
+            for i in 0..midpoint_edges {
                 let j = (i + 1) % n;
                 if !in_air[i] || !in_air[j] {
                     let mx = (pts[i].x() + pts[j].x()) * 0.5;
@@ -326,23 +336,62 @@ pub(crate) fn classify_overhang_perimeters(layers: &mut [SliceLayer], _nozzle_di
                 new_paths.push(path.clone());
                 new_roles.push(role);
                 new_widths.push(width);
-                new_is_open.push(layer.is_path_open(path_idx));
+                new_is_open.push(is_already_open);
                 continue;
             }
 
             let any_supported = in_air.iter().any(|&b| !b);
             if !any_supported {
                 // Entirely in air — whole path becomes OverhangPerimeter.
-                // The path is still the original closed loop; only the role
-                // changes.  It stays closed (path_is_open = false).
+                // Preserve the open/closed state of the original path.
                 new_paths.push(path.clone());
                 new_roles.push(ExtrusionRole::OverhangPerimeter);
                 new_widths.push(width);
-                new_is_open.push(false);
+                new_is_open.push(is_already_open);
                 continue;
             }
 
             // ── Mixed path: split at air / support transitions ────────────
+            //
+            // For already-open arc paths, use a simple linear walk (no
+            // wrap-around): the closing edge doesn't exist so we must not
+            // treat vertex 0 as the successor of vertex n-1.
+            if is_already_open {
+                let mut segs: Vec<(Vec<(f64, f64)>, bool)> = Vec::new();
+                let mut seg: Vec<(f64, f64)> = vec![(pts[0].x(), pts[0].y())];
+                let mut seg_air = in_air[0];
+
+                for k in 1..n {
+                    let v = (pts[k].x(), pts[k].y());
+                    let v_air = in_air[k];
+                    if v_air == seg_air {
+                        seg.push(v);
+                    } else {
+                        let last_v = *seg.last().unwrap();
+                        segs.push((seg, seg_air));
+                        seg = vec![last_v, v];
+                        seg_air = v_air;
+                    }
+                }
+                segs.push((seg, seg_air));
+
+                for (verts, is_air_seg) in segs {
+                    if verts.len() < 2 {
+                        continue;
+                    }
+                    let seg_role = if is_air_seg {
+                        ExtrusionRole::OverhangPerimeter
+                    } else {
+                        role
+                    };
+                    let seg_path: Path = verts.into();
+                    new_paths.push(seg_path);
+                    new_roles.push(seg_role);
+                    new_widths.push(width);
+                    new_is_open.push(true); // sub-segments of an open arc are also open
+                }
+                continue;
+            }
             //
             // Strategy: find the first transition point in the closed loop
             // and start the walk there so the first and last segments belong

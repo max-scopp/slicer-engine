@@ -217,6 +217,177 @@ fn expand_to_anchor(unsupported: Paths, bounds: &Paths, anchor_mm: f64) -> Paths
     intersect(expanded, bounds.clone(), FillRule::EvenOdd).unwrap_or_default()
 }
 
+/// Even-odd point-in-polygon test against a `Paths` set — **strict** variant.
+///
+/// Returns `true` only when the point lies **strictly inside** an odd number of
+/// sub-paths.  Boundary points (`IsOn`) are treated as **outside**.
+///
+/// Used for bridge-zone wall clipping where paths that run exactly along the
+/// outer model boundary (e.g. the hull of the Benchy, or the outer wall in an
+/// overhang test case) should never be removed even though they sit precisely on
+/// the outer edge of the bridge anchor region.  Arachne wall centerlines that
+/// bound the bridge void are placed d/2 (≈ 0.2 mm) *inside* the material from
+/// the void surface, so they land strictly inside the anchor strip rather than
+/// on its boundary — they are correctly identified and clipped.
+fn vertex_strictly_inside_paths_eo(x: f64, y: f64, paths: &Paths) -> bool {
+    let mut inside_count = 0_usize;
+    for path in paths.iter() {
+        let result = clipper2::point_in_polygon(clipper2::Point::new(x, y), path);
+        if matches!(result, clipper2::PointInPolygonResult::IsInside) {
+            inside_count += 1;
+        }
+    }
+    inside_count % 2 == 1
+}
+
+/// Remove the portions of OuterWall / InnerWall paths that fall inside the
+/// bridge infill region, so bridge infill and wall extrusions don't overlap.
+///
+/// ## Why this is needed
+///
+/// The bridge region (`anchored`) is intentionally expanded by `bridge_anchor_mm`
+/// into the surrounding wall material so that each bridge strand starts inside
+/// the solid wall rather than ending mid-air.  Without this step, the wall path
+/// around the feature (e.g. the window-hole boundary loop on the Benchy) would
+/// print a segment crossing the same area that the bridge infill covers, doubling
+/// the extrusion and degrading the bridge.
+///
+/// ## What this does
+///
+/// 1. For each `OuterWall` / `InnerWall` path, checks which vertices fall inside
+///    `bridge_region` (using an even-odd point-in-polygon test; `IsOn` = inside).
+/// 2. Segments the path into runs of inside / outside vertices.
+/// 3. **Discards** in-bridge runs.
+/// 4. Keeps outside runs as **open arc** sub-paths (`path_is_open = true`).
+///
+/// Non-wall paths (bridge infill, infill, skirt, etc.) are kept unchanged.
+///
+/// This runs in the serial apply pass of
+/// [`generate_top_bottom_surfaces_with_interior`] **before**
+/// `add_bridge_infill_for_region`, so bridge lines are placed in the space
+/// the wall deliberately vacated.
+pub(crate) fn clip_walls_against_bridge_region(layer: &mut SliceLayer, bridge_region: &Paths) {
+    if bridge_region.is_empty() {
+        return;
+    }
+
+    // Pad roles / widths so indices are always valid.
+    while layer.path_roles.len() < layer.paths.len() {
+        layer.path_roles.push(ExtrusionRole::OuterWall);
+    }
+    while layer.path_widths.len() < layer.paths.len() {
+        layer.path_widths.push(None);
+    }
+
+    let mut new_paths = Paths::new(vec![]);
+    let mut new_roles: Vec<ExtrusionRole> = Vec::new();
+    let mut new_widths: Vec<Option<f64>> = Vec::new();
+    let mut new_is_open: Vec<bool> = Vec::new();
+
+    for (path_idx, path) in layer.paths.iter().enumerate() {
+        let role = layer.role_for_path(path_idx);
+        let width = layer.width_for_path(path_idx);
+        let is_open = layer.is_path_open(path_idx);
+
+        // Only wall paths need bridge-zone clipping.
+        if role != ExtrusionRole::OuterWall && role != ExtrusionRole::InnerWall {
+            new_paths.push(path.clone());
+            new_roles.push(role);
+            new_widths.push(width);
+            new_is_open.push(is_open);
+            continue;
+        }
+
+        let pts: Vec<_> = path.iter().collect();
+        let n = pts.len();
+        if n < 2 {
+            new_paths.push(path.clone());
+            new_roles.push(role);
+            new_widths.push(width);
+            new_is_open.push(is_open);
+            continue;
+        }
+
+        // Test each vertex against the bridge region.
+        // IsOn counts as inside so that wall centerlines sitting exactly on the
+        // bridge boundary are correctly swept into the clip zone.
+        let in_bridge: Vec<bool> = pts
+            .iter()
+            .map(|p| vertex_strictly_inside_paths_eo(p.x(), p.y(), bridge_region))
+            .collect();
+
+        // Fast path: no vertex inside bridge zone — keep entire path.
+        if !in_bridge.iter().any(|&b| b) {
+            new_paths.push(path.clone());
+            new_roles.push(role);
+            new_widths.push(width);
+            new_is_open.push(is_open);
+            continue;
+        }
+
+        // Fast path: ALL vertices inside bridge zone — drop entire path.
+        if !in_bridge.iter().any(|&b| !b) {
+            continue;
+        }
+
+        // Mixed: split the closed loop, keeping only outside (non-bridge)
+        // segments.  Uses the same algorithm as classify_overhang_perimeters:
+        // start at the first vertex after a transition so the first and last
+        // runs can be merged if they share the same status.
+        let first_trans = (0..n)
+            .find(|&i| in_bridge[i] != in_bridge[(i + 1) % n])
+            .unwrap(); // safe: mixed guarantees ≥ 1 transition
+        let start = (first_trans + 1) % n;
+
+        let mut segs: Vec<(Vec<(f64, f64)>, bool)> = Vec::new();
+        let mut seg: Vec<(f64, f64)> = vec![(pts[start].x(), pts[start].y())];
+        let mut seg_in = in_bridge[start];
+
+        for k in 1..=n {
+            let idx = (start + k) % n;
+            let v = (pts[idx].x(), pts[idx].y());
+            let v_in = in_bridge[idx];
+
+            if v_in == seg_in {
+                seg.push(v);
+            } else {
+                let last_v = *seg.last().unwrap();
+                segs.push((seg, seg_in));
+                seg = vec![last_v, v];
+                seg_in = v_in;
+            }
+        }
+        segs.push((seg, seg_in));
+
+        // Merge first and last segments when they have the same status (same
+        // wrap-around handling as classify_overhang_perimeters).
+        if segs.len() >= 2 && segs[0].1 == segs.last().unwrap().1 {
+            let last = segs.pop().unwrap();
+            let first = &mut segs[0];
+            let mut merged = last.0;
+            merged.extend_from_slice(&first.0[1..]);
+            first.0 = merged;
+        }
+
+        // Emit only outside (non-bridge) segments as open arcs.
+        for (verts, in_bridge_seg) in segs {
+            if in_bridge_seg || verts.len() < 2 {
+                continue; // discard bridge-zone segment
+            }
+            let seg_path: clipper2::Path = verts.into();
+            new_paths.push(seg_path);
+            new_roles.push(role);
+            new_widths.push(width);
+            new_is_open.push(true); // results are open arcs
+        }
+    }
+
+    layer.paths = new_paths;
+    layer.path_roles = new_roles;
+    layer.path_widths = new_widths;
+    layer.path_is_open = new_is_open;
+}
+
 /// Add bridge infill for an unsupported `region` to a layer.
 ///
 /// Unlike solid surface infill (`add_solid_infill_for_region`), bridge infill:
@@ -1033,6 +1204,13 @@ pub fn generate_top_bottom_surfaces_with_interior(
         if !bridge_region.is_empty() {
             #[cfg(not(target_arch = "wasm32"))]
             let t = Instant::now();
+            // Clip wall paths to stop at the bridge zone boundary so that wall
+            // extrusions and bridge infill lines don't overlap.  The bridge
+            // region expands `bridge_anchor_mm` into the surrounding wall
+            // material; clipping walls at that boundary means each strand
+            // starts exactly where the wall ends, providing the anchor bite
+            // without doubling the extrusion.
+            clip_walls_against_bridge_region(&mut layers[i], &bridge_region);
             add_bridge_infill_for_region(
                 &mut layers[i],
                 &bridge_region,
@@ -1215,5 +1393,121 @@ fn trim_surfaces_to_walls(layers: &mut [SliceLayer], overlap_percent: f64, nozzl
         layer.paths = new_paths;
         layer.path_roles = new_roles;
         layer.path_widths = new_widths;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clipper2::{Path, Paths};
+
+    /// A wall path that lies entirely outside the bridge region must be kept
+    /// unchanged with path_is_open = false.
+    #[test]
+    fn test_clip_walls_leaves_outside_paths_unchanged() {
+        // Wall at x ∈ [0, 2], y ∈ [0, 2] — entirely left of the bridge zone.
+        let wall: Path = vec![(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)].into();
+        let mut layer = SliceLayer::new(0.4);
+        layer.paths.push(wall);
+        layer.path_roles.push(ExtrusionRole::OuterWall);
+
+        // Bridge region at x ∈ [5, 9], y ∈ [0, 2] — far from the wall.
+        let bridge: Path = vec![(5.0, 0.0), (9.0, 0.0), (9.0, 2.0), (5.0, 2.0)].into();
+        let bridge_region = Paths::new(vec![bridge]);
+
+        clip_walls_against_bridge_region(&mut layer, &bridge_region);
+
+        assert_eq!(layer.paths.len(), 1, "path count unchanged");
+        assert_eq!(layer.path_roles[0], ExtrusionRole::OuterWall);
+        assert!(!layer.is_path_open(0), "should stay closed");
+    }
+
+    /// A wall path that lies entirely inside the bridge region must be dropped.
+    #[test]
+    fn test_clip_walls_drops_fully_inside_paths() {
+        // Wall at x ∈ [1, 3], y ∈ [1, 3] — entirely inside the bridge zone.
+        let wall: Path = vec![(1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0)].into();
+        let mut layer = SliceLayer::new(0.4);
+        layer.paths.push(wall);
+        layer.path_roles.push(ExtrusionRole::OuterWall);
+
+        // Bridge region that fully contains the wall.
+        let bridge: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        let bridge_region = Paths::new(vec![bridge]);
+
+        clip_walls_against_bridge_region(&mut layer, &bridge_region);
+
+        assert_eq!(layer.paths.len(), 0, "fully-inside wall must be dropped");
+    }
+
+    /// A rectangular wall loop whose top segment crosses the bridge zone should
+    /// be split: the top (in-bridge) segment is dropped and the three remaining
+    /// sides become one open arc.
+    ///
+    /// This models the Benchy window-hole boundary path on the bridge layer:
+    /// a rectangular loop with its top segment directly over the bridge infill.
+    ///
+    /// The bridge zone is intentionally wider than the wall loop so that the top
+    /// vertices land strictly *inside* the zone rather than on its boundary.  In
+    /// the real pipeline, Arachne wall centerlines sit d/2 ≈ 0.2 mm inside the
+    /// void surface and thus strictly inside the anchor strip — the strict
+    /// point-in-polygon test (IsOn = outside) is what keeps outer model-boundary
+    /// paths from being incorrectly clipped.
+    #[test]
+    fn test_clip_walls_splits_mixed_path_into_open_arc() {
+        // Rectangular wall loop:
+        //   bottom-left (0,0) → bottom-right (10,0) → top-right (10,2) → top-left (0,2)
+        // The "top" vertices (y=2) must be strictly inside the bridge zone.
+        let wall: Path =
+            vec![(0.0, 0.0), (10.0, 0.0), (10.0, 2.0), (0.0, 2.0)].into();
+        let mut layer = SliceLayer::new(0.4);
+        layer.paths.push(wall);
+        layer.path_roles.push(ExtrusionRole::OuterWall);
+
+        // Bridge zone wider than the wall (-1 to 11) so the wall top vertices
+        // land strictly inside (not on the boundary of) the bridge polygon.
+        let bridge: Path =
+            vec![(-1.0, 1.5), (11.0, 1.5), (11.0, 4.0), (-1.0, 4.0)].into();
+        let bridge_region = Paths::new(vec![bridge]);
+
+        clip_walls_against_bridge_region(&mut layer, &bridge_region);
+
+        // The top segment (y=2, strictly inside the bridge zone) should be
+        // removed.  The remaining 3 sides form one open arc.
+        assert!(
+            !layer.paths.is_empty(),
+            "outside segment must be retained"
+        );
+        // All resulting paths must be open arcs.
+        for idx in 0..layer.paths.len() {
+            assert!(
+                layer.is_path_open(idx),
+                "clipped segment at index {idx} must be an open arc"
+            );
+            assert_eq!(
+                layer.path_roles[idx],
+                ExtrusionRole::OuterWall,
+                "outside segments keep OuterWall role"
+            );
+        }
+    }
+
+    /// Non-wall paths (Bridge, Infill, …) must never be modified.
+    #[test]
+    fn test_clip_walls_skips_non_wall_roles() {
+        let path: Path = vec![(1.0, 1.0), (5.0, 1.0), (5.0, 5.0), (1.0, 5.0)].into();
+        let mut layer = SliceLayer::new(0.4);
+        layer.paths.push(path.clone());
+        layer.path_roles.push(ExtrusionRole::Bridge);
+
+        // Bridge zone that fully contains the path.
+        let bridge: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        let bridge_region = Paths::new(vec![bridge]);
+
+        clip_walls_against_bridge_region(&mut layer, &bridge_region);
+
+        assert_eq!(layer.paths.len(), 1, "Bridge path must not be removed");
+        assert_eq!(layer.path_roles[0], ExtrusionRole::Bridge);
+        assert!(!layer.is_path_open(0));
     }
 }

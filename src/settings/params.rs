@@ -820,7 +820,15 @@ impl SlicingParams {
     }
 
     fn default_bridge_anchor_mm() -> f64 {
-        0.2
+        // Anchor depth = 1 × nozzle diameter.  This inflates the bridge void
+        // outward until the bridge lines start at the wall-bead inner edge
+        // (which sits nozzle_diameter/2 from the void boundary, + another
+        // nozzle_diameter/2 inside = nozzle_diameter total).  Smaller values
+        // produce strands that barely touch the wall and sag; larger values
+        // overlap the wall extrusions without the complementary wall-clipping
+        // step.  0.4 mm is the typical nozzle diameter; callers may override
+        // via `bridge_anchor_mm` in `SlicingParams`.
+        0.4
     }
 
     fn default_top_surface_speed() -> f64 {
