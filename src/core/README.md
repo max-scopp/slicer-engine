@@ -125,21 +125,26 @@ print bed. Falls back to bounding-box short-axis when the region is
 square / circular.
 
 After surfaces are assigned, `classify_overhang_perimeters` re-tags each
-`OuterWall` / `InnerWall` whose centerline is ≥ 70 % inside the layer's
-`unsupported_regions` — **after the air region has been eroded inward by
-≈ 0.6 × nozzle diameter** — as `OverhangPerimeter`. Two guards are
-essential:
+`OuterWall` / `InnerWall` whose centerline is ≥ 50 % **strictly inside**
+the layer's `unsupported_regions` (`perimeters[i] − perimeters[i-1]`) as
+`OverhangPerimeter`. The detection works without any erosion of the air
+region because of the geometry of Arachne centerline paths:
 
-- **Boundary erosion.** `unsupported_regions = perimeters[i] − perimeters[i-1]`
-  on slightly outward-leaning hulls (most of any organic model — the
-  Benchy hull is the canonical example) is a hair-thin annular strip
-  whose boundary coincides with the OuterWall centerline.  Without
-  erosion, 100 % of OuterWall vertices register as "in air" because they
-  sit *exactly on* the strip boundary.  Eroding by `≈ 0.6 × nozzle_diameter`
-  leaves only walls whose centerline genuinely sits over a meaningful gap.
-- **Boundary points count as outside.** The point-in-paths test treats
-  Clipper2's `IsOn` as outside, so walls that exactly touch the eroded
-  boundary are not flagged either.
+- The OuterWall centerline of layer i sits exactly `d/2` *inside*
+  `perimeters[i]`. For a slight outward lean (horizontal step `S < d/2`)
+  the centerline is still strictly inside `perimeters[i-1]` → even-odd
+  parity 0 → not flagged.  This kills the "80 % of the Benchy is
+  overhang" false positive without any tuning.
+- For a real overhang (`S > d/2`, ≈ 45° lean for 0.2 mm layer / 0.4 mm
+  nozzle) the centerline is outside `perimeters[i-1]` but inside
+  `perimeters[i]` → parity 1 → flagged.
+- Walls *exactly on* a hair-thin Clipper2 difference sliver register
+  `IsOn`, which the strict point-in-paths test treats as outside.
+
+A previous version pre-eroded `unsupported_regions` inward by
+`0.6 × nozzle_diameter`. That is **wrong**: it moves the eroded strip's
+outer boundary `0.6 × d` inside `perimeters[i]` — past the `d/2`
+centerline — so no overhang however severe could ever flag.
 
 Reclassified paths inherit the bridge speed (`bridge_speed`) and reduced-flow
 width (`nozzle_diameter_mm × bridge_flow_ratio`) in the G-code generator and
