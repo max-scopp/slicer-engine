@@ -12,9 +12,9 @@ export const ROLE_COLORS = {
   bottomSurface: 0x00bbff, // vivid cyan  (legend: bottom surface)
   travel: 0x334466, // dark slate    (legend: travel)
   other: 0x44ffaa, // mint-green    (twist: stands apart)
-  bridge: 0x00e5ff, // bright teal   (legend: bridge)
+  bridge: 0x0057ff, // vivid azure   (legend: bridge)
   skirt: 0x888888, // mid-gray      (legend: skirt/brim)
-  support: 0xffaa00, // warm amber    (legend: support material)
+  support: 0x7dff00, // neon lime     (legend: support material)
   seam: 0xffffff, // white         (legend: seam point)
 } as const;
 

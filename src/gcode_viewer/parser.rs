@@ -1,7 +1,14 @@
 use super::types::{InternalLayer, Role};
 
-/// Radius (in mm) of the white dot rendered at each outer-wall seam point.
-const SEAM_DOT_RADIUS: f32 = 0.6;
+/// Oversize seam dots so they remain readable against overlapping extrusion
+/// paths without having to hide other roles.
+const SEAM_DOT_DIAMETER_FROM_LAYER_HEIGHT_SCALE: f32 = 4.0;
+const MIN_SEAM_DOT_RADIUS_MM: f32 = 0.3;
+
+fn seam_dot_radius(layer_height_mm: f32) -> f32 {
+    let diameter = layer_height_mm.max(0.0) * SEAM_DOT_DIAMETER_FROM_LAYER_HEIGHT_SCALE;
+    (diameter * 0.5).max(MIN_SEAM_DOT_RADIUS_MM)
+}
 
 /// Parse `bytes` as UTF-8 GCode and return one [`InternalLayer`] per detected
 /// layer change, plus any segments that appear before the first layer marker
@@ -58,7 +65,8 @@ pub(super) fn parse_gcode_bytes(bytes: &[u8]) -> Vec<InternalLayer> {
             if entering_outer_wall || leaving_outer_wall {
                 // Emit a degenerate (zero-length) segment at the current nozzle
                 // position.  The viewer renders Seam blocks as white dot spheres.
-                current.push_segment(Role::Seam, x, y, z, x, y, z, SEAM_DOT_RADIUS, SEAM_DOT_RADIUS);
+                let seam_radius = seam_dot_radius(height);
+                current.push_segment(Role::Seam, x, y, z, x, y, z, seam_radius, seam_radius);
             }
         }
 
@@ -247,7 +255,10 @@ G1 X20 Y10 Z0.4 E7.0
     #[test]
     fn test_outer_wall_segments() {
         let layers = parse_gcode_bytes(SAMPLE_GCODE.as_bytes());
-        assert!(has_role(&layers, Role::OuterWall), "expected outer wall segments");
+        assert!(
+            has_role(&layers, Role::OuterWall),
+            "expected outer wall segments"
+        );
     }
 
     #[test]
