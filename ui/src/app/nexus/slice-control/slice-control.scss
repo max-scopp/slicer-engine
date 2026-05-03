@@ -70,12 +70,20 @@ progress.slice-progress {
     border-radius: 2px;
     transition:
       background-color var(--duration-slow) var(--ease-decelerate),
-      width var(--duration-fast) var(--ease-standard);
+      width 800ms cubic-bezier(0.57, 1.1, 0.41, 0.98);
   }
 
   &.done {
     &::-webkit-progress-value {
       background: var(--color-success);
+    }
+  }
+
+  &.no-transition {
+    &::-webkit-progress-value {
+      transition:
+        background-color var(--duration-slow) var(--ease-decelerate),
+        width 0s linear;
     }
   }
 }

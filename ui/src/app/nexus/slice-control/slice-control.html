@@ -49,6 +49,7 @@
     <progress
       class="slice-progress"
       [class.done]="isDone()"
+      [class.no-transition]="disableProgressTransition()"
       [value]="slicer.sliceProgress()"
       max="100"
     ></progress>

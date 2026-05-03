@@ -1,15 +1,21 @@
-name: Deploy Docs to GitHub Pages
+name: Deploy Web Slicer + Docs to GitHub Pages
 
 on:
   push:
     branches: [main]
     paths:
       - "docs/**"
+      - "ui/**"
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - "src/**/*.md"
       - "ui/**/*.md"
       - "*.md"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
+      - "package.json"
+      - "build.rs"
       - ".github/workflows/deploy-docs.yml"
   workflow_dispatch:
 
@@ -40,14 +46,48 @@ jobs:
           node-version: 20
           cache: pnpm
 
-      - name: Install docs dependencies
-        # Only install the docs workspace; skip lifecycle scripts so the
-        # ui/ postinstall (which runs `cargo`) never executes. Pages builds
-        # are pure VitePress — no Rust toolchain needed.
-        run: pnpm install --frozen-lockfile --ignore-scripts --filter slicer-engine-docs...
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Setup WASI SDK
+        run: |
+          curl -L -o wasi-sdk.tar.gz https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-x86_64-linux.tar.gz
+          tar -xzf wasi-sdk.tar.gz
+          echo "WASI_SDK_PATH=${GITHUB_WORKSPACE}/wasi-sdk-33.0-x86_64-linux" >> "${GITHUB_ENV}"
+          echo "${GITHUB_WORKSPACE}/wasi-sdk-33.0-x86_64-linux/bin" >> "${GITHUB_PATH}"
+
+      - name: Install wasm-bindgen-cli
+        run: cargo install --locked wasm-bindgen-cli
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build web-slicer WASM
+        run: pnpm run hydrate:web-slicer
+
+      - name: Build UI (web-slicer)
+        run: pnpm --filter slicer-ui build:web-slicer -- --base-href /slicer-engine/
 
       - name: Build with VitePress
         run: pnpm --filter slicer-engine-docs docs:build
+
+      - name: Assemble Pages artifact
+        run: |
+          mkdir -p _site/docs
+
+          if [ -d ui/dist/slicer-ui/browser ]; then
+            cp -R ui/dist/slicer-ui/browser/. _site/
+          elif [ -d ui/dist/slicer-ui ]; then
+            cp -R ui/dist/slicer-ui/. _site/
+          else
+            echo "Could not find Angular build output under ui/dist/slicer-ui" >&2
+            exit 1
+          fi
+
+          cp -R docs/.vitepress/dist/. _site/docs/
+          touch _site/.nojekyll
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
@@ -55,7 +95,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/.vitepress/dist
+          path: _site
 
   deploy:
     needs: build

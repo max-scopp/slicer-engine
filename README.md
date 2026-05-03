@@ -4,7 +4,7 @@
 
 A ground-up slicer that turns STL / OBJ / 3MF meshes into G-code for FFF 3D printers. Built on [Clipper2](https://github.com/AngusJohnson/Clipper2), bringing modern practice from Cura, PrusaSlicer, and SuperSlicer into a single, unified codebase.
 
-📖 **Full documentation: [https://max-scopp.github.io/slicer-engine/](https://max-scopp.github.io/slicer-engine/)** — architecture, module guides, and contributor docs.
+📖 **Full documentation: [https://max-scopp.github.io/slicer-engine/docs/](https://max-scopp.github.io/slicer-engine/docs/)** — architecture, module guides, and contributor docs.
 
 ---
 
@@ -188,7 +188,7 @@ pnpm --filter slicer-engine-docs docs:dev                   # live docs site
 sea-orm-cli migrate generate "my_migration" -d src/db       # scaffold DB migration
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for workflow, [AGENTS.md](AGENTS.md) for AI-agent guidance, and [ARCHITECTURE.md](ARCHITECTURE.md) for the long-form architecture overview (also rendered on the [docs site](https://max-scopp.github.io/slicer-engine/guide/architecture)).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for workflow, [AGENTS.md](AGENTS.md) for AI-agent guidance, and [ARCHITECTURE.md](ARCHITECTURE.md) for the long-form architecture overview (also rendered on the [docs site](https://max-scopp.github.io/slicer-engine/docs/guide/architecture)).
 
 ---
 
@@ -218,4 +218,4 @@ All rights reserved until an official license is decided. No use, reproduction, 
 
 ## Support
 
-[Issues](https://github.com/max-scopp/slicer-engine/issues) · [Discussions](https://github.com/max-scopp/slicer-engine/discussions) · [Contributing](CONTRIBUTING.md) · [Documentation site](https://max-scopp.github.io/slicer-engine/)
+[Issues](https://github.com/max-scopp/slicer-engine/issues) · [Discussions](https://github.com/max-scopp/slicer-engine/discussions) · [Contributing](CONTRIBUTING.md) · [Documentation site](https://max-scopp.github.io/slicer-engine/docs/)
