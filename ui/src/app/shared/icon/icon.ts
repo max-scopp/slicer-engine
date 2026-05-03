@@ -1,3 +1,4 @@
+import { APP_BASE_HREF } from '@angular/common';
 import { Component, effect, ElementRef, inject, input } from '@angular/core';
 import { IconCache } from './icon-cache';
 
@@ -25,12 +26,15 @@ export class Icon {
 
   private readonly cache = inject(IconCache);
   private readonly el = inject(ElementRef<HTMLElement>);
+  private readonly baseHref = inject(APP_BASE_HREF, { optional: true }) ?? '/';
 
   private lastRenderedUrl: string | null = null;
 
   constructor() {
     effect(() => {
-      const basePath = this.variant() === 'solid' ? '/assets/icons/solid' : '/assets/icons';
+      const base = this.baseHref.replace(/\/$/, '');
+      const basePath =
+        this.variant() === 'solid' ? `${base}/assets/icons/solid` : `${base}/assets/icons`;
       const url = `${basePath}/${this.name()}.svg`;
 
       if (url === this.lastRenderedUrl) {
