@@ -254,6 +254,7 @@ pub fn process_mesh(
         let mut ordered_paths = clipper2::Paths::default();
         let mut ordered_roles = Vec::with_capacity(path_count);
         let mut ordered_widths = Vec::with_capacity(path_count);
+        let mut ordered_is_open = Vec::with_capacity(path_count);
 
         let mut current_pos = (0.0, 0.0);
 
@@ -276,7 +277,12 @@ pub fn process_mesh(
         }
 
         for (role, mut remaining) in groups {
-            let is_closed = matches!(
+            // Wall/skirt roles are nominally "closed" for TSP purposes, but
+            // individual paths may be open arcs (split sub-segments from
+            // classify_overhang_perimeters).  Open arcs are treated like open
+            // polylines: both endpoints are candidate starts and current_pos
+            // is updated to the path *end* (not the start) after emission.
+            let role_is_closed = matches!(
                 role,
                 crate::core::ExtrusionRole::OuterWall
                     | crate::core::ExtrusionRole::InnerWall
@@ -294,6 +300,10 @@ pub fn process_mesh(
                     if path.is_empty() {
                         continue;
                     }
+
+                    // A path that is nominally "closed" by role but flagged as
+                    // an open arc is treated as open for path-ordering purposes.
+                    let is_closed = role_is_closed && !layer.is_path_open(path_idx);
 
                     let p_start = path.iter().next().unwrap();
                     let dx1 = p_start.x() - current_pos.0;
@@ -323,6 +333,9 @@ pub fn process_mesh(
                 let best_path_idx = remaining.remove(best_i);
                 let path = &paths_vec[best_path_idx];
 
+                // Per-path closed/open determination for current_pos update.
+                let best_is_closed = role_is_closed && !layer.is_path_open(best_path_idx);
+
                 let mut final_path = clipper2::Path::default();
                 if best_reverse {
                     for p in path.iter().rev() {
@@ -335,7 +348,7 @@ pub fn process_mesh(
                 }
 
                 if !final_path.is_empty() {
-                    if is_closed {
+                    if best_is_closed {
                         let p = final_path.iter().next().unwrap();
                         current_pos = (p.x(), p.y());
                     } else {
@@ -347,12 +360,14 @@ pub fn process_mesh(
                 ordered_paths.push(final_path);
                 ordered_roles.push(layer.role_for_path(best_path_idx));
                 ordered_widths.push(layer.width_for_path(best_path_idx));
+                ordered_is_open.push(layer.is_path_open(best_path_idx));
             }
         }
 
         layer.paths = ordered_paths;
         layer.path_roles = ordered_roles;
         layer.path_widths = ordered_widths;
+        layer.path_is_open = ordered_is_open;
     }
     t_tsp.finish();
 

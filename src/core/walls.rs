@@ -272,6 +272,7 @@ pub(crate) fn classify_overhang_perimeters(layers: &mut [SliceLayer], _nozzle_di
         let mut new_paths = Paths::new(vec![]);
         let mut new_roles: Vec<ExtrusionRole> = Vec::new();
         let mut new_widths: Vec<Option<f64>> = Vec::new();
+        let mut new_is_open: Vec<bool> = Vec::new();
 
         for (path_idx, path) in layer.paths.iter().enumerate() {
             let role = layer.path_roles[path_idx];
@@ -282,6 +283,7 @@ pub(crate) fn classify_overhang_perimeters(layers: &mut [SliceLayer], _nozzle_di
                 new_paths.push(path.clone());
                 new_roles.push(role);
                 new_widths.push(width);
+                new_is_open.push(layer.is_path_open(path_idx));
                 continue;
             }
 
@@ -291,14 +293,32 @@ pub(crate) fn classify_overhang_perimeters(layers: &mut [SliceLayer], _nozzle_di
                 new_paths.push(path.clone());
                 new_roles.push(role);
                 new_widths.push(width);
+                new_is_open.push(layer.is_path_open(path_idx));
                 continue;
             }
 
             // Per-vertex air/support status.
-            let in_air: Vec<bool> = pts
+            let mut in_air: Vec<bool> = pts
                 .iter()
                 .map(|p| point_inside_or_on_paths_eo(p.x(), p.y(), &air))
                 .collect();
+
+            // Edge-midpoint check: if the midpoint of an edge is in-air,
+            // mark both endpoint vertices as in-air.  This catches segments
+            // (e.g. the horizontal top-bar of a window frame) where the
+            // corner vertices sit exactly on the inflate(perimeters[i-1], d/2)
+            // boundary while the edge interior is clearly above an open gap.
+            for i in 0..n {
+                let j = (i + 1) % n;
+                if !in_air[i] || !in_air[j] {
+                    let mx = (pts[i].x() + pts[j].x()) * 0.5;
+                    let my = (pts[i].y() + pts[j].y()) * 0.5;
+                    if point_inside_or_on_paths_eo(mx, my, &air) {
+                        in_air[i] = true;
+                        in_air[j] = true;
+                    }
+                }
+            }
 
             let any_air = in_air.iter().any(|&b| b);
             if !any_air {
@@ -306,15 +326,19 @@ pub(crate) fn classify_overhang_perimeters(layers: &mut [SliceLayer], _nozzle_di
                 new_paths.push(path.clone());
                 new_roles.push(role);
                 new_widths.push(width);
+                new_is_open.push(layer.is_path_open(path_idx));
                 continue;
             }
 
             let any_supported = in_air.iter().any(|&b| !b);
             if !any_supported {
                 // Entirely in air — whole path becomes OverhangPerimeter.
+                // The path is still the original closed loop; only the role
+                // changes.  It stays closed (path_is_open = false).
                 new_paths.push(path.clone());
                 new_roles.push(ExtrusionRole::OverhangPerimeter);
                 new_widths.push(width);
+                new_is_open.push(false);
                 continue;
             }
 
@@ -399,12 +423,17 @@ pub(crate) fn classify_overhang_perimeters(layers: &mut [SliceLayer], _nozzle_di
                 new_paths.push(seg_path);
                 new_roles.push(seg_role);
                 new_widths.push(width);
+                // All sub-segments from a split are open arcs — the original
+                // closed loop was broken into polyline fragments.  The G-code
+                // generator must NOT append a "close contour" move for these.
+                new_is_open.push(true);
             }
         }
 
         layer.paths = new_paths;
         layer.path_roles = new_roles;
         layer.path_widths = new_widths;
+        layer.path_is_open = new_is_open;
     }
 }
 

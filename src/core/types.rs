@@ -109,6 +109,17 @@ pub struct SliceLayer {
     /// perimeter of the layer, so detecting it requires the full footprint
     /// view rather than just the inside-the-walls interior.
     pub unsupported_regions: Paths,
+    /// Per-path open-arc flag.
+    ///
+    /// Set to `true` for wall paths that are **open polyline segments** —
+    /// i.e. sub-arcs produced when [`classify_overhang_perimeters`] splits a
+    /// closed loop at the air/support boundary.  `false` (or absent) means
+    /// the path is a genuine closed loop and the G-code generator should
+    /// append a closing move back to the first vertex.
+    ///
+    /// Indexed parallel to [`SliceLayer::paths`] / [`SliceLayer::path_roles`].
+    /// Shorter-than-paths vectors default to `false` (closed).
+    pub path_is_open: Vec<bool>,
 }
 
 impl SliceLayer {
@@ -121,6 +132,7 @@ impl SliceLayer {
             path_widths: Vec::new(),
             solid_regions: Paths::default(),
             unsupported_regions: Paths::default(),
+            path_is_open: Vec::new(),
         }
     }
 
@@ -138,5 +150,13 @@ impl SliceLayer {
     /// role's default width via [`ExtrusionRole::default_width_mm`].
     pub fn width_for_path(&self, i: usize) -> Option<f64> {
         self.path_widths.get(i).copied().flatten()
+    }
+
+    /// Returns `true` when path index `i` is an open arc (a sub-segment
+    /// produced by splitting a closed loop at an air/support boundary).
+    ///
+    /// Falls back to `false` (closed loop) when the index is out of range.
+    pub fn is_path_open(&self, i: usize) -> bool {
+        self.path_is_open.get(i).copied().unwrap_or(false)
     }
 }

@@ -581,12 +581,24 @@ impl GcodeGenerator {
                 }
 
                 // Determine if this is a closed-loop role.
+                //
+                // A path is a closed loop only when BOTH:
+                //   1. Its role is one that normally forms closed contours, AND
+                //   2. It is NOT marked as an open arc in `path_is_open`.
+                //
+                // `path_is_open` is set to `true` for sub-segments produced by
+                // `classify_overhang_perimeters` when it splits a closed wall
+                // loop at the air/support boundary.  Those sub-segments are
+                // open polylines even though their role may still be `OuterWall`
+                // or `InnerWall`.  Emitting a "close contour" G1 move for them
+                // would create a phantom extrusion back through the model.
+                let is_open_arc = layer.is_path_open(path_idx);
                 let is_closed_loop = matches!(
                     role,
                     crate::core::ExtrusionRole::OuterWall
                         | crate::core::ExtrusionRole::InnerWall
                         | crate::core::ExtrusionRole::Skirt
-                );
+                ) && !is_open_arc;
 
                 // ── Coasting: stop extruding before end of perimeter ──────────
                 // Coasting applies only to closed-loop perimeter paths and only

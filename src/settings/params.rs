@@ -820,7 +820,7 @@ impl SlicingParams {
     }
 
     fn default_bridge_anchor_mm() -> f64 {
-        0.5
+        0.2
     }
 
     fn default_top_surface_speed() -> f64 {
