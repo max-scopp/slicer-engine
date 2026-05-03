@@ -4,6 +4,13 @@ The Angular front-end of Slicer Engine. It uploads meshes, drives the slice, ren
 
 It exists for one reason: **what you preview in the browser must be exactly what slices on the server.** Both run the same Rust code. The UI compiles part of the engine to WebAssembly so scene placement is computed locally, and delegates the heavy slicing to the server over WebSocket.
 
+There is now an alternative `web-slicer` build for fully local slicing in the
+browser. It keeps the default WS-backed flow untouched, but swaps `slicer.ts`
+to use `SceneHandle.sliceGcode()` when the UI is built with
+`pnpm run hydrate:web-slicer` plus `pnpm run ui:build:web-slicer`. That mode
+requires a wasm-capable `clang++` toolchain because the slicing pipeline pulls
+in `clipper2`.
+
 ---
 
 ## The contract

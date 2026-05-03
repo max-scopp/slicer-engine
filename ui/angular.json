@@ -73,6 +73,38 @@
               ],
               "outputHashing": "all"
             },
+            "web-slicer": {
+              "budgets": [
+                {
+                  "type": "initial",
+                  "maximumWarning": "600kB",
+                  "maximumError": "1.5MB"
+                },
+                {
+                  "type": "anyComponentStyle",
+                  "maximumWarning": "4kB",
+                  "maximumError": "8kB"
+                }
+              ],
+              "fileReplacements": [
+                {
+                  "replace": "src/environments/environment.ts",
+                  "with": "src/environments/environment.web-slicer.ts"
+                }
+              ],
+              "outputHashing": "all"
+            },
+            "development-web-slicer": {
+              "optimization": false,
+              "extractLicenses": false,
+              "sourceMap": true,
+              "fileReplacements": [
+                {
+                  "replace": "src/environments/environment.ts",
+                  "with": "src/environments/environment.web-slicer.ts"
+                }
+              ]
+            },
             "development": {
               "optimization": false,
               "extractLicenses": false,
@@ -89,6 +121,9 @@
           "configurations": {
             "production": {
               "buildTarget": "slicer-ui:build:production"
+            },
+            "web-slicer": {
+              "buildTarget": "slicer-ui:build:development-web-slicer"
             },
             "development": {
               "buildTarget": "slicer-ui:build:development"

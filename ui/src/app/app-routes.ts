@@ -5,8 +5,7 @@ import { uploadCanDeactivate } from './services/upload-guard';
 export const APP_ROUTES: Routes = [
   {
     path: '',
-    loadComponent: () =>
-      import('./pages/home/home.component').then((m) => m.HomeDashboardComponent),
+    loadComponent: async () => import('./pages/home/home').then((m) => m.HomeDashboard),
   },
   {
     path: 'slice',
@@ -15,14 +14,12 @@ export const APP_ROUTES: Routes = [
       { path: '', redirectTo: 'new', pathMatch: 'full' },
       {
         path: 'new',
-        loadComponent: () =>
-          import('./pages/slice-new/slice-new.component').then((m) => m.SliceNewComponent),
+        loadComponent: () => import('./pages/slice-new/slice-new').then((m) => m.SliceNew),
         canDeactivate: [uploadCanDeactivate],
       },
       {
         path: ':requestUuid',
-        loadComponent: () =>
-          import('./pages/slice-viewer/slice-viewer.component').then((m) => m.SliceViewerComponent),
+        loadComponent: () => import('./pages/slice-viewer/slice-viewer').then((m) => m.SliceViewer),
       },
     ],
   },

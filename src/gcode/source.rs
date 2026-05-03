@@ -24,22 +24,30 @@ const MAX_GCODE_FILE_BYTES: u64 = 1024 * 1024; // 1 MiB
 /// Returns an [`std::io::Error`] if the path exists but cannot be read, or if
 /// the file exceeds the 1 MiB size limit.
 pub fn resolve_gcode_source(input: &str) -> Result<Vec<String>, std::io::Error> {
-    let path = std::path::Path::new(input);
-    if path.is_file() {
-        let meta = std::fs::metadata(path)?;
-        if meta.len() > MAX_GCODE_FILE_BYTES {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "G-code file '{}' is too large ({} bytes; limit is {} bytes)",
-                    path.display(),
-                    meta.len(),
-                    MAX_GCODE_FILE_BYTES
-                ),
-            ));
-        }
-        let content = std::fs::read_to_string(path)?;
-        return Ok(content.lines().map(|l| l.to_string()).collect());
+    #[cfg(target_arch = "wasm32")]
+    {
+        return Ok(input.lines().map(|l| l.to_string()).collect());
     }
-    Ok(input.lines().map(|l| l.to_string()).collect())
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let path = std::path::Path::new(input);
+        if path.is_file() {
+            let meta = std::fs::metadata(path)?;
+            if meta.len() > MAX_GCODE_FILE_BYTES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "G-code file '{}' is too large ({} bytes; limit is {} bytes)",
+                        path.display(),
+                        meta.len(),
+                        MAX_GCODE_FILE_BYTES
+                    ),
+                ));
+            }
+            let content = std::fs::read_to_string(path)?;
+            return Ok(content.lines().map(|l| l.to_string()).collect());
+        }
+        Ok(input.lines().map(|l| l.to_string()).collect())
+    }
 }

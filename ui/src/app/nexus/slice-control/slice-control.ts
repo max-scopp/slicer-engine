@@ -30,6 +30,15 @@ export class SliceControl {
 
   protected readonly isDone = computed(() => this.slicer.status() === 'done');
 
+  /**
+   * Disable width animation at the bounds so the bar snaps at reset/end.
+   * This avoids tweening 100 → 0 on re-slice and redundant 99 → 100 motion.
+   */
+  protected readonly disableProgressTransition = computed(() => {
+    const progress = this.slicer.sliceProgress();
+    return progress === 0 || progress === 100;
+  });
+
   protected readonly canSlice = computed(() => {
     const s = this.slicer.status();
     return (

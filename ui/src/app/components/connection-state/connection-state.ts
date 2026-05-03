@@ -1,5 +1,5 @@
 import { Component, computed, inject } from '@angular/core';
-import { SlicerConnection } from '../../services/slicer-connection';
+import { Slicer } from '../../services/slicer';
 import { Badge, BadgeVariant } from '../../shared/badge/badge';
 
 interface StatusConfig {
@@ -23,9 +23,9 @@ const STATUS_CONFIG: Record<string, StatusConfig> = {
   styleUrl: './connection-state.scss',
 })
 export class ConnectionState {
-  readonly connection = inject(SlicerConnection);
+  readonly slicer = inject(Slicer);
 
   readonly config = computed<StatusConfig>(
-    () => STATUS_CONFIG[this.connection.status()] ?? STATUS_CONFIG['disconnected'],
+    () => STATUS_CONFIG[this.slicer.connectionStatus()] ?? STATUS_CONFIG['disconnected'],
   );
 }

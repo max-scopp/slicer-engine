@@ -49,6 +49,11 @@ pub fn process_mesh(
     logger.log_info(&format!("sliced into {} layers", layers.len()));
     t_slicing.finish();
 
+    if logger.is_cancelled() {
+        logger.log_info("slice cancelled after slicing phase");
+        return layers;
+    }
+
     // Generate Arachne walls FIRST from the raw mesh contours
     logger.log_debug(&format!(
         "generating Arachne walls (wall_count: {}, nozzle: {}mm)",
@@ -63,6 +68,11 @@ pub fn process_mesh(
         arachne_timings.collapse_depth_ms, arachne_timings.bead_shrink_ms,
     ));
     logger.log_debug("Arachne wall generation complete");
+
+    if logger.is_cancelled() {
+        logger.log_info("slice cancelled after wall generation phase");
+        return layers;
+    }
 
     // Pre-compute infill interior regions while all Arachne walls are still
     // present.  These are passed to add_infill_to_layers so that the

@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
 import { NexusSlicingShell } from '../../nexus/layout/slicing-shell/slicing-shell';
-import { GcodePreviewService } from '../../services/gcode-preview.service';
+import { GcodePreview } from '../../services/gcode-preview';
 import { Slicer } from '../../services/slicer';
 import { ViewerControl } from '../../services/viewer-control';
 import { Icon } from '../../shared/icon/icon';
@@ -19,7 +19,7 @@ import { Card } from '../card/card';
 export class ThreeDViewToolbar {
   private readonly viewerControl = inject(ViewerControl);
   private readonly slicer = inject(Slicer);
-  private readonly gcodePreview = inject(GcodePreviewService);
+  private readonly gcodePreview = inject(GcodePreview);
   protected readonly shell = inject(NexusSlicingShell);
 
   readonly selectedView = this.viewerControl.view;

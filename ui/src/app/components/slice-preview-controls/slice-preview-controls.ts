@@ -1,12 +1,12 @@
 import { DecimalPipe } from '@angular/common';
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
 import {
-    GcodePreviewService,
+    GcodePreview,
     ROLE_CSS,
     ROLE_LABELS,
     ROLE_ORDER,
     type RoleName,
-} from '../../services/gcode-preview.service';
+} from '../../services/gcode-preview';
 import { Card } from '../card/card';
 
 @Component({
@@ -18,7 +18,7 @@ import { Card } from '../card/card';
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class SlicePreviewControls {
-  protected readonly preview = inject(GcodePreviewService);
+  protected readonly preview = inject(GcodePreview);
 
   protected readonly roleCss = ROLE_CSS;
   protected readonly roleLabels = ROLE_LABELS;

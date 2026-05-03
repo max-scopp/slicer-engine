@@ -10,10 +10,10 @@
       "name": "Debug slicer-engine (server)",
       "cargo": {
         "args": ["build", "--bin=slicer-engine"],
-        "filter": { "name": "slicer-engine", "kind": "bin" }
+        "filter": { "name": "slicer-engine", "kind": "bin" },
       },
       "args": [],
-      "cwd": "${workspaceFolder}"
+      "cwd": "${workspaceFolder}",
     },
     {
       "type": "lldb",
@@ -21,16 +21,16 @@
       "name": "Debug slicer-engine (slice simple-cube)",
       "cargo": {
         "args": ["build", "--bin=slicer-engine"],
-        "filter": { "name": "slicer-engine", "kind": "bin" }
+        "filter": { "name": "slicer-engine", "kind": "bin" },
       },
       "args": [
         "slice",
         "--input",
         "${workspaceFolder}/tests/fixtures/simple-cube.3mf",
         "--output",
-        "${workspaceFolder}/output.gcode"
+        "${workspaceFolder}/output.gcode",
       ],
-      "cwd": "${workspaceFolder}"
+      "cwd": "${workspaceFolder}",
     },
     {
       "type": "lldb",
@@ -38,10 +38,10 @@
       "name": "Debug slicer-engine (custom args)",
       "cargo": {
         "args": ["build", "--bin=slicer-engine"],
-        "filter": { "name": "slicer-engine", "kind": "bin" }
+        "filter": { "name": "slicer-engine", "kind": "bin" },
       },
       "args": ["${input:cliArgs}"],
-      "cwd": "${workspaceFolder}"
+      "cwd": "${workspaceFolder}",
     },
     {
       "type": "lldb",
@@ -49,18 +49,18 @@
       "name": "Debug unit tests (lib)",
       "cargo": {
         "args": ["test", "--no-run", "--lib"],
-        "filter": { "name": "slicer-engine", "kind": "lib" }
+        "filter": { "name": "slicer-engine", "kind": "lib" },
       },
       "args": [],
-      "cwd": "${workspaceFolder}"
-    }
+      "cwd": "${workspaceFolder}",
+    },
   ],
   "inputs": [
     {
       "id": "cliArgs",
       "type": "promptString",
       "description": "CLI arguments to pass to slicer-engine",
-      "default": "info --verbose"
-    }
-  ]
+      "default": "info --verbose",
+    },
+  ],
 }

@@ -127,6 +127,15 @@ pub trait ProcessLogger: Send + Sync {
     /// Called at the end of a named pipeline phase (see [`phases`]).
     /// The default implementation is a no-op, preserving backward compatibility.
     fn log_phase_end(&self, _phase: &str, _elapsed_ms: u64) {}
+
+    /// Returns `true` when the pipeline should abort early.
+    ///
+    /// Checked between major phases in [`crate::core::process_mesh`]. The
+    /// default always returns `false`, so existing loggers remain valid
+    /// without any changes.
+    fn is_cancelled(&self) -> bool {
+        false
+    }
 }
 
 /// RAII guard that records a [`ProcessLogger::log_phase_start`] event on creation
@@ -146,7 +155,11 @@ pub trait ProcessLogger: Send + Sync {
 pub struct PhaseTimer<'a> {
     phase: &'a str,
     logger: &'a dyn ProcessLogger,
+    // std::time::Instant is not available on wasm32-unknown-unknown.
+    #[cfg(not(target_arch = "wasm32"))]
     start: std::time::Instant,
+    #[cfg(target_arch = "wasm32")]
+    start_ms: f64,
 }
 
 impl<'a> PhaseTimer<'a> {
@@ -156,13 +169,19 @@ impl<'a> PhaseTimer<'a> {
         Self {
             phase,
             logger,
+            #[cfg(not(target_arch = "wasm32"))]
             start: std::time::Instant::now(),
+            #[cfg(target_arch = "wasm32")]
+            start_ms: js_sys::Date::now(),
         }
     }
 
     /// Stop timing and emit an end marker with the measured elapsed time.
     pub fn finish(self) {
+        #[cfg(not(target_arch = "wasm32"))]
         let elapsed_ms = self.start.elapsed().as_millis() as u64;
+        #[cfg(target_arch = "wasm32")]
+        let elapsed_ms = (js_sys::Date::now() - self.start_ms).max(0.0).round() as u64;
         self.logger.log_phase_end(self.phase, elapsed_ms);
     }
 }

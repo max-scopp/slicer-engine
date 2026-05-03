@@ -38,3 +38,7 @@ body {
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
 }
+
+[hidden] {
+  display: none !important;
+}

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Slicer Engine Desktop",
+  "version": "0.1.0",
+  "identifier": "com.maxscopp.slicerengine",
+  "build": {
+    "beforeDevCommand": "pnpm --filter slicer-ui start",
+    "devUrl": "http://localhost:4213",
+    "beforeBuildCommand": "pnpm --filter slicer-ui build",
+    "frontendDist": "../../ui/dist/slicer-ui/browser"
+  },
+  "app": {
+    "security": {
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPCACHE/**", "$APPDATA/**"]
+      }
+    },
+    "windows": [
+      {
+        "title": "Slicer Engine",
+        "width": 1400,
+        "height": 900
+      }
+    ]
+  }
+}

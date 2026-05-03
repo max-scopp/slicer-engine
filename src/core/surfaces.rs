@@ -1,3 +1,4 @@
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
 use clipper2::*;
@@ -294,11 +295,18 @@ pub fn generate_top_bottom_surfaces_with_interior(
     // Snapshot the perimeter contours of every layer *before* we begin adding
     // infill paths. Surface detection must operate on sliced geometry only;
     // comparing against previously added infill would give wrong results.
+    #[cfg(not(target_arch = "wasm32"))]
     let t_snap = Instant::now();
     let perimeters: Vec<Paths> = layers.iter().map(perimeter_paths_of).collect();
+    #[cfg(not(target_arch = "wasm32"))]
     let snapshot_ns = t_snap.elapsed().as_nanos();
+    #[cfg(target_arch = "wasm32")]
+    let snapshot_ns = 0u128;
 
+    #[cfg(not(target_arch = "wasm32"))]
     let mut infill_ns = 0u128;
+    #[cfg(target_arch = "wasm32")]
+    let infill_ns = 0u128;
 
     // ── Parallel detection pass ───────────────────────────────────────────────
     //
@@ -387,6 +395,7 @@ pub fn generate_top_bottom_surfaces_with_interior(
         (bottom_region, top_region)
     };
 
+    #[cfg(not(target_arch = "wasm32"))]
     let t_detect = Instant::now();
     #[cfg(not(target_arch = "wasm32"))]
     let regions: Vec<(Paths, Paths)> = {
@@ -395,11 +404,15 @@ pub fn generate_top_bottom_surfaces_with_interior(
     };
     #[cfg(target_arch = "wasm32")]
     let regions: Vec<(Paths, Paths)> = (0..total).map(detect_region).collect();
+    #[cfg(not(target_arch = "wasm32"))]
     let detection_ns = t_detect.elapsed().as_nanos();
+    #[cfg(target_arch = "wasm32")]
+    let detection_ns = 0u128;
 
     // ── Serial apply pass ─────────────────────────────────────────────────────
     for (i, (bottom_region, top_region)) in regions.into_iter().enumerate() {
         if !bottom_region.is_empty() {
+            #[cfg(not(target_arch = "wasm32"))]
             let t = Instant::now();
             add_solid_infill_for_region(
                 &mut layers[i],
@@ -408,10 +421,14 @@ pub fn generate_top_bottom_surfaces_with_interior(
                 layer_height,
                 infill_angle,
             );
-            infill_ns += t.elapsed().as_nanos();
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                infill_ns += t.elapsed().as_nanos();
+            }
         }
 
         if !top_region.is_empty() {
+            #[cfg(not(target_arch = "wasm32"))]
             let t = Instant::now();
             add_solid_infill_for_region(
                 &mut layers[i],
@@ -420,7 +437,10 @@ pub fn generate_top_bottom_surfaces_with_interior(
                 layer_height,
                 infill_angle,
             );
-            infill_ns += t.elapsed().as_nanos();
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                infill_ns += t.elapsed().as_nanos();
+            }
         }
 
         // Record the union of all solid-surface regions on this layer so that

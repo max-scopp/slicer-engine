@@ -1,0 +1,426 @@
+import { SceneEngine, SceneOp } from '../../../services/scene-engine';
+import { RuntimeHistorySession } from '../../domain/history-models';
+import { RuntimePreviewSource } from '../../domain/preview-models';
+import {
+  RuntimeMeshInput,
+  RuntimeSceneOp,
+  RuntimeSceneSnapshot,
+} from '../../domain/scene-commands';
+import { RuntimeSliceRequest, RuntimeSliceResult } from '../../domain/slice-commands';
+import { RuntimeEventBus } from '../../infrastructure/event-bus';
+import { RuntimeCapabilities } from '../../ports/runtime-capabilities';
+import { RuntimeError } from '../../ports/runtime-errors';
+import { RuntimeEventListener } from '../../ports/runtime-events';
+import { RuntimePort, RuntimeSubscription } from '../../ports/runtime-port';
+import type {
+  SlicerWorkerRequest,
+  SlicerWorkerResponse,
+  WorkerSliceObject,
+} from './slicer-worker-protocol';
+
+const WEB_CAPABILITIES: RuntimeCapabilities = {
+  supportsLocalSlicing: true,
+  supportsRemoteJobs: false,
+  supportsStreamingProgress: true,
+  supportsSceneSnapshotPull: true,
+};
+
+interface CachedMesh {
+  name: string;
+  format: 'stl' | 'obj' | '3mf';
+  bytes: Uint8Array;
+}
+
+export class WasmRuntime implements RuntimePort {
+  private readonly bus = new RuntimeEventBus();
+  private readonly previewBySlice = new Map<string, string>();
+  private readonly meshByObjectId = new Map<string, CachedMesh>();
+  private slicerWorker: Worker | null = null;
+  private workerReady: Promise<void> | null = null;
+  private pendingInit: { resolve: () => void; reject: (error: Error) => void } | null = null;
+  private pendingSlice: {
+    sliceId: string;
+    resolve: (result: RuntimeSliceResult) => void;
+    reject: (error: Error) => void;
+  } | null = null;
+  private initialized = false;
+
+  constructor(private readonly sceneEngine: SceneEngine) {}
+
+  async init(): Promise<void> {
+    await this.sceneEngine.ready();
+    await this.ensureWorkerReady();
+    this.initialized = true;
+    this.bus.emit({ type: 'connected', mode: 'web' });
+  }
+
+  getCapabilities(): RuntimeCapabilities {
+    return WEB_CAPABILITIES;
+  }
+
+  async addMesh(input: RuntimeMeshInput): Promise<string> {
+    this.requireReady();
+    if (!input.bytes) {
+      throw new Error(`WASM runtime requires bytes for '${input.fileName}'`);
+    }
+    const objectId = this.sceneEngine.addMesh(input.fileName, input.format, input.bytes);
+    this.meshByObjectId.set(objectId.toString(), {
+      name: input.fileName,
+      format: input.format,
+      bytes: new Uint8Array(input.bytes),
+    });
+    return objectId.toString();
+  }
+
+  async applySceneOps(ops: RuntimeSceneOp[]): Promise<void> {
+    this.requireReady();
+    const mappedOps: SceneOp[] = ops.map((op) => {
+      const id = BigInt(op.id);
+      switch (op.op) {
+        case 'remove':
+          return { op: 'remove', args: { id } };
+        case 'translate':
+          return { op: 'translate', args: { id, delta: op.delta } };
+        case 'set_transform':
+          return {
+            op: 'set_transform',
+            args: {
+              id,
+              translation: op.translation,
+              euler_xyz_deg: op.euler_xyz_deg,
+              scale: op.scale,
+            },
+          };
+        case 'rotate':
+          return { op: 'rotate', args: { id, axis: op.axis, degrees: op.degrees } };
+        case 'scale':
+          return { op: 'scale', args: { id, factors: op.factors } };
+        case 'center_on_bed':
+          return { op: 'center_on_bed', args: { id } };
+        case 'drop_to_floor':
+          return { op: 'drop_to_floor', args: { id } };
+        case 'place_face_on_floor':
+          return { op: 'place_face_on_floor', args: { id, face_index: op.face_index } };
+      }
+    });
+
+    this.sceneEngine.applyBatch(mappedOps);
+    for (const op of ops) {
+      if (op.op === 'remove') {
+        this.meshByObjectId.delete(op.id);
+      }
+    }
+  }
+
+  async getSceneSnapshot(): Promise<RuntimeSceneSnapshot> {
+    this.requireReady();
+    const snapshot = this.sceneEngine.snapshot();
+    return {
+      objects: snapshot.objects.map((object) => ({
+        id: object.id.toString(),
+        name: object.name,
+        translation: object.translation,
+        euler_xyz_deg: object.euler_xyz_deg,
+        scale: object.scale,
+        triangle_count: object.triangle_count,
+        world_aabb: object.world_aabb,
+      })),
+    };
+  }
+
+  async getHistory(): Promise<RuntimeHistorySession[]> {
+    this.requireReady();
+    return [];
+  }
+
+  async slice(request: RuntimeSliceRequest): Promise<RuntimeSliceResult> {
+    this.requireReady();
+    await this.ensureWorkerReady();
+
+    if (this.pendingSlice) {
+      throw new Error('A WASM slice is already in progress.');
+    }
+
+    const { objects, transferables } = this.buildWorkerSlicePayload(request);
+    const message: SlicerWorkerRequest = {
+      type: 'slice',
+      sliceId: request.sliceId,
+      settings: request.settings,
+      objects,
+    };
+
+    return new Promise<RuntimeSliceResult>((resolve, reject) => {
+      this.pendingSlice = { sliceId: request.sliceId, resolve, reject };
+      try {
+        const worker = this.slicerWorker;
+        if (!worker) {
+          throw new Error('WASM slicer worker is not available.');
+        }
+        worker.postMessage(message, transferables);
+      } catch (error) {
+        this.rejectPendingSlice(errorOf(error));
+      }
+    });
+  }
+
+  async cancel(sliceId: string): Promise<void> {
+    this.requireReady();
+    if (this.pendingSlice?.sliceId === sliceId) {
+      this.rejectPendingSlice(new Error('Slice canceled.'));
+    }
+    this.restartWorker();
+  }
+
+  async getPreviewSource(sliceId: string): Promise<RuntimePreviewSource> {
+    this.requireReady();
+    const gcode = this.previewBySlice.get(sliceId);
+    if (!gcode) {
+      return { kind: 'none' };
+    }
+
+    return {
+      kind: 'gcode-inline',
+      gcode,
+    };
+  }
+
+  onEvent(listener: RuntimeEventListener): RuntimeSubscription {
+    return this.bus.subscribe(listener);
+  }
+
+  async dispose(): Promise<void> {
+    this.rejectPendingSlice(new Error('WASM runtime disposed.'));
+    this.rejectPendingInit(new Error('WASM runtime disposed.'));
+    this.slicerWorker?.terminate();
+    this.slicerWorker = null;
+    this.workerReady = null;
+    this.meshByObjectId.clear();
+    this.initialized = false;
+    this.bus.clear();
+  }
+
+  private ensureWorkerReady(): Promise<void> {
+    if (!this.slicerWorker) {
+      this.createWorker();
+    }
+
+    if (!this.workerReady) {
+      const worker = this.slicerWorker;
+      if (!worker) {
+        return Promise.reject(new Error('WASM slicer worker is not available.'));
+      }
+
+      const ready = new Promise<void>((resolve, reject) => {
+        this.pendingInit = { resolve, reject };
+      });
+      try {
+        const message: SlicerWorkerRequest = {
+          type: 'init',
+          wasmUrl: new URL('scene_engine_bg.wasm', document.baseURI).toString(),
+        };
+        worker.postMessage(message);
+        this.workerReady = ready;
+      } catch (error) {
+        const initError = errorOf(error);
+        this.rejectPendingInit(initError);
+        return Promise.reject(initError);
+      }
+    }
+
+    return this.workerReady;
+  }
+
+  private createWorker(): void {
+    const worker = new Worker(new URL('./slicer.worker', import.meta.url), {
+      type: 'module',
+      name: 'slicer-worker',
+    });
+    worker.onmessage = (event: MessageEvent<SlicerWorkerResponse>) =>
+      this.handleWorkerMessage(event.data);
+    worker.onerror = (event) => {
+      this.handleWorkerFailure(new Error(event.message || 'WASM slicer worker failed.'));
+    };
+    worker.onmessageerror = () => {
+      this.handleWorkerFailure(new Error('WASM slicer worker sent an unreadable message.'));
+    };
+    this.slicerWorker = worker;
+  }
+
+  private restartWorker(): void {
+    this.rejectPendingInit(new Error('WASM slicer worker restarted.'));
+    this.slicerWorker?.terminate();
+    this.slicerWorker = null;
+    this.workerReady = null;
+  }
+
+  private handleWorkerMessage(message: SlicerWorkerResponse): void {
+    switch (message.type) {
+      case 'ready':
+        this.pendingInit?.resolve();
+        this.pendingInit = null;
+        break;
+      case 'log':
+        this.bus.emit({
+          type: 'log',
+          level: message.level,
+          message: message.message,
+        });
+        break;
+      case 'phase-start':
+        this.bus.emit({ type: 'phase-start', sliceId: message.sliceId, phase: message.phase });
+        break;
+      case 'phase-end':
+        this.bus.emit({
+          type: 'phase-end',
+          sliceId: message.sliceId,
+          phase: message.phase,
+          elapsedMs: message.elapsedMs,
+        });
+        break;
+      case 'progress':
+        this.bus.emit({
+          type: 'progress',
+          sliceId: message.sliceId,
+          currentLayer: message.currentLayer,
+          totalLayers: message.totalLayers,
+        });
+        break;
+      case 'slice-complete':
+        this.previewBySlice.set(message.sliceId, message.gcode);
+        this.bus.emit({
+          type: 'slice-complete',
+          sliceId: message.sliceId,
+          layerCount: message.layerCount,
+        });
+        this.resolvePendingSlice({
+          sliceId: message.sliceId,
+          layerCount: message.layerCount,
+          gcodeText: message.gcode,
+        });
+        break;
+      case 'error':
+        this.bus.emit({
+          type: 'error',
+          error: {
+            code: 'internal_error',
+            message: message.message,
+          },
+        });
+        if (message.sliceId) {
+          this.rejectPendingSlice(new Error(message.message));
+        } else {
+          this.rejectPendingInit(new Error(message.message));
+          this.workerReady = null;
+        }
+        break;
+    }
+  }
+
+  private handleWorkerFailure(error: Error): void {
+    this.bus.emit({
+      type: 'error',
+      error: {
+        code: 'internal_error',
+        message: error.message,
+        cause: error,
+      },
+    });
+    this.rejectPendingSlice(error);
+    this.rejectPendingInit(error);
+    this.slicerWorker?.terminate();
+    this.slicerWorker = null;
+    this.workerReady = null;
+  }
+
+  private buildWorkerSlicePayload(request: RuntimeSliceRequest): {
+    objects: WorkerSliceObject[];
+    transferables: Transferable[];
+  } {
+    const sceneObjects =
+      request.scene?.objects ??
+      this.sceneEngine.snapshot().objects.map((object) => ({
+        id: object.id.toString(),
+        name: object.name,
+        translation: object.translation,
+        euler_xyz_deg: object.euler_xyz_deg,
+        scale: object.scale,
+        triangle_count: object.triangle_count,
+        world_aabb: object.world_aabb,
+      }));
+    if (sceneObjects.length === 0) {
+      throw new Error('Cannot slice an empty scene.');
+    }
+
+    const transferables: Transferable[] = [];
+    const objects = sceneObjects.map((object) => {
+      const cached = this.meshByObjectId.get(object.id);
+      const fallbackModel = sceneObjects.length === 1 ? request.model : undefined;
+      const source = cached ?? fallbackModel;
+
+      if (!source?.bytes) {
+        throw new Error(
+          `Missing mesh bytes for scene object '${object.name}'. Reload the model before slicing locally.`,
+        );
+      }
+
+      const bytes = cached ? new Uint8Array(source.bytes) : transferableView(source.bytes);
+      transferables.push(bytes.buffer as ArrayBuffer);
+
+      return {
+        name: cached?.name ?? fallbackModel?.fileName ?? object.name,
+        format: cached?.format ?? fallbackModel?.format ?? 'stl',
+        bytes,
+        transform: {
+          translation: object.translation,
+          euler_xyz_deg: object.euler_xyz_deg,
+          scale: object.scale,
+        },
+      };
+    });
+
+    return { objects, transferables };
+  }
+
+  private resolvePendingSlice(result: RuntimeSliceResult): void {
+    if (this.pendingSlice?.sliceId === result.sliceId) {
+      this.pendingSlice.resolve(result);
+      this.pendingSlice = null;
+    }
+  }
+
+  private rejectPendingSlice(error: Error): void {
+    this.pendingSlice?.reject(error);
+    this.pendingSlice = null;
+  }
+
+  private rejectPendingInit(error: Error): void {
+    this.pendingInit?.reject(error);
+    this.pendingInit = null;
+  }
+
+  private requireReady(): void {
+    if (!this.initialized) {
+      const error: RuntimeError = {
+        code: 'not_ready',
+        message: 'Wasm runtime has not been initialized.',
+      };
+      this.bus.emit({ type: 'error', error });
+      throw new Error(error.message);
+    }
+  }
+}
+
+function transferableView(bytes: Uint8Array): Uint8Array {
+  if (bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength) {
+    return bytes;
+  }
+
+  return bytes.slice();
+}
+
+function errorOf(error: unknown): Error {
+  if (error instanceof Error) {
+    return error;
+  }
+  return new Error(typeof error === 'string' ? error : 'Unknown WASM worker error');
+}

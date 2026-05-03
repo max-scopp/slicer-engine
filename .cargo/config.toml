@@ -1,0 +1,26 @@
+# Machine-specific cargo configuration.
+# This file is intentionally NOT committed to git.
+#
+# WASM Build Requirements (wasm32-unknown-unknown):
+#   WASI SDK must be installed. Download from:
+#   https://github.com/WebAssembly/wasi-sdk/releases
+#
+#   Set WASI_SDK_PATH to the WASI SDK root directory, e.g.:
+#     [System.Environment]::SetEnvironmentVariable(
+#       "WASI_SDK_PATH",
+#       "C:\Users\you\wasi-sdk-33.0-x86_64-windows",
+#       "User"
+#     )
+
+[target.wasm32-unknown-unknown]
+# No runner needed for library builds; wasm-bindgen handles the output.
+
+[env]
+# CXX_wasm32_unknown_unknown points to a wrapper script that strips
+# --target=wasm32-unknown-unknown (added by cc-rs) and delegates to the WASI
+# SDK's wasm32-wasip1-clang++.exe which has the correct sysroot and C++ headers.
+# See tools/wasm32-clang++.js for details.
+CXX_wasm32_unknown_unknown = { value = "tools/wasm32-clang++.cmd", relative = true }
+# CXXSTDLIB_wasm32_unknown_unknown="" tells cc-rs not to auto-link stdc++ for WASM.
+# The C++ stdlib is already compiled into libclipper2c.a by the WASI SDK toolchain.
+CXXSTDLIB_wasm32_unknown_unknown = ""

@@ -4,7 +4,9 @@
   "scripts": {
     "ng": "ng",
     "start": "ng serve --host 0.0.0.0",
+    "start:web-slicer": "ng serve --host 0.0.0.0 --configuration web-slicer",
     "build": "ng build",
+    "build:web-slicer": "ng build --configuration web-slicer",
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
     "gen-schemas": "cd .. && cargo run -- gen-schemas --output-dir ui/src/schemas",
@@ -13,6 +15,9 @@
   },
   "private": true,
   "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
+    "@tauri-apps/plugin-fs": "^2",
     "@angular/animations": "^21.2.10",
     "@angular/aria": "^21.2.8",
     "@angular/cdk": "^21.2.8",

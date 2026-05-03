@@ -1,13 +1,13 @@
 import { Type } from '@angular/core';
-import { InfillDensitySliderComponent } from '../custom-widgets/infill-density-slider/infill-density-slider.component';
-import { InfillPatternPickerComponent } from '../custom-widgets/infill-pattern-picker/infill-pattern-picker.component';
+import { InfillDensitySlider } from '../custom-widgets/infill-density-slider/infill-density-slider';
+import { InfillPatternPicker } from '../custom-widgets/infill-pattern-picker/infill-pattern-picker';
 import { FieldDef } from '../models/field-def';
 import { FieldWidget } from '../widgets/base-field';
-import { BooleanFieldComponent } from '../widgets/boolean-field/boolean-field.component';
-import { EnumRadioComponent } from '../widgets/enum-radio/enum-radio.component';
-import { EnumSelectComponent } from '../widgets/enum-select/enum-select.component';
-import { IntegerFieldComponent } from '../widgets/integer-field/integer-field.component';
-import { NumberFieldComponent } from '../widgets/number-field/number-field.component';
+import { BooleanField } from '../widgets/boolean-field/boolean-field';
+import { EnumRadio } from '../widgets/enum-radio/enum-radio';
+import { EnumSelect } from '../widgets/enum-select/enum-select';
+import { IntegerField } from '../widgets/integer-field/integer-field';
+import { NumberField } from '../widgets/number-field/number-field';
 
 /**
  * Maximum number of enum options for which a radio group is used.
@@ -20,8 +20,8 @@ const RADIO_MAX_OPTIONS = 3;
  * Add an entry here to swap in a custom widget for any schema field key.
  */
 const KEY_REGISTRY: Record<string, Type<FieldWidget>> = {
-  infill_density: InfillDensitySliderComponent,
-  infill_pattern: InfillPatternPickerComponent,
+  infill_density: InfillDensitySlider,
+  infill_pattern: InfillPatternPicker,
 };
 
 /**
@@ -29,16 +29,16 @@ const KEY_REGISTRY: Record<string, Type<FieldWidget>> = {
  */
 function defaultWidgetFor(field: FieldDef): Type<FieldWidget> {
   if (field.enumOptions) {
-    return field.enumOptions.length <= RADIO_MAX_OPTIONS ? EnumRadioComponent : EnumSelectComponent;
+    return field.enumOptions.length <= RADIO_MAX_OPTIONS ? EnumRadio : EnumSelect;
   }
 
   switch (field.type) {
     case 'integer':
-      return IntegerFieldComponent;
+      return IntegerField;
     case 'boolean':
-      return BooleanFieldComponent;
+      return BooleanField;
     default:
-      return NumberFieldComponent;
+      return NumberField;
   }
 }
 
