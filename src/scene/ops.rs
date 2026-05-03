@@ -53,6 +53,16 @@ pub enum SceneOp {
     /// mesh extends upward from that face). Picking a top or bottom face
     /// behaves identically to drop-to-floor.
     PlaceFaceOnFloor { id: ObjectId, face_index: usize },
+    /// Automatically rotate the object to minimise overhangs, maximise flat
+    /// bed-contact area, and — as a tiebreaker — prefer shorter print heights.
+    ///
+    /// The result is equivalent to calling `SetTransform` with the optimal
+    /// rotation followed by `DropToFloor`. The inverse is `SetTransform` back
+    /// to the original transform.
+    AutoOrient {
+        id: ObjectId,
+        options: crate::orient::AutoOrientOptions,
+    },
 }
 
 /// Optional modifiers that alter how a [`SceneOp`] is applied.
@@ -291,6 +301,27 @@ impl SceneState {
                     },
                 })
             }
+
+            SceneOp::AutoOrient { id, options } => {
+                let obj = self.get(id).ok_or(SceneError::NotFound(id))?;
+                let prev = obj.transform;
+                let mesh = obj.mesh.clone();
+                // Compute the optimal rotation quaternion.
+                let q = crate::orient::auto_orient(&mesh, &options);
+                // Apply the rotation, preserving the existing scale.
+                let mut new_t = prev;
+                new_t.set_quat(q);
+                self.get_mut(id).unwrap().transform = new_t;
+                // Drop to floor: shift Z so the world-AABB min sits at z = 0.
+                let world = self.get(id).unwrap().world_aabb();
+                self.get_mut(id).unwrap().transform.translation[2] -= world.min.z as f32;
+                Ok(OpReceipt {
+                    inverse: SceneOp::SetTransform {
+                        id,
+                        transform: prev,
+                    },
+                })
+            }
         }
     }
 }
@@ -330,7 +361,8 @@ fn affected_id_for_gravity(op: &SceneOp) -> Option<ObjectId> {
         SceneOp::Add { .. }
         | SceneOp::Remove { .. }
         | SceneOp::DropToFloor { .. }
-        | SceneOp::PlaceFaceOnFloor { .. } => None,
+        | SceneOp::PlaceFaceOnFloor { .. }
+        | SceneOp::AutoOrient { .. } => None,
     }
 }
 

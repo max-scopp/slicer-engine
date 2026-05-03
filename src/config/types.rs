@@ -34,6 +34,11 @@ pub struct MachineConfig {
     /// Build volume Z in mm.
     #[serde(default = "MachineConfig::default_build_volume_z")]
     pub build_volume_z: f64,
+    /// Preferred Z-rotation (degrees) applied after auto-orient finds the best
+    /// face-down orientation.  Set to `45.0` for CoreXY printers to align the
+    /// print seam with the stepper axes.  `0.0` = disabled (default).
+    #[serde(default)]
+    pub preferred_print_rotation_deg: f64,
 }
 
 impl MachineConfig {
@@ -78,6 +83,7 @@ impl Default for MachineConfig {
             build_volume_x: Self::default_build_volume_x(),
             build_volume_y: Self::default_build_volume_y(),
             build_volume_z: Self::default_build_volume_z(),
+            preferred_print_rotation_deg: 0.0,
         }
     }
 }

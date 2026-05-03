@@ -36,8 +36,8 @@ export class SceneCommand {
    *
    * Accepts any `SceneOp` variant — translate, rotate, scale,
    * place_face_on_floor, center_on_bed, drop_to_floor, remove,
-   * set_transform. History is op-type-agnostic; all ops are batched
-   * identically by the before/after snapshot mechanism.
+   * set_transform, auto_orient. History is op-type-agnostic; all ops are
+   * batched identically by the before/after snapshot mechanism.
    */
   apply(op: SceneOp): void {
     if (this.gestureStart === null) {
@@ -46,6 +46,35 @@ export class SceneCommand {
 
     this.engine.apply(op);
     this.scheduleCommit();
+  }
+
+  /**
+   * Auto-orient one or more objects to minimise overhangs and maximise flat
+   * bed-contact area.
+   *
+   * If `ids` is provided, only those objects are oriented. If omitted or
+   * empty, **all** objects currently in the scene are oriented.
+   *
+   * All orientations in the batch share a single history entry — a single
+   * undo reverts all of them.
+   */
+  autoOrient(ids?: bigint[]): void {
+    const targets =
+      ids && ids.length > 0 ? ids : this.engine.objects().map((o) => o.id);
+
+    if (targets.length === 0) {
+      return;
+    }
+
+    if (this.gestureStart === null) {
+      this.gestureStart = this.engine.snapshot();
+    }
+
+    for (const id of targets) {
+      this.engine.apply({ op: 'auto_orient', args: { id } });
+    }
+
+    this.flush();
   }
 
   /**

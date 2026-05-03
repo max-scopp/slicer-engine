@@ -21,6 +21,7 @@ pub mod gcode;
 pub mod infill;
 pub mod logging;
 pub mod mesh;
+pub mod orient;
 pub mod scene;
 #[cfg(any(not(target_arch = "wasm32"), feature = "web-slicer"))]
 pub mod settings;

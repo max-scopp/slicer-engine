@@ -66,7 +66,18 @@ export type SceneOp =
   | { op: 'scale'; args: { id: bigint; factors: [number, number, number] } }
   | { op: 'center_on_bed'; args: { id: bigint } }
   | { op: 'drop_to_floor'; args: { id: bigint } }
-  | { op: 'place_face_on_floor'; args: { id: bigint; face_index: number } };
+  | { op: 'place_face_on_floor'; args: { id: bigint; face_index: number } }
+  | {
+      op: 'auto_orient';
+      args: {
+        id: bigint;
+        options?: {
+          allow_rotations?: boolean;
+          preferred_z_rotation_deg?: number;
+          overhang_threshold_deg?: number;
+        };
+      };
+    };
 
 const DEFAULT_BED: SceneBedSnapshot = {
   width: 220,
@@ -188,6 +199,22 @@ export class SceneEngine {
     stop(op.args as unknown as Record<string, unknown>);
     this.publishOpStats(label);
     this.refreshSnapshot();
+  }
+
+  /**
+   * Convenience method: auto-orient an object by id.
+   *
+   * Equivalent to `apply({ op: 'auto_orient', args: { id, options } })`.
+   */
+  autoOrientObject(
+    id: bigint,
+    options?: {
+      allow_rotations?: boolean;
+      preferred_z_rotation_deg?: number;
+      overhang_threshold_deg?: number;
+    },
+  ): void {
+    this.apply({ op: 'auto_orient', args: { id, options } });
   }
 
   /** Apply a batch of ops as a single snapshot update. */

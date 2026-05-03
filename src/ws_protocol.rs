@@ -117,6 +117,13 @@ pub enum SceneOpDto {
     /// Rotate so the chosen face's normal points down, then place that face
     /// on the floor (z = 0). Replaces the legacy `align_face_to_floor` op.
     PlaceFaceOnFloor { id: u64, face_index: usize },
+    /// Automatically rotate the object to minimise overhangs and maximise
+    /// flat bed-contact area, then drop it to the floor.
+    AutoOrient {
+        id: u64,
+        #[serde(default)]
+        options: crate::orient::AutoOrientOptions,
+    },
 }
 
 /// Optional modifiers applied to every op in a [`ClientMessage::Scene`] batch.
