@@ -34,6 +34,16 @@ pub(crate) fn perimeter_paths_of(layer: &SliceLayer) -> Paths {
 /// Standard extrusion width is typically 1.2× layer height for solid infill.
 const SOLID_INFILL_EXTRUSION_WIDTH_MULTIPLIER: f64 = 1.2;
 
+/// Maximum horizontal gap (as a multiple of `line_spacing`) allowed when
+/// connecting the end of one scan-line segment to the nearest end of the next
+/// scan-line segment in the serpentine chaining pass.
+///
+/// A factor of 2.0 handles typical shape variations where adjacent scan lines
+/// have modestly different x extents (e.g. at the edge of a circle or any
+/// slanted boundary).  Values larger than ~3.0 risk bridging across genuine
+/// void regions; values smaller than 1.5 may leave convex corners unchained.
+const SERPENTINE_CONNECT_THRESHOLD: f64 = 2.0;
+
 /// Add solid infill for a computed surface `region` to a layer.
 ///
 /// Generates a rectilinear infill pattern covering only the provided `region`
@@ -63,15 +73,20 @@ pub(super) fn add_solid_infill_for_region(
 ///
 /// Creates a series of parallel lines at the specified angle that fill the
 /// interior of the contours and are **clipped exactly to the contour shape**
-/// using a scanline intersection algorithm. Lines never extend outside the
-/// perimeter boundary.
+/// using a scanline intersection algorithm.  Adjacent scan lines are
+/// **chained into serpentine (U-turn) paths**: the end of one line is
+/// connected directly to the nearest end of the next line, producing a
+/// continuous toolpath that eliminates travel moves between infill lines.
 ///
 /// # Algorithm
 /// 1. Rotate all contour vertices by `-angle` so scan lines become horizontal.
 /// 2. For each horizontal scan line (spaced by `line_spacing`), find where it
 ///    crosses each polygon edge and collect the X-intersection coordinates.
 /// 3. Sort intersections and emit segments between paired entry/exit points.
-/// 4. Rotate the resulting segment endpoints back by `+angle`.
+/// 4. Chain consecutive scan-line segments into serpentine paths: the end of
+///    one segment is connected to the nearest endpoint of the next segment,
+///    alternating direction so adjacent lines print without travel moves.
+/// 5. Rotate the resulting path endpoints back by `+angle`.
 ///
 /// # Arguments
 /// * `contours`      – Boundary paths (the surface region) to fill
@@ -79,7 +94,7 @@ pub(super) fn add_solid_infill_for_region(
 /// * `angle_degrees` – Angle of infill lines (0° = horizontal, 45° = diagonal)
 ///
 /// # Returns
-/// Paths representing the infill lines, clipped to `contours`.
+/// Paths representing serpentine infill chains, clipped to `contours`.
 pub(super) fn generate_rectilinear_infill(
     contours: &Paths,
     line_spacing: f64,
@@ -131,7 +146,10 @@ pub(super) fn generate_rectilinear_infill(
         return Paths::new(vec![]);
     }
 
-    let mut result_paths = Paths::new(vec![]);
+    // ── Phase 1: collect all scan-line segments in rotated coordinates ────────
+    //
+    // Each entry is (scan_y, Vec<(x_start, x_end)>) for that horizontal scan.
+    let mut scan_line_data: Vec<(f64, Vec<(f64, f64)>)> = Vec::new();
 
     // First scan line aligned to the grid, spanning [y_min, y_max]
     let start_y = (y_min / line_spacing).floor() * line_spacing;
@@ -161,21 +179,121 @@ pub(super) fn generate_rectilinear_infill(
 
         xs.sort_by(|a, b| a.total_cmp(b));
 
-        // Emit a line segment for each inside pair (even/odd winding)
+        // Collect segments for this scan line
+        let mut segments: Vec<(f64, f64)> = Vec::new();
         let mut k = 0;
         while k + 1 < xs.len() {
             let x_start = xs[k];
             let x_end = xs[k + 1];
             if x_end > x_start + 1e-9 {
-                let (sx, sy) = rotate_pos(x_start, scan_y);
-                let (ex, ey) = rotate_pos(x_end, scan_y);
-                let path: Path = vec![(sx, sy), (ex, ey)].into();
-                result_paths.push(path);
+                segments.push((x_start, x_end));
             }
             k += 2;
         }
 
+        if !segments.is_empty() {
+            scan_line_data.push((scan_y, segments));
+        }
+
         scan_y += line_spacing;
+    }
+
+    // ── Phase 2: chain adjacent scan lines into serpentine paths ─────────────
+    //
+    // Active chains are sorted left-to-right by their last printed X coordinate
+    // and matched to scan-line segments in the same sorted order (j-th chain ↔
+    // j-th segment).  This **sorted-index correspondence** keeps each chain
+    // within the same polygon island — critical for complex cross-sections (e.g.
+    // a Benchy hull) where multiple disjoint segments appear per scan line.
+    //
+    // A chain that has no corresponding segment on the current scan line is
+    // **immediately finalised**.  Letting a chain survive a missed scan line
+    // would allow it to reconnect many rows later, producing a long diagonal
+    // extrusion across already-printed material (the "sporadic jump / plows
+    // through" bugs).
+    //
+    // If the horizontal distance from the chain's last point to the nearest
+    // endpoint of its matched segment exceeds `connect_threshold`, the chain is
+    // also finalised and the segment starts a fresh chain.  This handles the
+    // (rare) case where an island shifts further than the threshold in a single
+    // scan line step.
+    let connect_threshold = line_spacing * SERPENTINE_CONNECT_THRESHOLD;
+
+    // Each element: (accumulated path points in rotated coords, last_x).
+    let mut active: Vec<(Vec<(f64, f64)>, f64)> = Vec::new();
+    // Completed chains — converted to output paths in Phase 3.
+    let mut finished: Vec<Vec<(f64, f64)>> = Vec::new();
+
+    for (sy, segments) in &scan_line_data {
+        // Sort active chains left-to-right so they align with sorted segments.
+        active.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+
+        let n_chains = active.len();
+        let n_segs = segments.len();
+        let n_pair = n_chains.min(n_segs);
+
+        // Chains with index ≥ n_segs have no corresponding segment → close them.
+        for (pts, _) in active.drain(n_pair..) {
+            if pts.len() >= 2 {
+                finished.push(pts);
+            }
+        }
+
+        // Match the remaining n_pair chains to segments by sorted index.
+        // Consuming `active` entirely lets us move Vecs without cloning.
+        let paired: Vec<(Vec<(f64, f64)>, f64)> = std::mem::take(&mut active);
+        let mut new_active: Vec<(Vec<(f64, f64)>, f64)> = Vec::with_capacity(n_segs);
+
+        for (j, (mut pts, lx)) in paired.into_iter().enumerate() {
+            let (xs, xe) = segments[j];
+
+            // Choose the "near" endpoint — whichever is closest to `lx` — as
+            // the U-turn landing point; the other end is the far end of the line.
+            let (near, far) = if (lx - xe).abs() <= (lx - xs).abs() {
+                (xe, xs)
+            } else {
+                (xs, xe)
+            };
+
+            if (lx - near).abs() <= connect_threshold {
+                // Valid U-turn: step to `near`, then extrude to `far`.
+                pts.push((near, *sy));
+                pts.push((far, *sy));
+                new_active.push((pts, far));
+            } else {
+                // Boundary shifted too far to bridge without crossing a void.
+                // Finalise the existing chain and begin a fresh one for this segment.
+                if pts.len() >= 2 {
+                    finished.push(pts);
+                }
+                new_active.push((vec![(xs, *sy), (xe, *sy)], xe));
+            }
+        }
+
+        // Segments beyond n_pair represent newly appeared islands.
+        for &(xs, xe) in &segments[n_pair..] {
+            new_active.push((vec![(xs, *sy), (xe, *sy)], xe));
+        }
+
+        active = new_active;
+    }
+
+    // Finalise all chains still open after the last scan line.
+    for (pts, _) in active {
+        if pts.len() >= 2 {
+            finished.push(pts);
+        }
+    }
+
+    // ── Phase 3: convert chains back to original coordinates ─────────────────
+    let mut result_paths = Paths::new(vec![]);
+    for chain in finished {
+        if chain.len() < 2 {
+            continue;
+        }
+        let pts: Vec<(f64, f64)> = chain.iter().map(|&(x, y)| rotate_pos(x, y)).collect();
+        let path: clipper2::Path = pts.into();
+        result_paths.push(path);
     }
 
     result_paths
