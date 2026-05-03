@@ -85,10 +85,9 @@ pub(super) fn add_solid_infill_for_region(
 /// using PCA on its vertices.
 ///
 /// Returns the angle of the **dominant axis** (the eigenvector with the
-/// larger eigenvalue) measured CCW from +X.  Bridge lines should be printed
-/// **perpendicular** to this angle so each strand spans the *short* dimension
-/// of the unsupported region — even when that region is rotated relative to
-/// the print bed.
+/// larger eigenvalue) measured CCW from +X.  This is the *long* dimension
+/// of the unsupported region; callers wanting the **bridge print direction**
+/// must add 90° so each strand spans the *short* dimension of the gap.
 ///
 /// Falls back to `None` when the input is empty, has fewer than two distinct
 /// points, or is a perfect square (eigenvalues nearly equal — no preferred
@@ -132,7 +131,10 @@ fn principal_axis_angle_deg(paths: &Paths) -> Option<f64> {
     let disc = (trace * trace * 0.25 - det).max(0.0).sqrt();
     let lam_max = trace * 0.5 + disc;
     let lam_min = trace * 0.5 - disc;
-    // Square / circle: no preferred direction.
+    // Square / circle: no preferred direction.  An eigenvalue ratio < 5 %
+    // means the major and minor axes carry essentially the same variance —
+    // any angle we picked would be arbitrary, so signal "no answer" and let
+    // the caller fall back to its bounding-box heuristic.
     if (lam_max - lam_min) / lam_max < 0.05 {
         return None;
     }
@@ -163,6 +165,9 @@ fn principal_axis_angle_deg(paths: &Paths) -> Option<f64> {
 /// than `2 × radius_mm` while preserving larger regions almost unchanged.
 /// A no-op when `radius_mm <= 0`.
 fn morphological_open(paths: Paths, radius_mm: f64) -> Paths {
+    // 1e-6 mm = 1 nm — well below any real geometry and below Clipper2's
+    // Centi quantisation (10 µm).  Anything smaller is rounding noise and
+    // a no-op is the right behaviour.
     if radius_mm <= 1e-6 || paths.is_empty() {
         return paths;
     }

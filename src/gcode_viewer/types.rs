@@ -45,7 +45,10 @@ impl Role {
         if lower == "bridge" {
             return Self::Bridge;
         }
-        if lower.contains("overhang") {
+        // Match OrcaSlicer's exact `;TYPE:Overhang wall` so generic strings
+        // like "non-overhang" or "overhang setting" cannot accidentally
+        // promote a normal perimeter to bridge colouring.
+        if lower == "overhang wall" || lower == "overhang perimeter" {
             // OrcaSlicer-style overhang walls span air just like bridges,
             // so we colour them the same way in the viewer.
             return Self::Bridge;

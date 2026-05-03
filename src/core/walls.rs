@@ -222,6 +222,14 @@ fn remove_inner_walls_from_layer(layer: &mut SliceLayer) {
 pub(crate) fn classify_overhang_perimeters(layers: &mut [SliceLayer]) {
     /// Minimum fraction of a wall path's vertices that must lie in air for
     /// the whole path to be reclassified as `OverhangPerimeter`.
+    ///
+    /// Set to a simple majority (50 %).  Lower values would aggressively
+    /// flag short overhang spurs at the expense of triggering the slow
+    /// bridge speed / reduced flow on mostly-supported walls; higher values
+    /// would miss thin frames around windows where roughly half the loop
+    /// is in air.  Whole-path classification is intentional — splitting a
+    /// loop at the supported / unsupported boundary is left for a future
+    /// enhancement.
     const OVERHANG_VERTEX_THRESHOLD: f64 = 0.5;
 
     for layer in layers.iter_mut() {
