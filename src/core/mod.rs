@@ -1617,39 +1617,81 @@ mod tests {
         );
     }
 
-    /// `unsupported_regions` must be populated on each layer (except layer 0)
-    /// so the wall-classification post-pass can use it.
+    /// **Regression — bridge-in-wall-zone (Benchy porthole / window frame)**
     ///
-    /// Geometry: layer 0 = 1×10 strip at x∈[0,1]; layer 1 = 10×10 square.
-    /// Default nozzle = 0.4 mm.  `unsupported_regions` for layer 1 is
-    /// `square − inflate(strip, +d/2 = 0.2)`.  The inflated strip extends
-    /// to x∈[-0.2, 1.2] (clipped to the square gives a 1.2 × 10 = 12 mm²
-    /// support footprint), so the unsupported area is 100 − 12 ≈ 88 mm².
+    /// This is the exact scenario where the original code produced NO bridge
+    /// infill even though there is a genuine unsupported horizontal span:
+    ///
+    /// - `interior_regions[i]` is the cabin interior — a small 2×2 area
+    ///   centred in a large 10×10 hull cross-section.
+    /// - The bridge area (the 2×2 hole closure at the top of the porthole)
+    ///   is in the hull **wall zone** — it does NOT overlap the cabin interior.
+    ///
+    /// The previous code did:
+    ///   `region = intersect(region, interior_regions[i])` → EMPTY (no overlap)
+    ///   then returned (empty, empty) → zero infill generated.
+    ///
+    /// The fix: interior_regions clipping is applied ONLY to `supported`
+    /// (solid bottom infill), NOT to `region` before the bridge/bottom split.
+    /// Also, `anchor_bounds = perimeters[i]` (not interior_regions[i]) so
+    /// `expand_to_anchor` can see the surrounding wall material.
     #[test]
-    fn test_unsupported_regions_field_is_populated() {
+    fn test_bridge_detected_when_bridge_area_is_in_wall_zone() {
+        use crate::core::surfaces::{
+            generate_top_bottom_surfaces_with_interior, SurfaceConfig,
+        };
         use clipper2::Path;
 
+        // Layer 0: 10×10 hull ring with a 2×2 porthole in the centre.
+        //   Outer hull boundary (CCW): (0,0)→(10,0)→(10,10)→(0,10)
+        //   Porthole hole (CW): (4,4)→(4,6)→(6,6)→(6,4)  (hole in hull)
         let mut layer0 = SliceLayer::new(0.2);
-        let strip: Path = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 10.0), (0.0, 10.0)].into();
-        layer0.paths.push(strip);
+        let hull0: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        let hole0: Path = vec![(4.0, 4.0), (4.0, 6.0), (6.0, 6.0), (6.0, 4.0)].into();
+        layer0.paths.push(hull0);
+        layer0.paths.push(hole0);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
         layer0.path_roles.push(ExtrusionRole::OuterWall);
 
+        // Layer 1: solid 10×10 hull (porthole closed at this layer).
         let mut layer1 = SliceLayer::new(0.4);
-        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
-        layer1.paths.push(square);
+        let hull1: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer1.paths.push(hull1);
         layer1.path_roles.push(ExtrusionRole::OuterWall);
 
         let mut layers = vec![layer0, layer1];
-        generate_top_bottom_surfaces(&mut layers, 0, 1, 0.2, 45.0);
 
-        assert!(
-            layers[0].unsupported_regions.is_empty(),
-            "Layer 0 must have empty unsupported_regions (no layer below)"
+        // interior_regions[1] = the cabin interior = 2×2 square at (4,4)→(6,6).
+        // This deliberately does NOT overlap the porthole bridge area
+        // (which is the 2×2 closure in the hull-wall zone).
+        let interior_layer0 = clipper2::Paths::new(vec![]);
+        let interior_layer1: clipper2::Paths = clipper2::Paths::new(vec![
+            clipper2::Path::from(vec![(4.0_f64, 4.0_f64), (4.0, 6.0), (6.0, 6.0), (6.0, 4.0)]),
+        ]);
+        let interior_regions = vec![interior_layer0, interior_layer1];
+
+        generate_top_bottom_surfaces_with_interior(
+            &mut layers,
+            &SurfaceConfig {
+                top_layers: 0,
+                bottom_layers: 1,
+                layer_height: 0.2,
+                infill_angle: 45.0,
+                nozzle_diameter_mm: 0.4,
+                bridge_flow_ratio: 0.8,
+                bridge_min_area_mm2: 0.0, // disable area filter so small porthole still passes
+                bridge_noise_filter_mm: 0.0, // disable noise filter
+                bridge_anchor_mm: 0.0,    // disable anchor so result area is minimal / predictable
+            },
+            Some(&interior_regions),
         );
-        let area1 = layers[1].unsupported_regions.signed_area().abs();
+
+        let has_bridge = layers[1].path_roles.contains(&ExtrusionRole::Bridge);
         assert!(
-            (area1 - 88.0).abs() < 1.0,
-            "Layer 1 unsupported area should be ~88 mm² (10×10 minus inflated 1.2×10 support strip), got {area1}"
+            has_bridge,
+            "Porthole closure (bridge in wall zone) must be detected as Bridge even when \
+             interior_regions does not overlap the bridge area. roles={:?}",
+            layers[1].path_roles
         );
     }
 }

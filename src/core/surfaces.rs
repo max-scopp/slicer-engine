@@ -800,17 +800,28 @@ pub fn generate_top_bottom_surfaces_with_interior(
                 }
             }
 
-            let mut region =
+            // Full geometric bottom/bridge candidate: area of layer i NOT
+            // covered by any of the preceding `bottom_layers` layers.
+            //
+            // This is deliberately NOT clipped to `interior_regions` here.
+            // Bridges within the wall band (Benchy porthole, window frame top
+            // bar, door header) are a key case:
+            //
+            // • The porthole is a hole cut through the hull wall.  When the
+            //   slicer reaches the layer that first closes the porthole, the
+            //   new material appears *inside the wall zone*, not inside
+            //   `interior_regions` (the cabin interior).
+            // • If we clipped `region` to `interior_regions` now, that area
+            //   would be removed before the bridge test — producing no bridge
+            //   infill *and* no bottom-surface infill for the porthole.
+            //
+            // The `interior_regions` clip is applied *after* the bridge/bottom
+            // split, but only to the `supported` (bottom-surface) portion: solid
+            // infill must stay in the infill zone so it doesn't overlap wall
+            // extrusions.  Bridges are exempt because they explicitly fill the
+            // gap that exists inside the wall band.
+            let region =
                 difference(perimeters[i].clone(), covered, FillRule::EvenOdd).unwrap_or_default();
-
-            if let Some(interior_regions) = interior_regions {
-                if interior_regions[i].is_empty() {
-                    region = Paths::new(vec![]);
-                } else if !region.is_empty() {
-                    region = intersect(region, interior_regions[i].clone(), FillRule::EvenOdd)
-                        .unwrap_or_default();
-                }
-            }
 
             // Bridge detection: split `region` into areas that are entirely
             // unsupported by the previous layer (bridge) vs. areas that have
@@ -830,57 +841,87 @@ pub fn generate_top_bottom_surfaces_with_interior(
             //      below `bridge_min_area_mm2`.  Such islands would print as
             //      lone bridge dots ("infills cannot be infill patterns").
             //   3. **Anchor expansion** dilates the surviving regions outward
-            //      by `bridge_anchor_mm` (clipped to `region`) so each strand
-            //      bites into the supported solid material on either side
-            //      instead of ending mid-air at the wall.
+            //      by `bridge_anchor_mm` (clipped to `perimeters[i]`) so each
+            //      strand bites into the supported wall material on either side
+            //      instead of ending mid-air.
             // Material rejected by stages 1–2 is reclassified as
             // BottomSurface so the layer remains fully solid below the gap.
+            //
+            // `clip_bottom` — clips solid bottom-surface infill to the infill
+            // zone so it doesn't overlap wall extrusions.  Defined here (before
+            // the i==0 early-return) so the first layer's BottomSurface is also
+            // restricted to the interior region.  Bridges are exempt from this
+            // clip because they explicitly fill the gap inside the wall band.
+            //
+            //   • `interior_regions = None` → no clip
+            //   • `interior_regions[i]` is empty → no solid infill in this
+            //     all-wall cross-section
+            //   • otherwise → clip to the interior region
+            let clip_bottom = |s: Paths| -> Paths {
+                match interior_regions {
+                    None => s,
+                    Some(regs) if regs[i].is_empty() => Paths::new(vec![]),
+                    Some(_regs) if s.is_empty() => s,
+                    Some(regs) => {
+                        intersect(s, regs[i].clone(), FillRule::EvenOdd).unwrap_or_default()
+                    }
+                }
+            };
+
             if region.is_empty() || i == 0 {
-                (Paths::new(vec![]), region)
+                // i == 0: no layer below → no bridge possible; entire region is
+                // the model's absolute bottom surface.  Still clip to interior so
+                // the first-layer BottomSurface infill stays out of the wall band.
+                (Paths::new(vec![]), clip_bottom(region))
             } else {
-                // Anchor bounds: prefer the inside-walls interior region when
-                // available so the bridge expansion bites into supported solid
-                // bottom material *but stops at the wall band*.  This prevents
-                // small bridges (text, embossed details) from visually pushing
-                // past the first inner wall.
-                let anchor_bounds: &Paths = match interior_regions {
-                    Some(regs) if !regs[i].is_empty() => &regs[i],
-                    _ => &perimeters[i],
-                };
+                // Anchor bounds = the full layer cross-section (perimeters[i]).
+                //
+                // We intentionally do NOT use `interior_regions[i]` here, even
+                // when it is non-empty.  For bridges within the wall zone (hull
+                // porthole, window header, door frame), `interior_regions[i]`
+                // is the *cabin interior* — it does not overlap the bridge area
+                // at all.  Using it as the anchor bound would make
+                // `expand_to_anchor` return empty, which would degrade the
+                // bridge to a bottom surface that then gets clipped away.
+                //
+                // `perimeters[i]` always encompasses the bridge area and
+                // provides the correct anchor material (the surrounding wall).
+                let anchor_bounds: &Paths = &perimeters[i];
                 let prev_perimeter = &perimeters[i - 1];
+
                 if prev_perimeter.is_empty() {
                     // Nothing below at all → entire region is candidate bridge.
                     let raw = region.clone();
                     let opened = morphological_open(raw, bridge_noise_filter_mm);
                     let big = filter_small_islands(&opened, bridge_min_area_mm2);
                     let anchored = expand_to_anchor(big, anchor_bounds, bridge_anchor_mm);
-                    let supported = if anchored.is_empty() {
+                    let supported_raw = if anchored.is_empty() {
                         region
                     } else {
                         difference(region, anchored.clone(), FillRule::EvenOdd).unwrap_or_default()
                     };
-                    (anchored, supported)
+                    (anchored, clip_bottom(supported_raw))
                 } else {
-                    // Step 0 — raw unsupported within the inside-walls region.
+                    // Step 0 — raw unsupported area.
                     let raw = difference(region.clone(), prev_perimeter.clone(), FillRule::EvenOdd)
                         .unwrap_or_default();
                     // Step 1 — morphological opening (noise filter).
                     let opened = morphological_open(raw, bridge_noise_filter_mm);
                     // Step 2 — drop islands below the area threshold.
                     let big = filter_small_islands(&opened, bridge_min_area_mm2);
-                    // Step 3 — anchor expansion clipped to the inside-walls
-                    // interior so the bridge bites into supported solid
-                    // bottom material on either side of the gap *without*
-                    // expanding into the wall band.
+                    // Step 3 — anchor expansion clipped to the full layer
+                    // cross-section so the bridge bites into the surrounding
+                    // wall material on either side of the gap.
                     let anchored = expand_to_anchor(big, anchor_bounds, bridge_anchor_mm);
                     // Supported part = whatever is left of the bottom region
                     // after the (filtered + anchored) bridge has been removed.
-                    let supported = if anchored.is_empty() {
+                    // Clip to interior zone before using as solid bottom infill.
+                    let supported_raw = if anchored.is_empty() {
                         region
                     } else {
                         difference(region, anchored.clone(), FillRule::EvenOdd).unwrap_or_default()
                     };
-                    (anchored, supported)
+                    (anchored, clip_bottom(supported_raw))
                 }
             }
         } else {
