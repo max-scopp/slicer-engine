@@ -308,9 +308,13 @@ pub(crate) fn clip_walls_against_bridge_region(layer: &mut SliceLayer, bridge_re
             continue;
         }
 
-        // Test each vertex against the bridge region.
-        // IsOn counts as inside so that wall centerlines sitting exactly on the
-        // bridge boundary are correctly swept into the clip zone.
+        // Test each vertex against the bridge region using a **strict**
+        // point-in-polygon test (IsOn = outside).  Outer model-boundary paths
+        // (whose vertices sit exactly on the anchor region's outer edge after
+        // the `intersect(expanded, perimeters[i])` clip) must NOT be removed.
+        // Arachne centerlines adjacent to the bridge void are placed d/2 ≈ 0.2 mm
+        // inside the material from the void surface, so they land strictly
+        // inside the anchor strip and are correctly identified for removal.
         let in_bridge: Vec<bool> = pts
             .iter()
             .map(|p| vertex_strictly_inside_paths_eo(p.x(), p.y(), bridge_region))
