@@ -6,7 +6,31 @@
 
 use crate::mesh::analysis::calculate_aabb;
 use crate::mesh::types::{Face, Mesh, Vertex};
-use crate::settings::params::MeshQuality;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+/// Controls optional mesh decimation applied before slicing.
+///
+/// Decimation reduces the triangle count of the input mesh as a preprocessing
+/// step. Fewer triangles speed up all subsequent slicing operations; the
+/// trade-off is reduced geometric accuracy on very fine surface details.
+///
+/// The original mesh is never modified; only the copy handed to the slicing
+/// pipeline is decimated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+pub enum MeshQuality {
+    /// No decimation. Full input mesh is used for slicing (default).
+    #[default]
+    Normal,
+    /// No decimation. Identical to `normal` in behaviour; signals that the
+    /// caller wants maximum geometric fidelity.
+    HighQuality,
+    /// Aggressive polygon reduction via vertex clustering.
+    ///
+    /// Significantly reduces triangle count for faster slicing of
+    /// high-density models. Fine surface details may be smoothed away.
+    Draft,
+}
 
 /// Translate every vertex of the mesh by the given offset.
 ///
@@ -308,7 +332,6 @@ mod tests {
 
     #[test]
     fn test_decimate_normal_returns_clone() {
-        use crate::settings::params::MeshQuality;
         let mesh = make_displaced_cube(0.0, 0.0, 0.0);
         let result = super::decimate_mesh(&mesh, MeshQuality::Normal);
         assert_eq!(result.faces.len(), mesh.faces.len());
@@ -317,7 +340,6 @@ mod tests {
 
     #[test]
     fn test_decimate_high_quality_returns_clone() {
-        use crate::settings::params::MeshQuality;
         let mesh = make_displaced_cube(0.0, 0.0, 0.0);
         let result = super::decimate_mesh(&mesh, MeshQuality::HighQuality);
         assert_eq!(result.faces.len(), mesh.faces.len());
@@ -325,7 +347,6 @@ mod tests {
 
     #[test]
     fn test_decimate_draft_reduces_face_count_on_dense_mesh() {
-        use crate::settings::params::MeshQuality;
         // Build a mesh with many co-located triangles to ensure clustering fires.
         // Use a 1×1×1 mm cube so all 8 vertices are very close together;
         // with cell_size = 1/64 mm all 8 vertices collapse into roughly the
@@ -377,7 +398,6 @@ mod tests {
     #[test]
     fn test_decimate_draft_normal_sized_cube_preserves_shape() {
         use crate::mesh::analysis::calculate_aabb;
-        use crate::settings::params::MeshQuality;
         // A 10×10×10 mm cube with 12 faces — vertices are well-separated relative
         // to cell_size (10/64 ≈ 0.156 mm), so all 8 vertices stay distinct.
         let mesh = make_displaced_cube(0.0, 0.0, 0.0);
@@ -394,7 +414,6 @@ mod tests {
 
     #[test]
     fn test_decimate_empty_mesh() {
-        use crate::settings::params::MeshQuality;
         let mesh = Mesh::new();
         let result = super::decimate_mesh(&mesh, MeshQuality::Draft);
         assert!(result.faces.is_empty());
@@ -403,7 +422,6 @@ mod tests {
 
     #[test]
     fn test_original_mesh_unchanged_after_decimate() {
-        use crate::settings::params::MeshQuality;
         let mesh = make_displaced_cube(0.0, 0.0, 0.0);
         let _decimated = super::decimate_mesh(&mesh, MeshQuality::Draft);
         // Original should be unchanged.

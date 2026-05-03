@@ -2,32 +2,9 @@
 
 use crate::gcode::GcodeFlavor;
 use crate::infill::InfillPattern;
+pub use crate::mesh::transforms::MeshQuality;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-
-/// Controls optional mesh decimation applied before slicing.
-///
-/// Decimation reduces the triangle count of the input mesh as a preprocessing
-/// step. Fewer triangles speed up all subsequent slicing operations; the
-/// trade-off is reduced geometric accuracy on very fine surface details.
-///
-/// The original mesh is never modified; only the copy handed to the slicing
-/// pipeline is decimated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-pub enum MeshQuality {
-    /// No decimation. Full input mesh is used for slicing (default).
-    #[default]
-    Normal,
-    /// No decimation. Identical to `normal` in behaviour; signals that the
-    /// caller wants maximum geometric fidelity.
-    HighQuality,
-    /// Aggressive polygon reduction via vertex clustering.
-    ///
-    /// Significantly reduces triangle count for faster slicing of
-    /// high-density models. Fine surface details may be smoothed away.
-    Draft,
-}
 
 /// Parameters that control how a model is sliced and printed.
 ///
