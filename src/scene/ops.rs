@@ -63,6 +63,30 @@ pub enum SceneOp {
         id: ObjectId,
         options: crate::orient::AutoOrientOptions,
     },
+    /// Auto-orient and arrange multiple objects on the bed without overlap.
+    ///
+    /// For each id in `ids`:
+    /// 1. If `options.auto_orient` is `true`, run [`SceneOp::AutoOrient`] on
+    ///    the object (preserving individual orientation quality).
+    /// 2. After all objects are oriented, compute each object's XY footprint
+    ///    and run a shelf-first-fit packing algorithm to place them without
+    ///    overlap, separated by `options.spacing_mm`.
+    /// 3. Center the entire arrangement on the bed.
+    ///
+    /// The inverse is a [`SceneOp::BatchSetTransform`] that restores every
+    /// affected object to its pre-op transform.
+    ArrangeOnBed {
+        ids: Vec<ObjectId>,
+        #[serde(default)]
+        options: crate::orient::ArrangeOptions,
+    },
+    /// Restore multiple object transforms atomically.
+    ///
+    /// Used as the inverse of [`SceneOp::ArrangeOnBed`] so undo works in one
+    /// step.  Silently skips ids that no longer exist in the scene.
+    BatchSetTransform {
+        transforms: Vec<(ObjectId, crate::scene::Transform)>,
+    },
 }
 
 /// Optional modifiers that alter how a [`SceneOp`] is applied.
@@ -331,6 +355,100 @@ impl SceneState {
                     },
                 })
             }
+
+            SceneOp::ArrangeOnBed { ids, options } => {
+                // Snapshot pre-op transforms for the undo inverse.
+                let prev_transforms: Vec<(ObjectId, crate::scene::Transform)> = ids
+                    .iter()
+                    .filter_map(|&id| self.get(id).map(|o| (id, o.transform)))
+                    .collect();
+
+                // ----------------------------------------------------------------
+                // Step 1: Auto-orient each object (if requested).
+                // ----------------------------------------------------------------
+                if options.auto_orient {
+                    for &id in &ids {
+                        if self.get(id).is_none() {
+                            continue;
+                        }
+                        let mesh = self.get(id).unwrap().mesh.clone();
+                        let q = crate::orient::auto_orient(&mesh, &options.orient_options);
+                        let prev = self.get(id).unwrap().transform;
+                        let mut new_t = prev;
+                        new_t.set_quat(q);
+                        self.get_mut(id).unwrap().transform = new_t;
+                        // Drop to floor after rotation.
+                        let world = self.get(id).unwrap().world_aabb();
+                        self.get_mut(id).unwrap().transform.translation[2] -=
+                            world.min.z as f32;
+                    }
+                }
+
+                // ----------------------------------------------------------------
+                // Step 2: Collect XY footprints (world-AABB width × depth).
+                // ----------------------------------------------------------------
+                // We pair each footprint with its corresponding id so we can
+                // look up results by index after packing.
+                let footprints: Vec<(ObjectId, (f64, f64))> = ids
+                    .iter()
+                    .filter_map(|&id| {
+                        self.get(id).map(|o| {
+                            let aabb = o.world_aabb();
+                            let w = (aabb.max.x - aabb.min.x).max(0.0);
+                            let d = (aabb.max.y - aabb.min.y).max(0.0);
+                            (id, (w, d))
+                        })
+                    })
+                    .collect();
+
+                let fp_values: Vec<(f64, f64)> = footprints.iter().map(|&(_, fp)| fp).collect();
+                let packed =
+                    crate::orient::pack::pack_footprints(&fp_values, &self.bed, options.spacing_mm);
+
+                // ----------------------------------------------------------------
+                // Step 3: Move each object to its packed position.
+                //
+                // The packing result gives the object's desired min-X / min-Y
+                // in scene coordinates.  We shift the translation so the
+                // world-AABB min-X and min-Y land there.
+                // ----------------------------------------------------------------
+                for item in &packed {
+                    let (obj_id, _) = footprints[item.index];
+                    if let Some(obj) = self.get(obj_id) {
+                        let world = obj.world_aabb();
+                        let dx = item.x - world.min.x;
+                        let dy = item.y - world.min.y;
+                        let t = &mut self.get_mut(obj_id).unwrap().transform;
+                        t.translation[0] += dx as f32;
+                        t.translation[1] += dy as f32;
+                    }
+                }
+
+                Ok(OpReceipt {
+                    inverse: SceneOp::BatchSetTransform {
+                        transforms: prev_transforms,
+                    },
+                })
+            }
+
+            SceneOp::BatchSetTransform { transforms } => {
+                // Save the current transforms before overwriting them.
+                let prev_transforms: Vec<(ObjectId, crate::scene::Transform)> = transforms
+                    .iter()
+                    .filter_map(|&(id, _)| self.get(id).map(|o| (id, o.transform)))
+                    .collect();
+
+                for (id, transform) in transforms {
+                    if let Some(obj) = self.get_mut(id) {
+                        obj.transform = transform;
+                    }
+                }
+                Ok(OpReceipt {
+                    inverse: SceneOp::BatchSetTransform {
+                        transforms: prev_transforms,
+                    },
+                })
+            }
         }
     }
 }
@@ -371,7 +489,9 @@ fn affected_id_for_gravity(op: &SceneOp) -> Option<ObjectId> {
         | SceneOp::Remove { .. }
         | SceneOp::DropToFloor { .. }
         | SceneOp::PlaceFaceOnFloor { .. }
-        | SceneOp::AutoOrient { .. } => None,
+        | SceneOp::AutoOrient { .. }
+        | SceneOp::ArrangeOnBed { .. }
+        | SceneOp::BatchSetTransform { .. } => None,
     }
 }
 
@@ -600,5 +720,78 @@ mod tests {
             })
             .unwrap_err();
         matches!(err, SceneError::NotFound(_));
+    }
+
+    #[test]
+    fn arrange_on_bed_no_overlap() {
+        // Four 10×10×10 cubes on a 100×100 bed; ArrangeOnBed should place them
+        // without overlap (with spacing_mm = 2).
+        let mut s = SceneState::new(small_bed());
+        let ids: Vec<ObjectId> = (0..4)
+            .map(|i| s.add_mesh(format!("c{i}"), cube_mesh([0.0, 0.0, 0.0], 10.0)))
+            .collect();
+
+        s.apply(SceneOp::ArrangeOnBed {
+            ids: ids.clone(),
+            options: crate::orient::ArrangeOptions {
+                spacing_mm: 2.0,
+                auto_orient: false, // skip orient so the test is deterministic
+                ..Default::default()
+            },
+        })
+        .unwrap();
+
+        // Check every pair for non-overlap (world-AABB test in XY).
+        for i in 0..ids.len() {
+            for j in (i + 1)..ids.len() {
+                let ai = s.get(ids[i]).unwrap().world_aabb();
+                let aj = s.get(ids[j]).unwrap().world_aabb();
+                let overlap_x = ai.min.x < aj.max.x && ai.max.x > aj.min.x;
+                let overlap_y = ai.min.y < aj.max.y && ai.max.y > aj.min.y;
+                assert!(
+                    !(overlap_x && overlap_y),
+                    "objects {i} and {j} overlap after ArrangeOnBed"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn arrange_on_bed_undo_restores_transforms() {
+        let mut s = SceneState::new(small_bed());
+        let ids: Vec<ObjectId> = (0..2)
+            .map(|i| s.add_mesh(format!("c{i}"), cube_mesh([f64::from(i as i32) * 5.0, 0.0, 0.0], 10.0)))
+            .collect();
+
+        let pre: Vec<_> = ids
+            .iter()
+            .map(|&id| s.get(id).unwrap().transform)
+            .collect();
+
+        let receipt = s
+            .apply(SceneOp::ArrangeOnBed {
+                ids: ids.clone(),
+                options: crate::orient::ArrangeOptions {
+                    spacing_mm: 2.0,
+                    auto_orient: false,
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+
+        // Apply the inverse.
+        s.apply(receipt.inverse).unwrap();
+
+        for (i, &id) in ids.iter().enumerate() {
+            let restored = s.get(id).unwrap().transform.translation;
+            for axis in 0..3 {
+                assert!(
+                    (restored[axis] - pre[i].translation[axis]).abs() < 1e-4,
+                    "obj {i} axis {axis}: got {}, expected {}",
+                    restored[axis],
+                    pre[i].translation[axis]
+                );
+            }
+        }
     }
 }

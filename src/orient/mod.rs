@@ -28,10 +28,12 @@
 //!    for the winner, then optionally compose with a preferred Z-rotation.
 
 mod candidates;
+pub mod pack;
 mod geometry;
 mod types;
 
-pub use types::AutoOrientOptions;
+
+pub use types::{ArrangeOptions, AutoOrientOptions};
 
 use crate::mesh::types::Mesh;
 use glam::{Quat, Vec3};

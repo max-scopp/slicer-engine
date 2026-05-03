@@ -33,3 +33,31 @@ impl Default for AutoOrientOptions {
         }
     }
 }
+
+/// Options controlling the multi-object `ArrangeOnBed` operation.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct ArrangeOptions {
+    /// Gap between adjacent objects in millimetres.  **Default: 2.0 mm.**
+    pub spacing_mm: f64,
+
+    /// When `true`, auto-orient every object before packing.
+    /// Each object is oriented to minimise overhangs before its footprint
+    /// is computed; the result is then fed into the shelf-packing layout.
+    /// **Default: true.**
+    pub auto_orient: bool,
+
+    /// Options forwarded to [`crate::orient::auto_orient`] when
+    /// `auto_orient` is `true`.  Ignored otherwise.
+    pub orient_options: AutoOrientOptions,
+}
+
+impl Default for ArrangeOptions {
+    fn default() -> Self {
+        Self {
+            spacing_mm: 2.0,
+            auto_orient: true,
+            orient_options: AutoOrientOptions::default(),
+        }
+    }
+}

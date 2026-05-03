@@ -124,6 +124,17 @@ pub enum SceneOpDto {
         #[serde(default)]
         options: crate::orient::AutoOrientOptions,
     },
+    /// Auto-orient and arrange multiple objects on the bed without overlap.
+    ///
+    /// Orients each listed object (when `options.auto_orient` is `true`),
+    /// then packs them using a shelf-first-fit algorithm with
+    /// `options.spacing_mm` between objects, and centers the result on the
+    /// bed.
+    ArrangeOnBed {
+        ids: Vec<u64>,
+        #[serde(default)]
+        options: crate::orient::ArrangeOptions,
+    },
 }
 
 /// Optional modifiers applied to every op in a [`ClientMessage::Scene`] batch.

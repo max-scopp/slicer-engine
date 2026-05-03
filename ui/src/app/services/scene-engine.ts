@@ -77,6 +77,23 @@ export type SceneOp =
           overhang_threshold_deg?: number;
         };
       };
+    }
+  | {
+      op: 'arrange_on_bed';
+      args: {
+        ids: bigint[];
+        options?: {
+          /** Gap between objects in mm (default 2). */
+          spacing_mm?: number;
+          /** Auto-orient each object before packing (default true). */
+          auto_orient?: boolean;
+          orient_options?: {
+            allow_rotations?: boolean;
+            preferred_z_rotation_deg?: number;
+            overhang_threshold_deg?: number;
+          };
+        };
+      };
     };
 
 const DEFAULT_BED: SceneBedSnapshot = {
@@ -215,6 +232,33 @@ export class SceneEngine {
     },
   ): void {
     this.apply({ op: 'auto_orient', args: { id, options } });
+  }
+
+  /**
+   * Convenience method: auto-orient and arrange multiple objects on the bed.
+   *
+   * Each object is independently oriented to minimise overhangs (when
+   * `options.auto_orient` is `true`), then the group is packed onto the bed
+   * using a shelf-first-fit algorithm and centered.
+   *
+   * Equivalent to:
+   * ```ts
+   * apply({ op: 'arrange_on_bed', args: { ids, options } });
+   * ```
+   */
+  arrangeOnBed(
+    ids: bigint[],
+    options?: {
+      spacing_mm?: number;
+      auto_orient?: boolean;
+      orient_options?: {
+        allow_rotations?: boolean;
+        preferred_z_rotation_deg?: number;
+        overhang_threshold_deg?: number;
+      };
+    },
+  ): void {
+    this.apply({ op: 'arrange_on_bed', args: { ids, options } });
   }
 
   /** Apply a batch of ops as a single snapshot update. */

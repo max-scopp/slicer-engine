@@ -92,6 +92,11 @@ pub enum SceneOpJs {
         #[serde(default)]
         options: crate::orient::AutoOrientOptions,
     },
+    ArrangeOnBed {
+        ids: Vec<u64>,
+        #[serde(default)]
+        options: crate::orient::ArrangeOptions,
+    },
 }
 
 /// JS-friendly snapshot of one scene object.
@@ -524,6 +529,10 @@ fn js_to_op(op: SceneOpJs) -> SceneOp {
         },
         SceneOpJs::AutoOrient { id, options } => SceneOp::AutoOrient {
             id: ObjectId(id),
+            options,
+        },
+        SceneOpJs::ArrangeOnBed { ids, options } => SceneOp::ArrangeOnBed {
+            ids: ids.into_iter().map(ObjectId).collect(),
             options,
         },
     }
