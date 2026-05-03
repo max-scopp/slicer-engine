@@ -61,6 +61,7 @@ pub fn compare_settings(global: &SlicingParams, object: &ObjectSettings) -> Vec<
         diff_f64!(perimeter_speed),
         diff_f64!(infill_speed),
         diff_f64!(bridge_speed),
+        diff_f64!(bridge_flow_ratio),
         diff_f64!(top_surface_speed),
         diff_f64!(first_layer_speed),
         diff_f64!(fan_speed),
@@ -85,7 +86,7 @@ mod tests {
             overrides: None,
         };
         let diff = compare_settings(&global, &object);
-        assert_eq!(diff.len(), 20, "Should have 20 fields");
+        assert_eq!(diff.len(), 21, "Should have 21 fields");
         for d in &diff {
             assert!(
                 !d.is_override,
@@ -147,6 +148,7 @@ mod tests {
         assert!(field_names.contains(&"perimeter_speed"));
         assert!(field_names.contains(&"infill_speed"));
         assert!(field_names.contains(&"bridge_speed"));
+        assert!(field_names.contains(&"bridge_flow_ratio"));
         assert!(field_names.contains(&"top_surface_speed"));
         assert!(field_names.contains(&"first_layer_speed"));
         assert!(field_names.contains(&"fan_speed"));

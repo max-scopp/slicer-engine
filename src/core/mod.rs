@@ -11,7 +11,8 @@ pub use infill::add_infill_to_layers;
 pub use pipeline::process_mesh;
 pub use slicer::slice_mesh;
 pub use surfaces::{
-    generate_top_bottom_surfaces, generate_top_bottom_surfaces_with_interior, SurfaceSubTimings,
+    generate_top_bottom_surfaces, generate_top_bottom_surfaces_with_interior, SurfaceConfig,
+    SurfaceSubTimings,
 };
 pub use types::{ExtrusionRole, SliceLayer};
 
@@ -1180,6 +1181,65 @@ mod tests {
             has_bottom,
             "layer 0 (model bottom) must have BottomSurface infill"
         );
+    }
+
+    /// Bridge infill paths must store a reduced path width in `path_widths`
+    /// equal to `nozzle_diameter_mm × bridge_flow_ratio`.
+    #[test]
+    fn test_bridge_flow_ratio_stored_in_path_widths() {
+        use crate::core::surfaces::{generate_top_bottom_surfaces_with_interior, SurfaceConfig};
+        use clipper2::Path;
+
+        // Layer 0: thin 1×10 strip (support)
+        let mut layer0 = SliceLayer::new(0.2);
+        let strip: Path = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 10.0), (0.0, 10.0)].into();
+        layer0.paths.push(strip);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+
+        // Layer 1: full 10×10 square — 9mm unsupported → Bridge
+        let mut layer1 = SliceLayer::new(0.4);
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer1.paths.push(square);
+        layer1.path_roles.push(ExtrusionRole::OuterWall);
+
+        let nozzle_diameter_mm = 0.4_f64;
+        let bridge_flow_ratio = 0.8_f64;
+        let expected_width = nozzle_diameter_mm * bridge_flow_ratio; // 0.32 mm
+
+        let mut layers = vec![layer0, layer1];
+        generate_top_bottom_surfaces_with_interior(
+            &mut layers,
+            &SurfaceConfig {
+                top_layers: 0,
+                bottom_layers: 1,
+                layer_height: 0.2,
+                infill_angle: 0.0,
+                nozzle_diameter_mm,
+                bridge_flow_ratio,
+            },
+            None,
+        );
+
+        // Find all bridge paths and check their stored widths
+        let bridge_widths: Vec<Option<f64>> = layers[1]
+            .path_roles
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| **r == ExtrusionRole::Bridge)
+            .map(|(i, _)| layers[1].path_widths.get(i).copied().flatten())
+            .collect();
+
+        assert!(
+            !bridge_widths.is_empty(),
+            "expected at least one Bridge path in layer 1"
+        );
+        for w in bridge_widths {
+            let w = w.expect("Bridge path must have a stored path_width");
+            assert!(
+                (w - expected_width).abs() < 1e-9,
+                "expected bridge width {expected_width:.4} mm, got {w:.4} mm"
+            );
+        }
     }
 
     /// Serpentine infill chaining: for a rectangular region, consecutive scan

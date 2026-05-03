@@ -6,7 +6,7 @@ use crate::settings::params::SlicingParams;
 
 use super::infill::{add_infill_to_layers, calculate_interior_region};
 use super::slicer::slice_mesh;
-use super::surfaces::generate_top_bottom_surfaces_with_interior;
+use super::surfaces::{generate_top_bottom_surfaces_with_interior, SurfaceConfig};
 use super::types::SliceLayer;
 use super::walls::apply_single_wall_restrictions;
 
@@ -185,10 +185,14 @@ pub fn process_mesh(
         ));
         let surface_timings = generate_top_bottom_surfaces_with_interior(
             &mut layers,
-            params.top_layers,
-            params.bottom_layers,
-            params.layer_height,
-            params.surface_infill_angle,
+            &SurfaceConfig {
+                top_layers: params.top_layers,
+                bottom_layers: params.bottom_layers,
+                layer_height: params.layer_height,
+                infill_angle: params.surface_infill_angle,
+                nozzle_diameter_mm: params.nozzle_diameter_mm,
+                bridge_flow_ratio: params.bridge_flow_ratio,
+            },
             Some(&interior_regions),
         );
         logger.log_debug("surface generation complete");
