@@ -66,11 +66,11 @@ The same Rust core is compiled three ways — natively for CLI/server, to WebAss
 
 The Angular UI selects its **runtime mode** at startup:
 
-| Mode     | Scene            | Slicing          | When               |
-| -------- | ---------------- | ---------------- | ------------------ |
-| `cloud`  | WASM (local)     | WebSocket server | Default web build  |
-| `web`    | WASM (local)     | WASM (local)     | `web-slicer` build |
-| `native` | WASM (local)     | Tauri IPC → Rust | Tauri desktop      |
+| Mode     | Scene        | Slicing          | When               |
+| -------- | ------------ | ---------------- | ------------------ |
+| `cloud`  | WASM (local) | WebSocket server | Default web build  |
+| `web`    | WASM (local) | WASM (local)     | `web-slicer` build |
+| `native` | WASM (local) | Tauri IPC → Rust | Tauri desktop      |
 
 See [Scene Engine](src/scene/README.md) and [Slicing Pipeline](src/core/README.md) for the contract.
 
@@ -170,7 +170,7 @@ cargo build --release                                       # Native (host targe
 cargo build --release --target x86_64-pc-windows-msvc       # Windows
 cargo build --release --target x86_64-apple-darwin          # macOS Intel
 cargo build --release --target aarch64-apple-darwin         # macOS ARM
-wasm-pack build --target web --release                      # WebAssembly
+cargo build --target wasm32-unknown-unknown --release && wasm-bindgen target/wasm32-unknown-unknown/release/slicer_engine.wasm --target web --out-dir <out>  # WebAssembly
 
 # Or use the Makefile (Linux/macOS):
 make build-release build-windows build-macos build-wasm

@@ -155,6 +155,8 @@ pub trait ProcessLogger: Send + Sync {
 pub struct PhaseTimer<'a> {
     phase: &'a str,
     logger: &'a dyn ProcessLogger,
+    // std::time::Instant is not available on wasm32-unknown-unknown.
+    #[cfg(not(target_arch = "wasm32"))]
     start: std::time::Instant,
 }
 
@@ -165,13 +167,17 @@ impl<'a> PhaseTimer<'a> {
         Self {
             phase,
             logger,
+            #[cfg(not(target_arch = "wasm32"))]
             start: std::time::Instant::now(),
         }
     }
 
     /// Stop timing and emit an end marker with the measured elapsed time.
     pub fn finish(self) {
+        #[cfg(not(target_arch = "wasm32"))]
         let elapsed_ms = self.start.elapsed().as_millis() as u64;
+        #[cfg(target_arch = "wasm32")]
+        let elapsed_ms = 0u64;
         self.logger.log_phase_end(self.phase, elapsed_ms);
     }
 }

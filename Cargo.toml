@@ -84,3 +84,10 @@ codegen-units = 1
 inherits = "release"
 opt-level = "z"
 lto = true
+
+# clipper2c-sys 0.1.6 panics on wasm32-unknown-unknown (target_os = "unknown").
+# The fork adds a `("unknown", _) => {}` arm to skip stdlib linking on WASM,
+# since the C++ stdlib is compiled into libclipper2c.a by the WASI SDK toolchain.
+# Fork: https://github.com/max-scopp/clipper2c-sys branch fix/wasm-build
+[patch.crates-io]
+clipper2c-sys = { git = "https://github.com/max-scopp/clipper2c-sys", rev = "93cfeb1ec0508158ee2708bd114b678b90c836c7" }

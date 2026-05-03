@@ -28,6 +28,12 @@ pub mod settings;
 #[cfg(target_arch = "wasm32")]
 pub mod gcode_viewer;
 
+// Provide C++ operator new/delete and __libcpp_verbose_abort so the linker
+// resolves these internally instead of leaving them as WASM "env" imports
+// (which wasm-bindgen would emit as unresolvable ES module imports).
+#[cfg(all(target_arch = "wasm32", feature = "web-slicer"))]
+mod cpp_shims;
+
 #[cfg(not(target_arch = "wasm32"))]
 pub mod config;
 #[cfg(not(target_arch = "wasm32"))]

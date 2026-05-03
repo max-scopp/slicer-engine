@@ -144,8 +144,10 @@ pub fn compute_arachne_beads(input: &Paths, params: &ArachneParams) -> Vec<Bead>
 
     for k in 0..params.wall_count {
         let depth = (k as f64 + 0.5) * d;
+        #[cfg(not(target_arch = "wasm32"))]
         let t = std::time::Instant::now();
         let paths = shrink(input, depth, tol);
+        #[cfg(not(target_arch = "wasm32"))]
         ARACHNE_BEAD_SHRINK_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
         if paths.is_empty() {
             first_miss_depth = depth;
@@ -205,8 +207,10 @@ pub fn compute_arachne_beads(input: &Paths, params: &ArachneParams) -> Vec<Bead>
         // Add a variable-width residual bead at the center of the remaining space.
         let center_depth = inner_edge_depth + remaining_half / 2.0;
         let width = remaining_width.min(max_w);
+        #[cfg(not(target_arch = "wasm32"))]
         let t = std::time::Instant::now();
         let paths = shrink(input, center_depth, tol);
+        #[cfg(not(target_arch = "wasm32"))]
         ARACHNE_BEAD_SHRINK_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
         let kept = drop_degenerate_beads(paths, min_bead_area);
         for p in kept.iter() {
@@ -248,8 +252,10 @@ pub fn compute_arachne_beads(input: &Paths, params: &ArachneParams) -> Vec<Bead>
             // bead's inner edge aligns with the polygon center.
             let outer_edge = k as f64 * d;
             let new_depth = outer_edge + new_width / 2.0;
+            #[cfg(not(target_arch = "wasm32"))]
             let t = std::time::Instant::now();
             let paths = shrink(input, new_depth, tol);
+            #[cfg(not(target_arch = "wasm32"))]
             ARACHNE_BEAD_SHRINK_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
             let kept = drop_degenerate_beads(paths, min_bead_area);
             for p in kept.iter() {
