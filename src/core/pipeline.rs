@@ -219,6 +219,7 @@ pub fn process_mesh(
             infill_pattern,
             params.infill_base_angle,
             params.nozzle_diameter_mm,
+            params.infill_perimeter_gap_mm,
             pre_strip_infill_regions.as_deref(),
         );
         t_infill.finish();

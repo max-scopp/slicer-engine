@@ -115,6 +115,8 @@ pub(crate) fn calculate_interior_region(
 /// * `infill_pattern` - The pattern type to generate (rectilinear, grid, etc.)
 /// * `infill_base_angle` - Base angle in degrees (alternating layers rotate +90° on top of this)
 /// * `nozzle_diameter_mm` - Nozzle diameter used when computing infill regions on the fly
+/// * `infill_perimeter_gap_mm` - Gap in mm between the innermost wall and the infill boundary.
+///   A positive value leaves a gap; `0.0` means infill starts exactly at the inner wall edge.
 /// * `precomputed_infill_regions` - Optional per-layer interior regions computed **before**
 ///   any single-wall restrictions were applied.  When provided, these regions are used
 ///   instead of calling [`calculate_interior_region`] on each layer, which prevents
@@ -132,7 +134,7 @@ pub(crate) fn calculate_interior_region(
 /// # let mesh = Mesh::new();
 ///
 /// let mut layers = slice_mesh(&mesh, 0.2);
-/// add_infill_to_layers(&mut layers, 0.2, InfillPattern::Rectilinear, 45.0, 0.4, None);
+/// add_infill_to_layers(&mut layers, 0.2, InfillPattern::Rectilinear, 45.0, 0.4, 0.0, None);
 /// ```
 pub fn add_infill_to_layers(
     layers: &mut [SliceLayer],
@@ -140,6 +142,7 @@ pub fn add_infill_to_layers(
     infill_pattern: crate::infill::InfillPattern,
     infill_base_angle: f64,
     nozzle_diameter_mm: f64,
+    infill_perimeter_gap_mm: f64,
     precomputed_infill_regions: Option<&[Paths]>,
 ) {
     use crate::infill::generate_infill;
@@ -147,6 +150,17 @@ pub fn add_infill_to_layers(
     if infill_density <= 0.0 {
         return;
     }
+
+    // Convert the mm gap into the overlap_percent convention used by
+    // calculate_interior_region.  A positive gap_mm means MORE inward
+    // deflation (smaller interior → gap from wall), which corresponds to a
+    // *negative* overlap_percent (since overlap_percent is subtracted from
+    // total_inward in that function).
+    let gap_overlap = if nozzle_diameter_mm > 0.0 {
+        -(infill_perimeter_gap_mm / nozzle_diameter_mm)
+    } else {
+        0.0
+    };
 
     // ── Parallel compute pass ─────────────────────────────────────────────────
     // Each layer's infill is independent.  Compute all infill path sets in
@@ -160,12 +174,28 @@ pub fn add_infill_to_layers(
 
         let infill_area = if let Some(regions) = precomputed_infill_regions {
             if layer_idx < regions.len() && !regions[layer_idx].is_empty() {
-                regions[layer_idx].clone()
+                // Pre-computed regions already account for the wall geometry;
+                // apply the perimeter gap on top by deflating an extra step.
+                if infill_perimeter_gap_mm > 1e-9 {
+                    let deflated = clipper2::inflate(
+                        regions[layer_idx].clone(),
+                        -infill_perimeter_gap_mm,
+                        clipper2::JoinType::Round,
+                        clipper2::EndType::Polygon,
+                        2.0,
+                    );
+                    if deflated.is_empty() {
+                        return None;
+                    }
+                    deflated
+                } else {
+                    regions[layer_idx].clone()
+                }
             } else {
-                calculate_interior_region(layer, 0.0, nozzle_diameter_mm, 0)
+                calculate_interior_region(layer, gap_overlap, nozzle_diameter_mm, 0)
             }
         } else {
-            calculate_interior_region(layer, 0.0, nozzle_diameter_mm, 0)
+            calculate_interior_region(layer, gap_overlap, nozzle_diameter_mm, 0)
         };
 
         if infill_area.is_empty() {
