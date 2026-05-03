@@ -1619,6 +1619,12 @@ mod tests {
 
     /// `unsupported_regions` must be populated on each layer (except layer 0)
     /// so the wall-classification post-pass can use it.
+    ///
+    /// Geometry: layer 0 = 1×10 strip at x∈[0,1]; layer 1 = 10×10 square.
+    /// Default nozzle = 0.4 mm.  `unsupported_regions` for layer 1 is
+    /// `square − inflate(strip, +d/2 = 0.2)`.  The inflated strip extends
+    /// to x∈[-0.2, 1.2] (clipped to the square gives a 1.2 × 10 = 12 mm²
+    /// support footprint), so the unsupported area is 100 − 12 ≈ 88 mm².
     #[test]
     fn test_unsupported_regions_field_is_populated() {
         use clipper2::Path;
@@ -1642,8 +1648,8 @@ mod tests {
         );
         let area1 = layers[1].unsupported_regions.signed_area().abs();
         assert!(
-            (area1 - 90.0).abs() < 0.5,
-            "Layer 1 unsupported area should be ~90 mm² (10×10 minus 1×10 strip), got {area1}"
+            (area1 - 88.0).abs() < 1.0,
+            "Layer 1 unsupported area should be ~88 mm² (10×10 minus inflated 1.2×10 support strip), got {area1}"
         );
     }
 }

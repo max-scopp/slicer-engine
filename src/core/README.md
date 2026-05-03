@@ -125,26 +125,49 @@ print bed. Falls back to bounding-box short-axis when the region is
 square / circular.
 
 After surfaces are assigned, `classify_overhang_perimeters` re-tags each
-`OuterWall` / `InnerWall` whose centerline is ≥ 50 % **strictly inside**
-the layer's `unsupported_regions` (`perimeters[i] − perimeters[i-1]`) as
-`OverhangPerimeter`. The detection works without any erosion of the air
-region because of the geometry of Arachne centerline paths:
+`OuterWall` / `InnerWall` whose centerline is ≥ 50 % **inside or on the
+boundary of** the layer's `unsupported_regions` as `OverhangPerimeter`.
 
-- The OuterWall centerline of layer i sits exactly `d/2` *inside*
-  `perimeters[i]`. For a slight outward lean (horizontal step `S < d/2`)
-  the centerline is still strictly inside `perimeters[i-1]` → even-odd
-  parity 0 → not flagged.  This kills the "80 % of the Benchy is
-  overhang" false positive without any tuning.
+The crucial detail is how `unsupported_regions` is built.  Naïvely you
+would think `perimeters[i] − perimeters[i-1]` (raw centerline difference),
+but that is **wrong in two complementary ways** that took several rounds
+to disentangle:
+
+1. **`perimeters[i]` IS the wall path.** `perimeter_paths_of(layer)`
+   returns the OuterWall centerline polygons of the layer — i.e. the same
+   closed paths the wall classifier iterates over.  So every wall vertex
+   lies *exactly on* the boundary of `perimeters[i]`, and therefore on the
+   outer boundary of any region derived by subtracting another polygon
+   set from `perimeters[i]`.  A "strictly inside" parity test (treating
+   `IsOn` as outside) flags **nothing**, ever.
+2. **A current-layer wall is supported by the previous-layer bead, not
+   by its centerline.** The previous-layer bead extends `d/2` outward
+   from its centerline, so the geometric support envelope is
+   `inflate(perimeters[i-1], +d/2)`.
+
+The two fixes go together:
+
+```text
+unsupported_regions = perimeters[i] − inflate(perimeters[i-1], +d/2)
+```
+
+with `IsOn` counted as **inside** in the parity test:
+
+- For a slight outward lean (horizontal step `S < d/2`) the inflated
+  previous perimeter fully contains `perimeters[i]`, so
+  `unsupported_regions` is empty → no wall flagged.  This kills the
+  "80 % of the Benchy is overhang" false positive without any vertex-
+  fraction tuning.
 - For a real overhang (`S > d/2`, ≈ 45° lean for 0.2 mm layer / 0.4 mm
-  nozzle) the centerline is outside `perimeters[i-1]` but inside
-  `perimeters[i]` → parity 1 → flagged.
-- Walls *exactly on* a hair-thin Clipper2 difference sliver register
-  `IsOn`, which the strict point-in-paths test treats as outside.
+  nozzle) a meaningful air strip exists.  Wall vertices lie on its outer
+  boundary (= the current centerline), and the `IsOn`-counts-as-inside
+  parity test flags them.
 
-A previous version pre-eroded `unsupported_regions` inward by
-`0.6 × nozzle_diameter`. That is **wrong**: it moves the eroded strip's
-outer boundary `0.6 × d` inside `perimeters[i]` — past the `d/2`
-centerline — so no overhang however severe could ever flag.
+**Don't** restore the raw centerline difference, the strict-inside
+boundary policy, or the `0.6 × nozzle_diameter` "safety" erosion that
+was tried at one point — any one of them suppresses *all* overhang
+detection.  See `test_classify_overhang_e2e_*` in `walls.rs` for the
+production-geometry lockdown tests.
 
 Reclassified paths inherit the bridge speed (`bridge_speed`) and reduced-flow
 width (`nozzle_diameter_mm × bridge_flow_ratio`) in the G-code generator and

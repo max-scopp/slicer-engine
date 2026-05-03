@@ -207,35 +207,48 @@ fn remove_inner_walls_from_layer(layer: &mut SliceLayer) {
 /// as [`ExtrusionRole::OverhangPerimeter`].
 ///
 /// A wall (`OuterWall` or `InnerWall`) is reclassified when at least
-/// `OVERHANG_VERTEX_THRESHOLD` (50 %) of its vertices fall **strictly
-/// inside** the layer's `unsupported_regions` polygon set
-/// (`perimeters[i] − perimeters[i-1]`).
+/// `OVERHANG_VERTEX_THRESHOLD` (50 %) of its vertices fall **inside or on
+/// the boundary of** the layer's `unsupported_regions` polygon set.
 ///
-/// ## Why "strictly inside" — and why no `ERODE_FACTOR`
+/// ## Geometry contract — read this before changing the test policy
 ///
-/// The OuterWall centerline of layer `i` sits exactly `d/2` *inside* the
-/// outer perimeter polygon `perimeters[i]` (Arachne emits centerline
-/// paths, not filled bodies — see *Slicing Pipeline — Deep Knowledge* in
-/// AGENTS.md).  This `d/2` inset is what makes a strict point-in-polygon
-/// test correct on its own:
+/// `perimeters[i]` is built by `perimeter_paths_of(layer)` and contains
+/// the **OuterWall paths themselves** — i.e. the same closed centerline
+/// polygons that the wall classifier is iterating over.  Consequently,
+/// every wall vertex lies *exactly on* the boundary of `perimeters[i]`
+/// and therefore on the **outer** boundary of any region derived from it
+/// by subtracting another polygon set.
 ///
-/// * For a slight outward lean (horizontal step `S` between successive
-///   layers `< d/2`) the centerline is still strictly *inside*
-///   `perimeters[i-1]` → even-odd parity is 0 → **not flagged**.  This
-///   is what kills the "80 % of the Benchy is overhang" false positive.
-/// * For a real overhang (`S > d/2`, roughly a 45 ° lean for 0.2 mm
-///   layer / 0.4 mm nozzle) the centerline is outside `perimeters[i-1]`
-///   but still inside `perimeters[i]` → parity 1 → **flagged**.
-/// * Walls *exactly on* the boundary of a hair-thin Clipper2 difference
-///   sliver register `IsOn`, which our test treats as outside.  This
-///   catches the truly-vertical wall case where Clipper2 quantisation
-///   leaves a 0.01-mm-wide difference strip exactly on the centerline.
+/// `unsupported_regions` is computed in
+/// [`generate_top_bottom_surfaces_with_interior`] as
 ///
-/// An earlier version of this function pre-eroded `unsupported_regions`
-/// inward by `0.6 × nozzle_diameter` "for safety".  That moves the
-/// eroded strip's outer boundary `0.6 × d` inside `perimeters[i]` —
-/// **past the `d/2` centerline** — so no overhang however severe could
-/// ever flag.  Don't reintroduce that erosion.
+/// ```text
+/// perimeters[i] − inflate(perimeters[i-1], +nozzle_diameter / 2)
+/// ```
+///
+/// The inflation by `d/2` encodes the fact that the previous-layer bead
+/// extends `d/2` beyond its centerline — that is the actual material a
+/// current-layer wall can land on.  This means:
+///
+/// * For a slight outward lean (horizontal step `S < d/2`) the inflated
+///   previous perimeter fully contains `perimeters[i]`, so
+///   `unsupported_regions` is empty → no wall flagged.  This kills the
+///   "80 % of the Benchy is overhang" false positive without any vertex-
+///   fraction tuning.
+/// * For a real overhang (`S > d/2`, ≈ 45° lean for 0.2 mm layer / 0.4 mm
+///   nozzle) a meaningful air strip exists.  The wall centerline lies on
+///   its outer boundary, so the parity test must count `IsOn` as
+///   **inside** to flag it.
+///
+/// **Do not change `IsOn` to count as outside.**  That was tried as a
+/// "stricter" guard against false positives — it instead suppresses
+/// **all** overhang detection, because every wall vertex is on the
+/// strip's outer boundary by construction.
+///
+/// **Do not pre-erode `unsupported_regions`.**  An earlier version
+/// eroded by `0.6 × nozzle_diameter`, which moves the strip's outer
+/// boundary past the wall centerline and likewise suppresses all
+/// detection.
 ///
 /// The classification runs **after**
 /// [`generate_top_bottom_surfaces_with_interior`] so that
@@ -249,14 +262,14 @@ fn remove_inner_walls_from_layer(layer: &mut SliceLayer) {
 /// as a bridge by the G-code generator (slow speed, reduced flow, fan
 /// boost) so it lands cleanly on the supported anchor at each end.
 pub(crate) fn classify_overhang_perimeters(layers: &mut [SliceLayer], _nozzle_diameter_mm: f64) {
-    /// Minimum fraction of a wall path's vertices that must lie strictly
-    /// inside `unsupported_regions` for the whole path to be reclassified
-    /// as `OverhangPerimeter`.
+    /// Minimum fraction of a wall path's vertices that must lie inside or
+    /// on the boundary of `unsupported_regions` for the whole path to be
+    /// reclassified as `OverhangPerimeter`.
     ///
     /// A simple majority (50 %) is appropriate because we classify whole
-    /// paths — without splitting, the choice is binary, and the strict-
-    /// inside test combined with the natural `d/2` centerline inset already
-    /// biases against false positives on slightly outward-leaning hulls.
+    /// paths — without splitting, the choice is binary, and the geometric
+    /// `+d/2` support envelope already biases against false positives on
+    /// slightly outward-leaning hulls.
     const OVERHANG_VERTEX_THRESHOLD: f64 = 0.5;
 
     for layer in layers.iter_mut() {
@@ -280,7 +293,7 @@ pub(crate) fn classify_overhang_perimeters(layers: &mut [SliceLayer], _nozzle_di
             let mut inside = 0_usize;
             for pt in path.iter() {
                 total += 1;
-                if point_strictly_inside_paths_eo(pt.x(), pt.y(), air) {
+                if point_inside_or_on_paths_eo(pt.x(), pt.y(), air) {
                     inside += 1;
                 }
             }
@@ -293,18 +306,22 @@ pub(crate) fn classify_overhang_perimeters(layers: &mut [SliceLayer], _nozzle_di
 
 /// Even-odd point-in-polygon test against a `Paths` set.
 ///
-/// Returns `true` only when the point lies *strictly inside* an odd number
-/// of sub-paths.  Boundary points (`IsOn`) count as **outside** — this is
-/// critical when the polygon set was produced by a Clipper2 difference
-/// whose boundary coincides with a wall centerline.  Treating boundary
-/// points as inside (the natural even-odd ray-casting interpretation)
-/// would flag every wall on a slightly outward-leaning hull as
-/// overhanging.
-fn point_strictly_inside_paths_eo(x: f64, y: f64, paths: &Paths) -> bool {
+/// Returns `true` when the point lies inside or on the boundary of an
+/// odd number of sub-paths.  Boundary points (`IsOn`) **count as
+/// inside** — this is required for overhang classification because the
+/// wall paths themselves form the *outer* boundary of
+/// `unsupported_regions` (which is built as
+/// `perimeters[i] − inflate(perimeters[i-1], +d/2)`).  The geometric
+/// guard against false positives lives in the `+d/2` inflation, not in
+/// the boundary policy.
+fn point_inside_or_on_paths_eo(x: f64, y: f64, paths: &Paths) -> bool {
     let mut inside_count = 0_usize;
     for path in paths.iter() {
         let result = clipper2::point_in_polygon(clipper2::Point::new(x, y), path);
-        if matches!(result, clipper2::PointInPolygonResult::IsInside) {
+        if matches!(
+            result,
+            clipper2::PointInPolygonResult::IsInside | clipper2::PointInPolygonResult::IsOn
+        ) {
             inside_count += 1;
         }
     }
@@ -387,20 +404,16 @@ mod tests {
     }
 
     /// **Regression** — slightly outward-leaning hulls (typical Benchy hull,
-    /// step `S < d/2`) put the OuterWall centerline *strictly inside*
-    /// `perimeters[i-1]`, so it must NOT be flagged as an overhang.
-    /// The first version of this function flagged 80 %+ of the Benchy as
-    /// overhang because it treated `IsOn` as "inside" — every wall on a
-    /// slight outward lean has its centerline lying right on the inner
-    /// boundary of the `perimeters[i] − perimeters[i-1]` strip.
+    /// step `S < d/2`) put the OuterWall centerline strictly inside the
+    /// inflated previous-layer support envelope, so it must NOT be flagged
+    /// as an overhang.  Synthetic test: pass a raw annular even-odd strip
+    /// where the wall is strictly inside both rings — parity 0, never
+    /// flagged regardless of the boundary policy.
     ///
-    /// Geometry simulated: previous-layer perimeter = 5×5 square at
-    /// (2.5..7.5). Current-layer perimeter = 5.2×5.2 square at
-    /// (2.4..7.6) — a 0.1 mm outward step (≈ 27° lean for a 0.2 mm
-    /// layer / 0.4 mm nozzle). With `d = 0.4`, the OuterWall centerline
-    /// of layer i sits at `d/2 = 0.2 mm` inside perimeters[i] — i.e. a
-    /// 4.8×4.8 square strictly inside perimeters[i-1] (5×5). Strict
-    /// point-in-polygon must report it as supported.
+    /// (The full production guard lives in
+    /// `generate_top_bottom_surfaces_with_interior` which inflates the
+    /// previous perimeter by `d/2` before differencing — see
+    /// `test_classify_overhang_e2e_outward_lean_no_false_positive`.)
     #[test]
     fn test_classify_overhang_outward_lean_no_false_positive() {
         // OuterWall centerline of layer i: 4.8×4.8 square at (2.6..7.4).
@@ -425,15 +438,17 @@ mod tests {
             layers[0].path_roles[0],
             ExtrusionRole::OuterWall,
             "Outward-leaning hull walls (step < d/2) must NOT be flagged as \
-             OverhangPerimeter — the strict-point-in-polygon guard is essential"
+             OverhangPerimeter"
         );
     }
 
-    /// **Regression** — a real overhang (step `S > d/2`, ≥ 45° lean)
-    /// must be flagged. With `d = 0.4`, centerline of layer i sits
-    /// `d/2 = 0.2 mm` inside `perimeters[i]`. For an outward step of
-    /// `0.5 mm`, that puts the centerline `0.3 mm` *outside*
-    /// `perimeters[i-1]` → strictly inside the air strip → flagged.
+    /// **Regression** — a real overhang (step `S > d/2`) must be flagged.
+    /// Synthetic test passing a raw annular strip; wall vertices land
+    /// strictly inside the air strip so the parity test fires regardless
+    /// of `IsOn` policy.  See
+    /// `test_classify_overhang_e2e_real_overhang_is_flagged` for the
+    /// production-geometry test where wall vertices lie on the strip's
+    /// outer boundary.
     #[test]
     fn test_classify_overhang_real_overhang_is_flagged() {
         // OuterWall centerline of layer i: 5.6×5.6 square at (2.2..7.8).
@@ -456,6 +471,77 @@ mod tests {
             layers[0].path_roles[0],
             ExtrusionRole::OverhangPerimeter,
             "Real overhang (step > d/2) must be flagged as OverhangPerimeter"
+        );
+    }
+
+    /// **End-to-end regression** — production geometry where the wall path
+    /// IS `perimeters[i]`.  Two layers, layer 1's perimeter shifted 0.05 mm
+    /// outward (≈ 14° lean for 0.2 mm layer / 0.4 mm nozzle) — well below
+    /// the `d/2 = 0.2 mm` support threshold.  Production pipeline
+    /// (`generate_top_bottom_surfaces` then `classify_overhang_perimeters`)
+    /// must NOT flag the wall.
+    #[test]
+    fn test_classify_overhang_e2e_outward_lean_no_false_positive() {
+        use crate::core::surfaces::generate_top_bottom_surfaces;
+        use clipper2::Path;
+
+        let mut layer0 = SliceLayer::new(0.2);
+        let prev: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer0.paths.push(prev);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+
+        let mut layer1 = SliceLayer::new(0.2);
+        // 0.05 mm outward step — sub-threshold lean.
+        let cur: Path = vec![
+            (-0.05, -0.05),
+            (10.05, -0.05),
+            (10.05, 10.05),
+            (-0.05, 10.05),
+        ]
+        .into();
+        layer1.paths.push(cur);
+        layer1.path_roles.push(ExtrusionRole::OuterWall);
+
+        let mut layers = vec![layer0, layer1];
+        generate_top_bottom_surfaces(&mut layers, 0, 1, 0.2, 45.0);
+        classify_overhang_perimeters(&mut layers, 0.4);
+
+        assert_eq!(
+            layers[1].path_roles[0],
+            ExtrusionRole::OuterWall,
+            "Sub-d/2 outward lean must not be flagged in the production pipeline"
+        );
+    }
+
+    /// **End-to-end regression** — the bug the user reported: NO overhangs
+    /// were detected on the Benchy because the wall path coincides with
+    /// the outer boundary of `unsupported_regions`.  Production pipeline
+    /// must flag a real overhang where the current perimeter sits a full
+    /// nozzle width outside the previous perimeter.
+    #[test]
+    fn test_classify_overhang_e2e_real_overhang_is_flagged() {
+        use crate::core::surfaces::generate_top_bottom_surfaces;
+        use clipper2::Path;
+
+        let mut layer0 = SliceLayer::new(0.2);
+        let prev: Path = vec![(0.0, 0.0), (5.0, 0.0), (5.0, 5.0), (0.0, 5.0)].into();
+        layer0.paths.push(prev);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+
+        let mut layer1 = SliceLayer::new(0.2);
+        // 0.5 mm outward step on every side — well above d/2 = 0.2 mm.
+        let cur: Path = vec![(-0.5, -0.5), (5.5, -0.5), (5.5, 5.5), (-0.5, 5.5)].into();
+        layer1.paths.push(cur);
+        layer1.path_roles.push(ExtrusionRole::OuterWall);
+
+        let mut layers = vec![layer0, layer1];
+        generate_top_bottom_surfaces(&mut layers, 0, 1, 0.2, 45.0);
+        classify_overhang_perimeters(&mut layers, 0.4);
+
+        assert_eq!(
+            layers[1].path_roles[0],
+            ExtrusionRole::OverhangPerimeter,
+            "Real overhang (step > d/2) must be flagged in the production pipeline"
         );
     }
 }

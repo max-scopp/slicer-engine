@@ -734,8 +734,28 @@ pub fn generate_top_bottom_surfaces_with_interior(
     // for OverhangPerimeter wall classification — never for infill.
     let detect_region = |i: usize| -> (Paths, Paths, Paths, Paths) {
         // ── Raw unsupported area — for wall classification only ──────────────
-        // This is the layer footprint that has nothing in the layer below.
-        // We deliberately do *not* clip it to interior_regions: walls live on
+        // This is the portion of the current-layer perimeter that the
+        // previous-layer's *bead* (not just its centerline) does not
+        // physically support.
+        //
+        // `perimeters[i]` and `perimeters[i-1]` are OuterWall **centerline**
+        // paths (Arachne emits centerlines).  The previous-layer bead extends
+        // `d/2` *outward* from its centerline, so the actual support envelope
+        // is `inflate(perimeters[i-1], +d/2)`.  Subtracting the envelope
+        // (instead of the raw centerline) gives the geometric tolerance that
+        // matches a real ~45° lean threshold for typical layer/nozzle ratios:
+        //
+        // - Slight outward lean (step `S < d/2`): the inflated previous
+        //   perimeter fully contains `perimeters[i]` → empty unsupported
+        //   strip → wall not flagged.  This kills the "80 % of the Benchy is
+        //   overhang" false-positive without any vertex-fraction tuning.
+        // - Real overhang (`S > d/2`): a meaningful air strip exists between
+        //   the inflated envelope and `perimeters[i]`, and the current
+        //   wall's centerline lies on its outer boundary.  See
+        //   `classify_overhang_perimeters` for how that boundary case is
+        //   counted.
+        //
+        // We deliberately do not clip to `interior_regions`: walls live on
         // the layer's outer edge, so their classification needs the full
         // footprint view.
         let raw_unsupported = if i == 0 {
@@ -745,8 +765,19 @@ pub fn generate_top_bottom_surfaces_with_interior(
             if prev.is_empty() {
                 perimeters[i].clone()
             } else {
-                difference(perimeters[i].clone(), prev.clone(), FillRule::EvenOdd)
-                    .unwrap_or_default()
+                let support_envelope = inflate(
+                    prev.clone(),
+                    nozzle_diameter_mm * 0.5,
+                    JoinType::Round,
+                    EndType::Polygon,
+                    2.0,
+                );
+                if support_envelope.is_empty() {
+                    perimeters[i].clone()
+                } else {
+                    difference(perimeters[i].clone(), support_envelope, FillRule::EvenOdd)
+                        .unwrap_or_default()
+                }
             }
         };
 
