@@ -30,6 +30,7 @@
     "@types/three": "^0.184.0",
     "fuse.js": "^7.3.0",
     "iconoir": "^7.11.0",
+    "monaco-editor": "^0.55.1",
     "ngx-markdown": "^21.2.0",
     "rxjs": "~7.8.0",
     "three": "^0.184.0",
