@@ -105,17 +105,18 @@ Bridge detection lives inside `generate_top_bottom_surfaces_with_interior`
 and runs a three-stage filter on the raw "footprint with no support below"
 region (matching OrcaSlicer / PrusaSlicer behaviour):
 
-1. **Morphological opening** (`bridge_noise_filter_mm`, default 0.15 mm) —
-   erode then dilate to wipe out thin slivers and hair-fine connecting
-   strands caused by sub-pixel layer-to-layer geometry differences (the
-   "Benchy embossed text" stippling pattern).
-2. **Minimum-area filter** (`bridge_min_area_mm2`, default 1.0 mm²) — drop
+1. **Morphological opening** (`bridge_noise_filter_mm`, default 0.05 mm) —
+   erode then dilate to wipe out sub-pixel slivers caused by Clipper2's
+   Centi quantisation.  Kept small so genuine 0.4 mm-wide bridge frames
+   (window mullions, text overhangs) survive intact.
+2. **Minimum-area filter** (`bridge_min_area_mm2`, default 0.5 mm²) — drop
    surviving islands smaller than the threshold; they get reclassified as
    ordinary `BottomSurface` so the layer remains fully solid below the gap.
-3. **Anchor expansion** (`bridge_anchor_mm`, default 2.0 mm) — dilate the
-   surviving regions outward and clip back to the layer's full footprint
-   so each strand bites into the supported solid material on either side
-   of the gap instead of ending mid-air.
+3. **Anchor expansion** (`bridge_anchor_mm`, default 0.5 mm) — dilate the
+   surviving regions outward and clip back to **`interior_regions[i]`**
+   (the inside-walls bound) so each strand bites into the supported solid
+   bottom material on either side of the gap *without* expanding into the
+   wall band.
 
 Bridge **direction** uses principal-axis analysis (PCA) of the unsupported
 region. Strands print perpendicular to the dominant axis so the shortest
@@ -124,10 +125,24 @@ print bed. Falls back to bounding-box short-axis when the region is
 square / circular.
 
 After surfaces are assigned, `classify_overhang_perimeters` re-tags each
-`OuterWall` / `InnerWall` whose centerline is ≥ 50% inside the layer's
-`unsupported_regions` as `OverhangPerimeter`. Those paths inherit the
-bridge speed (`bridge_speed`) and reduced-flow width
-(`nozzle_diameter_mm × bridge_flow_ratio`) in the G-code generator and
+`OuterWall` / `InnerWall` whose centerline is ≥ 70 % inside the layer's
+`unsupported_regions` — **after the air region has been eroded inward by
+≈ 0.6 × nozzle diameter** — as `OverhangPerimeter`. Two guards are
+essential:
+
+- **Boundary erosion.** `unsupported_regions = perimeters[i] − perimeters[i-1]`
+  on slightly outward-leaning hulls (most of any organic model — the
+  Benchy hull is the canonical example) is a hair-thin annular strip
+  whose boundary coincides with the OuterWall centerline.  Without
+  erosion, 100 % of OuterWall vertices register as "in air" because they
+  sit *exactly on* the strip boundary.  Eroding by `≈ 0.6 × nozzle_diameter`
+  leaves only walls whose centerline genuinely sits over a meaningful gap.
+- **Boundary points count as outside.** The point-in-paths test treats
+  Clipper2's `IsOn` as outside, so walls that exactly touch the eroded
+  boundary are not flagged either.
+
+Reclassified paths inherit the bridge speed (`bridge_speed`) and reduced-flow
+width (`nozzle_diameter_mm × bridge_flow_ratio`) in the G-code generator and
 trigger the bridge fan boost via `has_bridges`. This eliminates sagging
 walls printed across windows, slots, and similar mid-air features.
 

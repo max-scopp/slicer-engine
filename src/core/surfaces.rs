@@ -598,9 +598,9 @@ pub fn generate_top_bottom_surfaces(
             infill_angle,
             nozzle_diameter_mm: 0.4,
             bridge_flow_ratio: 0.8,
-            bridge_min_area_mm2: 1.0,
-            bridge_noise_filter_mm: 0.15,
-            bridge_anchor_mm: 2.0,
+            bridge_min_area_mm2: 0.5,
+            bridge_noise_filter_mm: 0.05,
+            bridge_anchor_mm: 0.5,
         },
         None, // No interior regions - use full perimeters
     );
@@ -807,17 +807,22 @@ pub fn generate_top_bottom_surfaces_with_interior(
             if region.is_empty() || i == 0 {
                 (Paths::new(vec![]), region)
             } else {
+                // Anchor bounds: prefer the inside-walls interior region when
+                // available so the bridge expansion bites into supported solid
+                // bottom material *but stops at the wall band*.  This prevents
+                // small bridges (text, embossed details) from visually pushing
+                // past the first inner wall.
+                let anchor_bounds: &Paths = match interior_regions {
+                    Some(regs) if !regs[i].is_empty() => &regs[i],
+                    _ => &perimeters[i],
+                };
                 let prev_perimeter = &perimeters[i - 1];
                 if prev_perimeter.is_empty() {
                     // Nothing below at all → entire region is candidate bridge.
                     let raw = region.clone();
                     let opened = morphological_open(raw, bridge_noise_filter_mm);
                     let big = filter_small_islands(&opened, bridge_min_area_mm2);
-                    // Anchor bounds = the full layer footprint (so the
-                    // expansion bites into the supported solid material that
-                    // sits *outside* the bottom-only region but still inside
-                    // the wall envelope).
-                    let anchored = expand_to_anchor(big, &perimeters[i], bridge_anchor_mm);
+                    let anchored = expand_to_anchor(big, anchor_bounds, bridge_anchor_mm);
                     let supported = if anchored.is_empty() {
                         region
                     } else {
@@ -832,10 +837,11 @@ pub fn generate_top_bottom_surfaces_with_interior(
                     let opened = morphological_open(raw, bridge_noise_filter_mm);
                     // Step 2 — drop islands below the area threshold.
                     let big = filter_small_islands(&opened, bridge_min_area_mm2);
-                    // Step 3 — anchor expansion clipped to the full layer
-                    // footprint so the bridge bites into the supported solid
-                    // material on either side of the gap.
-                    let anchored = expand_to_anchor(big, &perimeters[i], bridge_anchor_mm);
+                    // Step 3 — anchor expansion clipped to the inside-walls
+                    // interior so the bridge bites into supported solid
+                    // bottom material on either side of the gap *without*
+                    // expanding into the wall band.
+                    let anchored = expand_to_anchor(big, anchor_bounds, bridge_anchor_mm);
                     // Supported part = whatever is left of the bottom region
                     // after the (filtered + anchored) bridge has been removed.
                     let supported = if anchored.is_empty() {

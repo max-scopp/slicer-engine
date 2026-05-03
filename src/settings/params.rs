@@ -429,7 +429,7 @@ jitter on features like embossed text or fine ridges) below this threshold are
 classified as ordinary `BottomSurface` solid infill instead of `Bridge`.  This
 matches OrcaSlicer's `min_bridge_area` filter and prevents stippling of the
 preview with one-line bridge fragments.
-**Default:** 1.0 mm² (≈ a 1 × 1 mm sliver). Set to `0.0` to disable.",
+**Default:** 0.5 mm² (≈ a 0.7 × 0.7 mm sliver). Set to `0.0` to disable.",
         extend("x-group" = "Quality")
     )]
     #[serde(default = "SlicingParams::default_bridge_min_area_mm2")]
@@ -442,7 +442,9 @@ The unsupported area is eroded inward by this amount and then dilated back —
 removing thin slivers and filament-thin connecting strands that arise from
 sub-pixel layer-to-layer geometry differences.  Cleans up the noisy bridges
 that show up around fine surface features (e.g. Benchy's embossed name).
-**Default:** 0.15 mm (≈ ⅓ of a 0.4 mm nozzle).  Set to `0.0` to disable.",
+**Default:** 0.05 mm (just enough to wipe sub-pixel rounding from
+Clipper2's Centi quantisation; small enough to preserve real
+0.4 mm-wide bridge frames around windows).  Set to `0.0` to disable.",
         extend("x-group" = "Quality")
     )]
     #[serde(default = "SlicingParams::default_bridge_noise_filter_mm")]
@@ -456,7 +458,10 @@ re-clipped to the layer footprint so each bridge strand bites into the
 adjacent supported solid material.  Without this the bridge ends mid-air at
 the wall edge instead of being anchored, causing droopy strands.  Matches
 PrusaSlicer / OrcaSlicer `bridge_anchor` behaviour.
-**Default:** 2.0 mm.  Set to `0.0` to disable anchoring.",
+**Default:** 0.5 mm.  Larger values cause bridges around small features
+(text, embossed details) to expand past the first inner wall and look
+visually wrong, even though they print fine.  Set to `0.0` to disable
+anchoring.",
         extend("x-group" = "Quality")
     )]
     #[serde(default = "SlicingParams::default_bridge_anchor_mm")]
@@ -807,15 +812,15 @@ impl SlicingParams {
     }
 
     fn default_bridge_min_area_mm2() -> f64 {
-        1.0
+        0.5
     }
 
     fn default_bridge_noise_filter_mm() -> f64 {
-        0.15
+        0.05
     }
 
     fn default_bridge_anchor_mm() -> f64 {
-        2.0
+        0.5
     }
 
     fn default_top_surface_speed() -> f64 {

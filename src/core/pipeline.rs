@@ -213,7 +213,7 @@ pub fn process_mesh(
         // the surface-generation pass above.
         logger.log_debug("classifying overhang perimeters");
         let t_overhang = PhaseTimer::start("Overhang Perimeter Classification", logger);
-        classify_overhang_perimeters(&mut layers);
+        classify_overhang_perimeters(&mut layers, params.nozzle_diameter_mm);
         t_overhang.finish();
     }
 
