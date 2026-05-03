@@ -2,6 +2,7 @@
 
 use crate::gcode::GcodeFlavor;
 use crate::infill::InfillPattern;
+pub use crate::mesh::transforms::MeshQuality;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -538,6 +539,18 @@ Fan speed is adapted to the estimated layer print time:
     )]
     #[serde(default = "SlicingParams::default_fan_configs")]
     pub fan_configs: Vec<FanConfig>,
+
+    #[schemars(
+        description = "Optional mesh decimation applied before slicing.
+
+Supported values:
+- `normal` — no decimation (default)
+- `high-quality` — no decimation, signals maximum fidelity
+- `draft` — aggressive polygon reduction for faster slicing",
+        extend("x-group" = "Mesh")
+    )]
+    #[serde(default = "SlicingParams::default_mesh_quality")]
+    pub mesh_quality: MeshQuality,
 }
 
 impl Default for SlicingParams {
@@ -573,6 +586,7 @@ impl Default for SlicingParams {
             path_tolerance: Self::default_path_tolerance(),
             gcode_flavor: Self::default_gcode_flavor(),
             fan_configs: Self::default_fan_configs(),
+            mesh_quality: Self::default_mesh_quality(),
         }
     }
 }
@@ -672,6 +686,10 @@ impl SlicingParams {
 
     fn default_fan_configs() -> Vec<FanConfig> {
         vec![FanConfig::default_part_cooling()]
+    }
+
+    fn default_mesh_quality() -> MeshQuality {
+        MeshQuality::Normal
     }
 }
 
