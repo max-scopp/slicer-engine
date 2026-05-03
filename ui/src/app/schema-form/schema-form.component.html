@@ -26,7 +26,6 @@
         class="schema-form-field schema-form-search-result"
         role="listitem"
         [style.opacity]="1 - f.score * 0.65"
-        [style.filter]="'blur(' + f.score + 'px)'"
       >
         <span class="schema-form-search-result-group">{{ f.groupName }}</span>
         <se-field-host
