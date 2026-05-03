@@ -45,6 +45,26 @@ impl KlipperDialect {
     pub fn call_macro(&self, name: &str) -> String {
         name.to_uppercase()
     }
+
+    /// Return the Klipper fan name for a given fan index.
+    ///
+    /// Klipper uses named fans rather than P-indexed M106 commands:
+    /// - P0 → `fan` (part-cooling, the default Klipper fan object)
+    /// - P1 → `fan_hotend`
+    /// - P2 → `fan_chamber`
+    /// - P3 and above → `fan_aux`
+    ///
+    /// All indices beyond 3 map to `fan_aux` on the assumption that a printer
+    /// with more than 4 fans would require custom start/end scripts rather than
+    /// generic indexed fan commands.
+    pub fn fan_name_for_index(fan_index: u8) -> &'static str {
+        match fan_index {
+            0 => "fan",
+            1 => "fan_hotend",
+            2 => "fan_chamber",
+            _ => "fan_aux",
+        }
+    }
 }
 
 impl GcodeDialect for KlipperDialect {
@@ -68,5 +88,13 @@ impl GcodeDialect for KlipperDialect {
     /// Default Klipper end script: delegates to the `END_PRINT` macro.
     fn end_script(&self) -> Vec<String> {
         vec!["END_PRINT".to_string()]
+    }
+
+    /// Klipper uses `SET_FAN_SPEED fan=<name> speed=<0.0–1.0>` instead of
+    /// Marlin's `M106 P<n> S<0–255>`.
+    fn set_fan_speed_indexed(&self, fan_index: u8, speed: f64) -> String {
+        let name = Self::fan_name_for_index(fan_index);
+        let s = speed.clamp(0.0, 1.0);
+        format!("SET_FAN_SPEED fan={} speed={:.4}", name, s)
     }
 }

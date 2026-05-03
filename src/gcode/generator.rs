@@ -16,6 +16,27 @@ use crate::settings::params::{LifecycleMarkerConfig, SlicingParams};
 /// WIDTH comments for floating-point rounding differences between beads.
 const WIDTH_EPSILON: f64 = 1e-6;
 
+/// Estimate the print time for a layer in seconds.
+///
+/// Sums the total XY move distance for all paths in the layer and divides by
+/// `print_speed_mm_s`.  Travel moves are not modelled separately; this gives
+/// a conservative lower-bound that is close enough for fan-speed decisions.
+pub(crate) fn estimate_layer_time(layer: &SliceLayer, print_speed_mm_s: f64) -> f64 {
+    if print_speed_mm_s <= 0.0 {
+        return 0.0;
+    }
+    let mut total_mm = 0.0_f64;
+    for path in layer.paths.iter() {
+        let pts: Vec<(f64, f64)> = path.iter().map(|p| (p.x(), p.y())).collect();
+        for w in pts.windows(2) {
+            let dx = w[1].0 - w[0].0;
+            let dy = w[1].1 - w[0].1;
+            total_mm += (dx * dx + dy * dy).sqrt();
+        }
+    }
+    total_mm / print_speed_mm_s
+}
+
 /// Compute the extrusion length (mm of filament) needed to print a straight
 /// line of length `move_len` at the given `layer_height` with the configured
 /// nozzle and filament diameters.
@@ -335,6 +356,18 @@ impl GcodeGenerator {
                     "{}\n",
                     self.dialect.move_z(layer.z, params.travel_speed_mm_min)
                 ));
+            }
+
+            // ── Adaptive fan speed ───────────────────────────────────────────
+            if !params.fan_configs.is_empty() {
+                let layer_time = estimate_layer_time(layer, params.print_speed);
+                for fan in &params.fan_configs {
+                    let speed = fan.speed_for_layer_time(layer_time);
+                    out.push_str(&format!(
+                        "{}\n",
+                        self.dialect.set_fan_speed_indexed(fan.fan_index, speed)
+                    ));
+                }
             }
 
             let mut last_role: Option<crate::core::ExtrusionRole> = None;
@@ -1300,5 +1333,231 @@ mod tests {
         assert!(gcode.contains("X10.000 Y0.000"), "missing (10,0)");
         assert!(gcode.contains("X10.000 Y10.000"), "missing (10,10)");
         assert!(gcode.contains("X0.000 Y10.000"), "missing (0,10)");
+    }
+
+    // ── Fan control ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_fan_config_speed_for_layer_time_fast() {
+        use crate::settings::params::FanConfig;
+        let cfg = FanConfig::default_part_cooling();
+        // Layer time at or below fast threshold → max speed
+        assert_eq!(cfg.speed_for_layer_time(5.0), cfg.max_speed);
+        assert_eq!(cfg.speed_for_layer_time(10.0), cfg.max_speed);
+    }
+
+    #[test]
+    fn test_fan_config_speed_for_layer_time_slow() {
+        use crate::settings::params::FanConfig;
+        let cfg = FanConfig::default_part_cooling();
+        // Layer time at or above slow threshold → min speed
+        assert_eq!(cfg.speed_for_layer_time(30.0), cfg.min_speed);
+        assert_eq!(cfg.speed_for_layer_time(60.0), cfg.min_speed);
+    }
+
+    #[test]
+    fn test_fan_config_speed_for_layer_time_midpoint() {
+        use crate::settings::params::FanConfig;
+        let cfg = FanConfig::default_part_cooling();
+        // At the midpoint between fast and slow thresholds (20 s) speed should
+        // be the average of min and max.
+        let mid_time = (cfg.layer_time_fast_s + cfg.layer_time_slow_s) / 2.0;
+        let expected = (cfg.min_speed + cfg.max_speed) / 2.0;
+        let got = cfg.speed_for_layer_time(mid_time);
+        assert!(
+            (got - expected).abs() < 1e-9,
+            "midpoint speed {got} != expected {expected}"
+        );
+    }
+
+    #[test]
+    fn test_fan_config_speed_for_layer_time_degenerate() {
+        // When fast >= slow (degenerate), always return max_speed (no panic).
+        use crate::settings::params::FanConfig;
+        let cfg = FanConfig {
+            fan_index: 0,
+            min_speed: 0.35,
+            max_speed: 1.0,
+            layer_time_fast_s: 20.0,
+            layer_time_slow_s: 20.0, // equal → degenerate
+        };
+        assert_eq!(cfg.speed_for_layer_time(0.0), cfg.max_speed);
+        assert_eq!(cfg.speed_for_layer_time(20.0), cfg.max_speed);
+        assert_eq!(cfg.speed_for_layer_time(100.0), cfg.max_speed);
+    }
+
+    #[test]
+    fn test_marlin_dialect_set_fan_speed_indexed_p0() {
+        let d = MarlinDialect;
+        // P0 should use the M107 / M106 S<val> convention
+        assert_eq!(d.set_fan_speed_indexed(0, 0.0), "M107");
+        assert_eq!(d.set_fan_speed_indexed(0, 1.0), "M106 S255");
+        assert_eq!(d.set_fan_speed_indexed(0, 0.5), "M106 S128");
+    }
+
+    #[test]
+    fn test_marlin_dialect_set_fan_speed_indexed_p2() {
+        let d = MarlinDialect;
+        // Indexed fans use M106 P<n> S<val>
+        assert_eq!(d.set_fan_speed_indexed(2, 0.0), "M106 P2 S0");
+        assert_eq!(d.set_fan_speed_indexed(2, 1.0), "M106 P2 S255");
+        assert_eq!(d.set_fan_speed_indexed(3, 0.6), "M106 P3 S153");
+    }
+
+    #[test]
+    fn test_klipper_dialect_set_fan_speed_indexed() {
+        let d = KlipperDialect;
+        // P0 → fan, P1 → fan_hotend, P2 → fan_chamber, P3 → fan_aux
+        assert_eq!(
+            d.set_fan_speed_indexed(0, 1.0),
+            "SET_FAN_SPEED fan=fan speed=1.0000"
+        );
+        assert_eq!(
+            d.set_fan_speed_indexed(1, 0.0),
+            "SET_FAN_SPEED fan=fan_hotend speed=0.0000"
+        );
+        assert_eq!(
+            d.set_fan_speed_indexed(2, 0.6),
+            "SET_FAN_SPEED fan=fan_chamber speed=0.6000"
+        );
+        assert_eq!(
+            d.set_fan_speed_indexed(3, 0.6),
+            "SET_FAN_SPEED fan=fan_aux speed=0.6000"
+        );
+    }
+
+    #[test]
+    fn test_generator_emits_fan_command_per_layer() {
+        // Default params include one part-cooling fan.
+        // A layer with some paths should trigger an M106/M107 command.
+        use clipper2::Path;
+        let mut layer = SliceLayer::new(0.2);
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer.paths.push(square);
+
+        let gcode =
+            GcodeGenerator::new(GcodeFlavor::Marlin).generate(&[layer], &SlicingParams::default());
+        // The default fan config should emit either M106 or M107
+        assert!(
+            gcode.contains("M106") || gcode.contains("M107"),
+            "expected fan speed command in gcode:\n{gcode}"
+        );
+    }
+
+    #[test]
+    fn test_generator_no_fan_command_when_fan_configs_empty() {
+        use clipper2::Path;
+        let mut layer = SliceLayer::new(0.2);
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer.paths.push(square);
+
+        let params = SlicingParams {
+            fan_configs: vec![],
+            ..SlicingParams::default()
+        };
+        let gcode = GcodeGenerator::new(GcodeFlavor::Marlin).generate(&[layer], &params);
+        // No fan config → no M106 / M107 inside the layer block.
+        // The footer has M104 S0 / M140 S0 but no fan commands.
+        assert!(
+            !gcode.contains("M106") && !gcode.contains("M107"),
+            "unexpected fan command when fan_configs is empty:\n{gcode}"
+        );
+    }
+
+    #[test]
+    fn test_generator_multi_fan_marlin() {
+        // Simulate a 3-fan printer (Bambu-like): P0 part-cooling, P2 chamber.
+        use crate::settings::params::FanConfig;
+        use clipper2::Path;
+        let mut layer = SliceLayer::new(0.2);
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer.paths.push(square);
+
+        let params = SlicingParams {
+            fan_configs: vec![
+                FanConfig {
+                    fan_index: 0,
+                    min_speed: 0.0,
+                    max_speed: 1.0,
+                    layer_time_fast_s: 10.0,
+                    layer_time_slow_s: 30.0,
+                },
+                FanConfig {
+                    fan_index: 2,
+                    min_speed: 0.0,
+                    max_speed: 0.6,
+                    layer_time_fast_s: 10.0,
+                    layer_time_slow_s: 30.0,
+                },
+            ],
+            ..SlicingParams::default()
+        };
+        let gcode = GcodeGenerator::new(GcodeFlavor::Marlin).generate(&[layer], &params);
+        // Both fans should have commands
+        assert!(
+            gcode.contains("M106") || gcode.contains("M107"),
+            "expected part-cooling fan command"
+        );
+        assert!(
+            gcode.contains("M106 P2"),
+            "expected chamber fan command M106 P2 in:\n{gcode}"
+        );
+    }
+
+    #[test]
+    fn test_generator_klipper_multi_fan() {
+        use crate::settings::params::FanConfig;
+        use clipper2::Path;
+        let mut layer = SliceLayer::new(0.2);
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer.paths.push(square);
+
+        let params = SlicingParams {
+            fan_configs: vec![
+                FanConfig {
+                    fan_index: 0,
+                    min_speed: 0.0,
+                    max_speed: 1.0,
+                    layer_time_fast_s: 10.0,
+                    layer_time_slow_s: 30.0,
+                },
+                FanConfig {
+                    fan_index: 2,
+                    min_speed: 0.0,
+                    max_speed: 0.6,
+                    layer_time_fast_s: 10.0,
+                    layer_time_slow_s: 30.0,
+                },
+            ],
+            ..SlicingParams::default()
+        };
+        let gcode = GcodeGenerator::new(GcodeFlavor::Klipper).generate(&[layer], &params);
+        // Both fans should use Klipper SET_FAN_SPEED syntax
+        assert!(
+            gcode.contains("SET_FAN_SPEED fan=fan "),
+            "expected part-cooling fan command in:\n{gcode}"
+        );
+        assert!(
+            gcode.contains("SET_FAN_SPEED fan=fan_chamber "),
+            "expected chamber fan command in:\n{gcode}"
+        );
+    }
+
+    #[test]
+    fn test_estimate_layer_time_empty_paths() {
+        let layer = SliceLayer::new(0.2);
+        let t = estimate_layer_time(&layer, 60.0);
+        assert_eq!(t, 0.0);
+    }
+
+    #[test]
+    fn test_estimate_layer_time_single_segment() {
+        use clipper2::Path;
+        let mut layer = SliceLayer::new(0.2);
+        // A path that covers exactly 60 mm at 60 mm/s → 1.0 s
+        let path: Path = vec![(0.0, 0.0), (60.0, 0.0)].into();
+        layer.paths.push(path);
+        let t = estimate_layer_time(&layer, 60.0);
+        assert!((t - 1.0).abs() < 1e-9, "expected ~1.0 s, got {t}");
     }
 }

@@ -114,6 +114,32 @@ pub trait GcodeDialect: Send + Sync {
         }
     }
 
+    /// Set fan speed for an indexed fan (`M106 P<n> S<value>`).
+    ///
+    /// `fan_index` selects the physical fan (0 = part-cooling, 1 = hotend,
+    /// 2 = chamber, 3 = auxiliary).  `speed` is a normalised fraction
+    /// `0.0`–`1.0`.
+    ///
+    /// The default implementation emits Marlin-style `M106 P<n> S<value>`.
+    /// Fan index 0 follows the `M107`/`M106 S<value>` convention (no explicit
+    /// `P0`) to maximise firmware compatibility.  Other indices always include
+    /// the explicit `P<n>`.
+    fn set_fan_speed_indexed(&self, fan_index: u8, speed: f64) -> String {
+        let s = (speed.clamp(0.0, 1.0) * 255.0).round() as u8;
+        if fan_index == 0 {
+            // P0 uses the conventional M107 / M106 S<val> form
+            if s == 0 {
+                "M107".to_string()
+            } else {
+                format!("M106 S{}", s)
+            }
+        } else if s == 0 {
+            format!("M106 P{} S0", fan_index)
+        } else {
+            format!("M106 P{} S{}", fan_index, s)
+        }
+    }
+
     /// Home all axes (`G28`).
     fn home_axes(&self) -> String {
         "G28".to_string()

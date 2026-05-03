@@ -5,6 +5,102 @@ use crate::infill::InfillPattern;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Fan index constants for indexed M106 Pn commands.
+pub mod fan_index {
+    /// Part-cooling fan (default, P0).
+    pub const PART_COOLING: u8 = 0;
+    /// Hotend cooling fan (P1).
+    pub const HOTEND: u8 = 1;
+    /// Chamber fan (P2).
+    pub const CHAMBER: u8 = 2;
+    /// Auxiliary fan (P3).
+    pub const AUX: u8 = 3;
+}
+
+/// Configuration for a single fan in a multi-fan printer system.
+///
+/// Fan speed is automatically adapted to the estimated layer print time:
+/// fast layers (small features) get maximum cooling; slow layers get minimum.
+///
+/// # Layer-time thresholds
+/// ```text
+/// layer_time ≤ layer_time_fast_s  →  speed = max_speed
+/// layer_time ≥ layer_time_slow_s  →  speed = min_speed
+/// between                         →  linear interpolation
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct FanConfig {
+    /// Fan index for indexed M106 `Pn` commands.
+    ///
+    /// - `0` — part-cooling fan (default, `M106 S…`)
+    /// - `1` — hotend fan
+    /// - `2` — chamber fan
+    /// - `3` — auxiliary fan
+    #[schemars(
+        description = "Fan index (P parameter in M106). 0=part-cooling, 1=hotend, 2=chamber, 3=aux."
+    )]
+    pub fan_index: u8,
+
+    /// Minimum fan speed as a fraction `0.0`–`1.0`.
+    ///
+    /// Applied when the layer takes longer than `layer_time_slow_s` to print.
+    #[schemars(description = "Minimum fan speed fraction (0.0–1.0) for slow/large layers.")]
+    pub min_speed: f64,
+
+    /// Maximum fan speed as a fraction `0.0`–`1.0`.
+    ///
+    /// Applied when the layer takes less than `layer_time_fast_s` to print.
+    #[schemars(description = "Maximum fan speed fraction (0.0–1.0) for fast/small layers.")]
+    pub max_speed: f64,
+
+    /// Layer time threshold in seconds below which maximum fan speed is used.
+    #[schemars(description = "Layer time (seconds) at or below which max_speed is used.")]
+    pub layer_time_fast_s: f64,
+
+    /// Layer time threshold in seconds above which minimum fan speed is used.
+    #[schemars(description = "Layer time (seconds) at or above which min_speed is used.")]
+    pub layer_time_slow_s: f64,
+}
+
+impl FanConfig {
+    /// Default configuration for a single part-cooling fan (P0).
+    ///
+    /// Uses 35% as the minimum speed — below this threshold most centrifugal
+    /// part-cooling fans stall or become ineffective.  Maximum is 100%.
+    /// Layer times are set to 10 s (fast) and 30 s (slow), matching
+    /// typical OrcaSlicer defaults.
+    pub fn default_part_cooling() -> Self {
+        Self {
+            fan_index: fan_index::PART_COOLING,
+            min_speed: 0.35,
+            max_speed: 1.0,
+            layer_time_fast_s: 10.0,
+            layer_time_slow_s: 30.0,
+        }
+    }
+
+    /// Compute the target fan speed fraction for the given layer time in seconds.
+    ///
+    /// Returns `max_speed` for short layers, `min_speed` for long layers,
+    /// and a linearly interpolated value in between.
+    ///
+    /// When `layer_time_fast_s >= layer_time_slow_s` (degenerate configuration),
+    /// returns `max_speed` for all layer times.
+    pub fn speed_for_layer_time(&self, layer_time_s: f64) -> f64 {
+        if layer_time_s <= self.layer_time_fast_s
+            || self.layer_time_fast_s >= self.layer_time_slow_s
+        {
+            self.max_speed
+        } else if layer_time_s >= self.layer_time_slow_s {
+            self.min_speed
+        } else {
+            let t = (layer_time_s - self.layer_time_fast_s)
+                / (self.layer_time_slow_s - self.layer_time_fast_s);
+            self.max_speed + t * (self.min_speed - self.max_speed)
+        }
+    }
+}
+
 /// Parameters that control how a model is sliced and printed.
 ///
 /// All dimensional values are in millimeters; speeds in mm/s;
@@ -242,6 +338,24 @@ Reduces the number of G-code points without visibly affecting print quality.
     )]
     #[serde(default = "SlicingParams::default_gcode_flavor")]
     pub gcode_flavor: GcodeFlavor,
+
+    #[schemars(
+        description = "Fan configurations for layer-time-based adaptive cooling.
+
+Each entry describes one physical fan in the printer. For multi-fan printers
+(e.g. Bambu Lab X1C with 4 fans) add an entry per fan with the appropriate
+`fan_index` (P0–P3).
+
+Fan speed is adapted to the estimated layer print time:
+- Short layers (< `layer_time_fast_s`): `max_speed`
+- Long layers (> `layer_time_slow_s`): `min_speed`
+- Between: smooth linear interpolation
+
+**Default:** single part-cooling fan (P0) at 35%–100% speed.",
+        extend("x-group" = "Cooling")
+    )]
+    #[serde(default = "SlicingParams::default_fan_configs")]
+    pub fan_configs: Vec<FanConfig>,
 }
 
 impl Default for SlicingParams {
@@ -275,6 +389,7 @@ impl Default for SlicingParams {
             infill_overlap_percent: Self::default_infill_overlap_percent(),
             path_tolerance: Self::default_path_tolerance(),
             gcode_flavor: Self::default_gcode_flavor(),
+            fan_configs: Self::default_fan_configs(),
         }
     }
 }
@@ -366,6 +481,10 @@ impl SlicingParams {
 
     fn default_gcode_flavor() -> GcodeFlavor {
         GcodeFlavor::Marlin
+    }
+
+    fn default_fan_configs() -> Vec<FanConfig> {
+        vec![FanConfig::default_part_cooling()]
     }
 }
 
