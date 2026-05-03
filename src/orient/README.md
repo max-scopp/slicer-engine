@@ -1,11 +1,30 @@
-# `src/orient` — Auto-orient and Arrange
+# Orient — Auto-Orient and Arrange
 
-**What this module exists for:** given one or more meshes that need to be
-printed on a FDM bed, find the rotation(s) that minimise unsupported overhangs
-and maximise flat bed-contact area, then pack the objects onto the bed without
-overlap.
+This module answers one question:
 
-There are two user-facing entry points:
+> What object orientation and bed placement should be used before slicing?
+
+It computes print-friendly rotations (low overhang, high contact, low height)
+and, for multi-object scenes, packs footprints on the bed without overlap.
+
+---
+
+## Why it exists
+
+Orientation and placement are part of slicing correctness, not just UI polish.
+If these decisions drift across entry points, preview and final G-code can
+disagree. Keeping orientation and arrange behavior documented in one module
+keeps CLI, server, and WASM behavior aligned.
+
+---
+
+## The contract
+
+1. `auto_orient(mesh, opts)` returns one best-fit quaternion for a single mesh.
+2. `SceneOp::AutoOrient` applies that orientation to one scene object and recenters it.
+3. `SceneOp::ArrangeOnBed` optionally auto-orients multiple objects, packs them, and centers the arrangement.
+
+User-facing entry points:
 
 | Function / Op | Purpose |
 |---|---|
@@ -17,9 +36,9 @@ There are two user-facing entry points:
 
 ## `auto_orient` — Single-object orientation
 
-### Motivation
+### Why this phase exists
 
-FDM prints need:
+FDM prints favor three properties:
 - A **flat face on the bed** (maximises first-layer adhesion, minimises the need
   for supports on the contact surface).
 - **Minimal overhangs** (faces tilted more than ~45° past horizontal require
@@ -31,16 +50,16 @@ FDM prints need:
 
 ```mermaid
 flowchart TD
-    A[Input mesh] --> B[Compute per-face normals + areas]
-    B --> C{allow_rotations?}
-    C -- No --> D[Histogram bucketing\nO(F)]
-    C -- Yes --> D
-    C -- Yes --> E[Fibonacci sphere\n~128 dirs]
-    D --> F[Top 64 area buckets\n+ always –Z]
-    E --> F
-    F --> G[Score each candidate\nO(C × F)]
-    G --> H[Build Quat for winner\nonce]
-    H --> I[Output Quat]
+  A["Input mesh"] --> B["Compute per-face normals + areas"]
+  B --> C{"allow_rotations?"}
+  C -- "No" --> D["Histogram bucketing<br/>O(F)"]
+  C -- "Yes" --> D
+  C -- "Yes" --> E["Fibonacci sphere<br/>~128 dirs"]
+  D --> F["Top 64 area buckets<br/>+ always -Z"]
+  E --> F
+  F --> G["Score each candidate<br/>O(C x F)"]
+  G --> H["Build Quat for winner<br/>once"]
+  H --> I["Output Quat"]
 ```
 
 #### Step 1: Candidate generation (`candidates.rs`)
@@ -95,29 +114,29 @@ in — useful for CoreXY printers that want seam lines at 45°.
 
 ## `ArrangeOnBed` — Multi-object packing
 
-### Motivation
+### Why this phase exists
 
-When you drop multiple objects into the slicer you want them to:
-1. Each be oriented optimally for printing.
-2. Fit on the bed without overlapping.
-3. Be centered as a group so the arrangement is easy to inspect.
+For multi-object jobs, the system must ensure that objects are:
+1. Oriented optimally for printing.
+2. Placed on the bed without overlap.
+3. Centered as a group for predictable inspection and slicing.
 
 `SceneOp::AutoOrient` operates on a single object and always centers it at the
-bed origin — applying it to N objects in sequence would stack them all on top of
+bed origin. Applying it to N objects in sequence would stack them all on top of
 each other.  `ArrangeOnBed` solves the whole-group placement problem.
 
 ### Algorithm overview (`pack.rs`)
 
 ```mermaid
 flowchart TD
-    A[ids, ArrangeOptions] --> B{auto_orient?}
-    B -- Yes --> C[AutoOrient each object\n+ DropToFloor]
-    B -- No --> D
-    C --> D[Compute XY footprints\nworld-AABB width×depth]
-    D --> E[Sort by area descending]
-    E --> F[Shelf-first-fit packing\nO(N²)]
-    F --> G[Center arrangement\non bed]
-    G --> H[Translate each object\nto packed position]
+  A["ids, ArrangeOptions"] --> B{"auto_orient?"}
+  B -- "Yes" --> C["AutoOrient each object<br/>+ DropToFloor"]
+  B -- "No" --> D
+  C --> D["Compute XY footprints<br/>world-AABB width x depth"]
+  D --> E["Sort by area descending"]
+  E --> F["Shelf-first-fit packing<br/>O(N^2)"]
+  F --> G["Center arrangement<br/>on bed"]
+  G --> H["Translate each object<br/>to packed position"]
 ```
 
 #### Shelf-first-fit
