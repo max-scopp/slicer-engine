@@ -332,6 +332,23 @@ G1 X20 Y10 Z0.4 E2.0
         assert!(has_role(&layers, Role::Bridge), "expected Bridge role");
     }
 
+    /// Overhang perimeter role should be parsed from `;TYPE:Overhang wall` comments.
+    #[test]
+    fn test_overhang_perimeter_role_parsed() {
+        let gcode = b"
+;LAYER_CHANGE
+;Z:0.400
+;TYPE:Overhang wall
+G1 X10 Y10 Z0.4 E1.0 F1800
+G1 X20 Y10 Z0.4 E2.0
+";
+        let layers = parse_gcode_bytes(gcode);
+        assert!(
+            has_role(&layers, Role::OverhangPerimeter),
+            "expected OverhangPerimeter role"
+        );
+    }
+
     /// Skirt role should be parsed from `;TYPE:Skirt` comments.
     #[test]
     fn test_skirt_role_parsed() {
