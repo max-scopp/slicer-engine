@@ -83,7 +83,7 @@ pub struct SceneObjectSliceDto {
 ///
 /// `file_id` is the upload `request_uuid` returned by `POST /api/upload`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "op", content = "args", rename_all = "snake_case")]
+#[serde(tag = "op", content = "args")]
 pub enum SceneOpDto {
     /// Add a mesh by reference to a previously-uploaded file.
     Add {

@@ -51,10 +51,10 @@ type SceneHandleWithWebSlicer = SceneHandle & {
  * keeps raw bytes off the JSON path.
  */
 export type SceneOp =
-  | { op: 'remove'; args: { id: bigint } }
-  | { op: 'translate'; args: { id: bigint; delta: [number, number, number] } }
+  | { op: 'Remove'; args: { id: bigint } }
+  | { op: 'Translate'; args: { id: bigint; delta: [number, number, number] } }
   | {
-      op: 'set_transform';
+      op: 'SetTransform';
       args: {
         id: bigint;
         translation: [number, number, number];
@@ -62,11 +62,11 @@ export type SceneOp =
         scale: [number, number, number];
       };
     }
-  | { op: 'rotate'; args: { id: bigint; axis: [number, number, number]; degrees: number } }
-  | { op: 'scale'; args: { id: bigint; factors: [number, number, number] } }
-  | { op: 'center_on_bed'; args: { id: bigint } }
-  | { op: 'drop_to_floor'; args: { id: bigint } }
-  | { op: 'place_face_on_floor'; args: { id: bigint; face_index: number } };
+  | { op: 'Rotate'; args: { id: bigint; axis: [number, number, number]; degrees: number } }
+  | { op: 'Scale'; args: { id: bigint; factors: [number, number, number] } }
+  | { op: 'CenterOnBed'; args: { id: bigint } }
+  | { op: 'DropToFloor'; args: { id: bigint } }
+  | { op: 'PlaceFaceOnFloor'; args: { id: bigint; face_index: number } };
 
 const DEFAULT_BED: SceneBedSnapshot = {
   width: 220,

@@ -17,7 +17,7 @@ use std::sync::Arc;
 /// All variants must be reversible from the current state plus the returned
 /// [`OpReceipt`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "op", content = "args", rename_all = "snake_case")]
+#[serde(tag = "op", content = "args")]
 pub enum SceneOp {
     /// Add a mesh from raw bytes.
     Add {

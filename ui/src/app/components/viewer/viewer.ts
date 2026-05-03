@@ -308,19 +308,19 @@ export class Viewer {
       switch (delta.kind) {
         case 'translate':
           this.sceneCommand.apply({
-            op: 'translate',
+            op: 'Translate',
             args: { id, delta: delta.delta },
           });
           break;
         case 'rotate':
           this.sceneCommand.apply({
-            op: 'rotate',
+            op: 'Rotate',
             args: { id, axis: delta.axis, degrees: delta.degrees },
           });
           break;
         case 'scale':
           this.sceneCommand.apply({
-            op: 'scale',
+            op: 'Scale',
             args: { id, factors: delta.factors },
           });
           break;
@@ -335,7 +335,7 @@ export class Viewer {
     // gesture so undo reverts the entire move + drop as one unit.
     if (this.viewerControl.gravityEnabled()) {
       for (const id of this.selectedWasmIds) {
-        this.sceneCommand.apply({ op: 'drop_to_floor', args: { id } });
+        this.sceneCommand.apply({ op: 'DropToFloor', args: { id } });
       }
     }
     this.sceneCommand.flush();
@@ -353,7 +353,7 @@ export class Viewer {
       return;
     }
     this.sceneCommand.apply({
-      op: 'place_face_on_floor',
+      op: 'PlaceFaceOnFloor',
       args: { id, face_index: faceIndex },
     });
     this.sceneCommand.flush();
@@ -445,7 +445,7 @@ export class Viewer {
       for (const id of this.wasmMeshes.keys()) {
         this.scene?.unregisterSelectable(String(id));
         try {
-          this.sceneEngine.apply({ op: 'remove', args: { id } });
+          this.sceneEngine.apply({ op: 'Remove', args: { id } });
         } catch {
           // Object may already be gone if the engine reset; safe to ignore.
         }

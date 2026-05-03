@@ -53,7 +53,7 @@ impl RenderBuffer {
 /// Mirrors the WS protocol's `SceneOpDto` minus the `Add` variant (handled by
 /// the dedicated `add_mesh` method to keep raw bytes off the JSON path).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "op", content = "args", rename_all = "snake_case")]
+#[serde(tag = "op", content = "args")]
 pub enum SceneOpJs {
     Remove {
         id: u64,
