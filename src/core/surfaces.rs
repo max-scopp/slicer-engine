@@ -178,6 +178,65 @@ fn morphological_open(paths: Paths, radius_mm: f64) -> Paths {
     clipper2::inflate(eroded, radius_mm, JoinType::Round, EndType::Polygon, 2.0)
 }
 
+/// Compute the **physical bead footprint** of every wall path on a layer.
+///
+/// For each `OuterWall` / `InnerWall` / `OverhangPerimeter` path, inflate the
+/// centerline by `width / 2` (falling back to `nozzle_diameter_mm / 2` when
+/// the path has no recorded width).  Closed bead loops use `EndType::Joined`
+/// so the inflation extends to **both** sides of the centerline (total width
+/// = 2 × radius = the bead width); open arcs (e.g. results of
+/// `clip_walls_against_bridge_region`) use `EndType::Round` for the same
+/// effect with rounded caps.
+///
+/// The result is the union of every wall bead's footprint — the area on the
+/// build plate that wall extrusions actually consume.  Used by bridge
+/// detection to avoid placing bridge infill on top of existing walls
+/// (Benchy rear-deck overhang regression).
+fn compute_wall_bead_footprint(layer: &SliceLayer, nozzle_diameter_mm: f64) -> Paths {
+    let mut acc: Paths = Paths::new(vec![]);
+    let default_radius = nozzle_diameter_mm * 0.5;
+
+    for (i, path) in layer.paths.iter().enumerate() {
+        let role = layer.role_for_path(i);
+        // Only true wall extrusions consume area we'd otherwise want to
+        // bridge over.  `OverhangPerimeter` is included because the
+        // overhang post-pass relabels in-air wall arcs, and bridges still
+        // must not overlap them.
+        if !matches!(
+            role,
+            ExtrusionRole::OuterWall | ExtrusionRole::InnerWall | ExtrusionRole::OverhangPerimeter
+        ) {
+            continue;
+        }
+
+        let radius = layer
+            .width_for_path(i)
+            .map(|w| w * 0.5)
+            .unwrap_or(default_radius);
+        if radius <= 1e-6 {
+            continue;
+        }
+
+        let end_type = if layer.is_path_open(i) {
+            EndType::Round
+        } else {
+            EndType::Joined
+        };
+
+        let single = Paths::new(vec![path.clone()]);
+        let inflated = clipper2::inflate(single, radius, JoinType::Round, end_type, 2.0);
+        if inflated.is_empty() {
+            continue;
+        }
+        acc = if acc.is_empty() {
+            inflated
+        } else {
+            union(acc, inflated, FillRule::NonZero).unwrap_or_default()
+        };
+    }
+    acc
+}
+
 /// Drop sub-paths whose absolute signed area is below `min_area_mm2`.
 ///
 /// `Paths::signed_area()` would only sum the whole set; we filter individually.
@@ -900,6 +959,22 @@ pub fn generate_top_bottom_surfaces_with_interior(
     #[cfg(not(target_arch = "wasm32"))]
     let t_snap = Instant::now();
     let perimeters: Vec<Paths> = layers.iter().map(perimeter_paths_of).collect();
+
+    // Snapshot the **physical bead footprint** of every wall path on every
+    // layer.  This is the union of every `OuterWall` / `InnerWall`
+    // centerline inflated by its half-width — i.e. the area the wall
+    // extrusions actually consume on the build plate.
+    //
+    // Used to clip bridge candidates so bridge infill is never placed on top
+    // of an existing wall extrusion.  This is stricter than clipping to the
+    // nominal `interior_regions[i]`: Arachne packs adaptive, variable-width
+    // inner beads inside the interior region for thin features (Benchy rear
+    // deck, lips, hull flares), so the *nominal* infill void may still be
+    // covered by walls that the interior calculation didn't account for.
+    let wall_footprints: Vec<Paths> = layers
+        .iter()
+        .map(|layer| compute_wall_bead_footprint(layer, nozzle_diameter_mm))
+        .collect();
     #[cfg(not(target_arch = "wasm32"))]
     let snapshot_ns = t_snap.elapsed().as_nanos();
     #[cfg(target_arch = "wasm32")]
@@ -1075,25 +1150,88 @@ pub fn generate_top_bottom_surfaces_with_interior(
             } else {
                 // Anchor bounds = the full layer cross-section (perimeters[i]).
                 //
-                // We intentionally do NOT use `interior_regions[i]` here, even
-                // when it is non-empty.  For bridges within the wall zone (hull
-                // porthole, window header, door frame), `interior_regions[i]`
-                // is the *cabin interior* — it does not overlap the bridge area
-                // at all.  Using it as the anchor bound would make
-                // `expand_to_anchor` return empty, which would degrade the
-                // bridge to a bottom surface that then gets clipped away.
+                // We use `perimeters[i]` (NOT `interior_regions[i]`) as the
+                // anchor bound so the bridge can dilate outward into the
+                // surrounding wall material on either side of the gap, giving
+                // each strand a bite of solid material.
                 //
-                // `perimeters[i]` always encompasses the bridge area and
-                // provides the correct anchor material (the surrounding wall).
+                // The bridge *candidate* IS later clipped to `interior_regions[i]`
+                // (see `clip_to_void` below) so we only bridge real voids and
+                // not areas already covered by perimeters.  The anchor
+                // expansion then re-grows back into the wall band as needed.
                 let anchor_bounds: &Paths = &perimeters[i];
                 let prev_perimeter = &perimeters[i - 1];
+
+                // Step 2.5 (shared between both branches below) — clip the
+                // bridge candidate to the **true free space** before the
+                // anchor expansion.
+                //
+                // ## Why
+                //
+                // `region` (= `perimeters[i] − covered`) is the entire
+                // unsupported cross-section.  In thin overhanging features
+                // (Benchy rear deck, ledges, brims, lips) that whole strip is
+                // physically *covered by wall extrusions* — the perimeter
+                // beads alone fully fill it.  The bridge candidate then
+                // matches the same strip, and `add_bridge_infill_for_region`
+                // lays bridge lines on top of the already-printed perimeters
+                // → double extrusion (the failure mode reported on Benchy
+                // layer 172).
+                //
+                // We clip the candidate against **two** masks:
+                //
+                // 1. `interior_regions[i]` — the nominal infill area inside
+                //    the wall band.  Empty for "all-wall" cross-sections, so
+                //    the bridge gets fully suppressed there.
+                //
+                // 2. `wall_footprints[i]` — the *physical* bead footprint of
+                //    every OuterWall / InnerWall / OverhangPerimeter on the
+                //    layer (centerline inflated by `width / 2` on both sides
+                //    via `EndType::Joined`).  Subtracted from the candidate.
+                //    This catches the case Arachne's adaptive variable-width
+                //    inner beads land *inside* the nominal interior region:
+                //    the interior clip alone would still leave bridge
+                //    overlapping those beads.
+                //
+                // Together, these mean the bridge can only land in true voids
+                // (porthole / window closure / cavity interior) and never on
+                // top of a wall extrusion.  The anchor expansion still runs
+                // afterwards, so each bridge strand bites into the
+                // surrounding wall material from the *outside*.
+                let clip_to_void = |candidate: Paths| -> Paths {
+                    if candidate.is_empty() {
+                        return candidate;
+                    }
+                    // Step A — clip to nominal interior (when available).
+                    let after_interior = match interior_regions {
+                        None => candidate,
+                        Some(regs) if regs[i].is_empty() => return Paths::new(vec![]),
+                        Some(regs) => intersect(candidate, regs[i].clone(), FillRule::EvenOdd)
+                            .unwrap_or_default(),
+                    };
+                    if after_interior.is_empty() {
+                        return after_interior;
+                    }
+                    // Step B — subtract physical wall bead footprints.
+                    if wall_footprints[i].is_empty() {
+                        after_interior
+                    } else {
+                        difference(
+                            after_interior,
+                            wall_footprints[i].clone(),
+                            FillRule::EvenOdd,
+                        )
+                        .unwrap_or_default()
+                    }
+                };
 
                 if prev_perimeter.is_empty() {
                     // Nothing below at all → entire region is candidate bridge.
                     let raw = region.clone();
                     let opened = morphological_open(raw, bridge_noise_filter_mm);
                     let big = filter_small_islands(&opened, bridge_min_area_mm2);
-                    let anchored = expand_to_anchor(big, anchor_bounds, bridge_anchor_mm);
+                    let void_only = clip_to_void(big);
+                    let anchored = expand_to_anchor(void_only, anchor_bounds, bridge_anchor_mm);
                     let supported_raw = if anchored.is_empty() {
                         region
                     } else {
@@ -1140,10 +1278,13 @@ pub fn generate_top_bottom_surfaces_with_interior(
                     let opened = morphological_open(raw, bridge_noise_filter_mm);
                     // Step 2 — drop islands below the area threshold.
                     let big = filter_small_islands(&opened, bridge_min_area_mm2);
+                    // Step 2.5 — keep only the void inside the wall band
+                    // (see `clip_to_void` definition above for full rationale).
+                    let void_only = clip_to_void(big);
                     // Step 3 — anchor expansion clipped to the full layer
                     // cross-section so the bridge bites into the surrounding
                     // wall material on either side of the gap.
-                    let anchored = expand_to_anchor(big, anchor_bounds, bridge_anchor_mm);
+                    let anchored = expand_to_anchor(void_only, anchor_bounds, bridge_anchor_mm);
                     // Supported part = whatever is left of the bottom region
                     // after the (filtered + anchored) bridge has been removed.
                     // Clip to interior zone before using as solid bottom infill.
@@ -1280,6 +1421,40 @@ pub fn generate_top_bottom_surfaces_with_interior(
             }
         }
 
+        // Stash the unsupported area (the layer-footprint air below) for the
+        // post-pass that classifies wall paths in air as `OverhangPerimeter`.
+        // Empty for layer 0 by design.
+        //
+        // **Subtract `bridge_region`** so wall arcs that survive
+        // `clip_walls_against_bridge_region` along the bridge boundary cannot
+        // be re-flagged as `OverhangPerimeter` and end up double-extruded on
+        // top of the bridge infill.  The bridge zone is already fully handled:
+        //   • Walls inside it were clipped out.
+        //   • Surviving open arcs may keep a "seam" vertex sitting *just
+        //     inside* the bridge zone (the last in-bridge vertex before the
+        //     transition to outside).  Without this subtraction, that seam
+        //     vertex tests `IsInside` against `raw_unsupported` and produces
+        //     a tiny `OverhangPerimeter` arc geometrically overlapping the
+        //     bridge — exactly the double-extrusion the user reported on
+        //     Benchy layer 172.
+        //
+        // Areas of `raw_unsupported` that did **not** become a bridge (e.g.
+        // filtered by morphological opening / `bridge_min_area_mm2`, or
+        // supported by a deeper neighbour so they did not enter the bridge
+        // candidate region at all) remain in `unsupported_regions` and
+        // continue to drive overhang classification as before.
+        let unsupported_for_overhang = if raw_unsupported.is_empty() {
+            raw_unsupported
+        } else if bridge_region.is_empty() {
+            raw_unsupported
+        } else {
+            difference(raw_unsupported, bridge_region.clone(), FillRule::EvenOdd)
+                .unwrap_or_default()
+        };
+        if !unsupported_for_overhang.is_empty() {
+            layers[i].unsupported_regions = unsupported_for_overhang;
+        }
+
         // Record the union of all solid-surface regions on this layer so that
         // add_infill_to_layers can exclude them from sparse infill.
         // Include bridge_region in the solid union since those are solid-filled areas too.
@@ -1287,13 +1462,6 @@ pub fn generate_top_bottom_surfaces_with_interior(
         let combined_solid = union_or_first(all_bottom, top_region);
         if !combined_solid.is_empty() {
             layers[i].solid_regions = combined_solid;
-        }
-
-        // Stash the *raw* unsupported area (the layer-footprint air below)
-        // for the post-pass that classifies wall paths in air as
-        // OverhangPerimeter.  Empty for layer 0 by design.
-        if !raw_unsupported.is_empty() {
-            layers[i].unsupported_regions = raw_unsupported;
         }
     }
 
@@ -1483,26 +1651,21 @@ mod tests {
         // Rectangular wall loop:
         //   bottom-left (0,0) → bottom-right (10,0) → top-right (10,2) → top-left (0,2)
         // The "top" vertices (y=2) must be strictly inside the bridge zone.
-        let wall: Path =
-            vec![(0.0, 0.0), (10.0, 0.0), (10.0, 2.0), (0.0, 2.0)].into();
+        let wall: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 2.0), (0.0, 2.0)].into();
         let mut layer = SliceLayer::new(0.4);
         layer.paths.push(wall);
         layer.path_roles.push(ExtrusionRole::OuterWall);
 
         // Bridge zone wider than the wall (-1 to 11) so the wall top vertices
         // land strictly inside (not on the boundary of) the bridge polygon.
-        let bridge: Path =
-            vec![(-1.0, 1.5), (11.0, 1.5), (11.0, 4.0), (-1.0, 4.0)].into();
+        let bridge: Path = vec![(-1.0, 1.5), (11.0, 1.5), (11.0, 4.0), (-1.0, 4.0)].into();
         let bridge_region = Paths::new(vec![bridge]);
 
         clip_walls_against_bridge_region(&mut layer, &bridge_region);
 
         // The top segment (y=2, strictly inside the bridge zone) should be
         // removed.  The remaining 3 sides form one open arc.
-        assert!(
-            !layer.paths.is_empty(),
-            "outside segment must be retained"
-        );
+        assert!(!layer.paths.is_empty(), "outside segment must be retained");
         // All resulting paths must be open arcs.
         for idx in 0..layer.paths.len() {
             assert!(

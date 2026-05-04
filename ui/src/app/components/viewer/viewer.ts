@@ -614,8 +614,8 @@ export class Viewer {
     // Auto-orient and drop to bed on first load. Applied directly through
     // the engine (not sceneCommand) so the oriented position is the baseline
     // state and Ctrl+Z does not revert back to the un-oriented pose.
-    this.sceneEngine.apply({ op: 'auto_orient', args: { id } });
-    this.sceneEngine.apply({ op: 'drop_to_floor', args: { id } });
+    this.sceneEngine.apply({ op: 'AutoOrient', args: { id } });
+    this.sceneEngine.apply({ op: 'DropToFloor', args: { id } });
     // Sync the Three.js mesh matrix to the post-orient transform so the
     // first rendered frame reflects the correct orientation.
     this.tmpMatrix.fromArray(this.sceneEngine.getMatrix(id));

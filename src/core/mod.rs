@@ -1637,9 +1637,7 @@ mod tests {
     /// `expand_to_anchor` can see the surrounding wall material.
     #[test]
     fn test_bridge_detected_when_bridge_area_is_in_wall_zone() {
-        use crate::core::surfaces::{
-            generate_top_bottom_surfaces_with_interior, SurfaceConfig,
-        };
+        use crate::core::surfaces::{generate_top_bottom_surfaces_with_interior, SurfaceConfig};
         use clipper2::Path;
 
         // Layer 0: 10×10 hull ring with a 2×2 porthole in the centre.
@@ -1667,9 +1665,13 @@ mod tests {
         // imaginary cabin inside — it deliberately does NOT overlap the bridge
         // area (which is the 2×2 porthole closure sitting in the hull-wall zone).
         let interior_layer0 = clipper2::Paths::new(vec![]);
-        let interior_layer1: clipper2::Paths = clipper2::Paths::new(vec![
-            clipper2::Path::from(vec![(4.0, 4.0), (4.0, 6.0), (6.0, 6.0), (6.0, 4.0_f64)]),
-        ]);
+        let interior_layer1: clipper2::Paths =
+            clipper2::Paths::new(vec![clipper2::Path::from(vec![
+                (4.0, 4.0),
+                (4.0, 6.0),
+                (6.0, 6.0),
+                (6.0, 4.0_f64),
+            ])]);
         let interior_regions = vec![interior_layer0, interior_layer1];
 
         generate_top_bottom_surfaces_with_interior(
@@ -1704,9 +1706,7 @@ mod tests {
     /// physical extent.
     #[test]
     fn test_no_false_bridge_for_thin_outward_lean() {
-        use crate::core::surfaces::{
-            generate_top_bottom_surfaces_with_interior, SurfaceConfig,
-        };
+        use crate::core::surfaces::{generate_top_bottom_surfaces_with_interior, SurfaceConfig};
         use clipper2::Path;
 
         // Layer 0: solid 10×10 hull.
@@ -1768,8 +1768,7 @@ mod tests {
 
         // 10×10 outer wall square.  Air region: a 10×3 strip covering the top
         // side (y ∈ [8, 11]).  Two of the four vertices sit in this strip.
-        let wall: Path =
-            vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        let wall: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
         let mut layer = SliceLayer::new(0.4);
         layer.paths.push(wall);
         layer.path_roles.push(ExtrusionRole::OuterWall);
@@ -1823,9 +1822,7 @@ mod tests {
     /// no `OverhangPerimeter` paths appear at the bridge layer.
     #[test]
     fn test_bridge_closing_layer_has_no_overhang_in_bridge_zone() {
-        use crate::core::surfaces::{
-            generate_top_bottom_surfaces_with_interior, SurfaceConfig,
-        };
+        use crate::core::surfaces::{generate_top_bottom_surfaces_with_interior, SurfaceConfig};
         use crate::core::walls::classify_overhang_perimeters;
         use clipper2::Path;
 
@@ -1885,10 +1882,178 @@ mod tests {
         // porthole bridge zone, so no OverhangPerimeter should appear on layer 1
         // at all.
         assert!(
-            !layers[1].path_roles.contains(&ExtrusionRole::OverhangPerimeter),
+            !layers[1]
+                .path_roles
+                .contains(&ExtrusionRole::OverhangPerimeter),
             "No OverhangPerimeter must exist on the bridge closing layer; \
              double-extrusion with bridge infill would result. \
              roles={:?}",
+            layers[1].path_roles
+        );
+    }
+
+    /// **Regression** — wall paths whose vertices fall inside the bridge zone
+    /// must never end up as `OverhangPerimeter` arcs that geometrically
+    /// overlap the bridge infill.
+    ///
+    /// This is the failure mode that produced double extrusion on Benchy
+    /// layer 172 (overhang perimeter + bridge printed in the same space).
+    /// The wall vertices land *inside* the bridge zone (which extends an
+    /// `bridge_anchor_mm` strip into the supported wall material), so
+    /// `clip_walls_against_bridge_region` either drops the path entirely
+    /// or keeps an open arc whose seam vertex still sits inside the bridge
+    /// zone.  If `unsupported_regions` were the *raw* unsupported area
+    /// (without subtracting `bridge_region`), that seam vertex would test
+    /// `IsInside` and `classify_overhang_perimeters` would emit a tiny
+    /// `OverhangPerimeter` arc inside the bridge — overlapping the bridge
+    /// extrusion.
+    ///
+    /// The fix subtracts `bridge_region` from `unsupported_regions` before
+    /// stashing it on the layer, so areas already handled by bridge cannot
+    /// be re-flagged as overhang.
+    #[test]
+    fn test_no_overhang_in_bridge_zone_with_walls_inside_bridge() {
+        use crate::core::surfaces::{generate_top_bottom_surfaces_with_interior, SurfaceConfig};
+        use crate::core::walls::classify_overhang_perimeters;
+        use clipper2::Path;
+
+        // Layer 0: 10×10 hull with a large 6×6 hole — the next layer must
+        // bridge across most of the cross-section.
+        let mut layer0 = SliceLayer::new(0.2);
+        let hull0: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        let hole0: Path = vec![(2.0, 2.0), (2.0, 8.0), (8.0, 8.0), (8.0, 2.0)].into();
+        layer0.paths.push(hull0);
+        layer0.paths.push(hole0);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+
+        // Layer 1: same outer hull plus an inner wall ring that sits
+        // partially inside the bridge zone (the 6×6 hole + anchor strip).
+        // The 4×4 inner ring's vertices land inside the anchor-expanded
+        // bridge_region, so they must not be re-flagged as OverhangPerimeter.
+        let mut layer1 = SliceLayer::new(0.4);
+        let hull1: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        let inner1: Path = vec![(3.0, 3.0), (3.0, 7.0), (7.0, 7.0), (7.0, 3.0)].into();
+        layer1.paths.push(hull1);
+        layer1.paths.push(inner1);
+        layer1.path_roles.push(ExtrusionRole::OuterWall);
+        layer1.path_roles.push(ExtrusionRole::InnerWall);
+
+        let mut layers = vec![layer0, layer1];
+
+        generate_top_bottom_surfaces_with_interior(
+            &mut layers,
+            &SurfaceConfig {
+                top_layers: 0,
+                bottom_layers: 1,
+                layer_height: 0.2,
+                infill_angle: 45.0,
+                nozzle_diameter_mm: 0.4,
+                bridge_flow_ratio: 0.8,
+                bridge_min_area_mm2: 0.0,
+                bridge_noise_filter_mm: 0.0,
+                bridge_anchor_mm: 0.5,
+            },
+            None,
+        );
+
+        assert!(
+            layers[1].path_roles.contains(&ExtrusionRole::Bridge),
+            "Bridge must be detected at the hole closing layer; roles={:?}",
+            layers[1].path_roles
+        );
+
+        classify_overhang_perimeters(&mut layers, 0.4);
+
+        // CRITICAL: no OverhangPerimeter on the bridge layer.  Any such arc
+        // would overlap the bridge infill and produce double extrusion.
+        assert!(
+            !layers[1]
+                .path_roles
+                .contains(&ExtrusionRole::OverhangPerimeter),
+            "OverhangPerimeter must not coexist with Bridge in the same zone; \
+             this is the Benchy layer-172 double-extrusion regression. \
+             roles={:?}",
+            layers[1].path_roles
+        );
+    }
+
+    /// **Regression** — Benchy layer 172 (rear deck overhang).
+    ///
+    /// Geometry: an overhanging strip whose width is fully consumed by wall
+    /// material (multiple Arachne walls + outer perimeters).  The unsupported
+    /// area exists, but every square millimetre of it is *physically covered*
+    /// by perimeter beads — there is no genuine void to bridge.
+    ///
+    /// On the user-reported Benchy slice this produced the failure mode:
+    ///   • Bridge filled the entire strip (X∈[-4.4,6], Y∈[-12.31,-10.4]).
+    ///   • Outer + inner perimeters were *also* printed in the same strip.
+    ///   • Bridge infill ran on top of perimeters → double extrusion.
+    ///
+    /// Fix: when `interior_regions[i]` is empty for the strip (= perimeters
+    /// fully cover the cross-section, no infill area), the bridge candidate
+    /// is clipped to nothing → no Bridge role emitted.  The perimeters in the
+    /// strip are then classified as `OverhangPerimeter` by
+    /// `classify_overhang_perimeters` and printed with bridge speed/flow.
+    ///
+    /// We provide `interior_regions` explicitly here (mirroring what
+    /// `pipeline.rs` would compute via `calculate_interior_region`) so the
+    /// test exercises the actual `clip_to_void` step.
+    #[test]
+    fn test_thin_overhang_strip_no_bridge_when_perimeters_cover_it() {
+        use crate::core::surfaces::{generate_top_bottom_surfaces_with_interior, SurfaceConfig};
+        use clipper2::Path;
+
+        // Layer 0: small support stub at the bottom-back of the strip — a
+        // 10×0.4 mm anchor at Y∈[-12.31,-11.91].  This means that on layer 1
+        // most of the strip Y∈[-11.91,-10.4] is unsupported (overhang).
+        let mut layer0 = SliceLayer::new(0.2);
+        let support: Path =
+            vec![(-5.0, -12.31), (5.0, -12.31), (5.0, -11.91), (-5.0, -11.91)].into();
+        layer0.paths.push(support);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+
+        // Layer 1: the deck strip — 10×1.91 mm, fully covered by perimeters.
+        // We model this with a single OuterWall outline; pipeline-equivalent
+        // wisdom is that 1.91 mm is too thin for any infill area, so
+        // interior_regions[1] is empty.
+        let mut layer1 = SliceLayer::new(0.2);
+        let deck: Path = vec![(-5.0, -12.31), (5.0, -12.31), (5.0, -10.4), (-5.0, -10.4)].into();
+        layer1.paths.push(deck);
+        layer1.path_roles.push(ExtrusionRole::OuterWall);
+
+        let mut layers = vec![layer0, layer1];
+
+        // Empty interior_regions[1] models "no infill area on this layer"
+        // (perimeters consume the entire cross-section).  This is what
+        // `calculate_interior_region` produces when the wall band is wider
+        // than the cross-section.
+        let interior_regions = vec![Paths::new(vec![]), Paths::new(vec![])];
+
+        generate_top_bottom_surfaces_with_interior(
+            &mut layers,
+            &SurfaceConfig {
+                top_layers: 0,
+                bottom_layers: 1,
+                layer_height: 0.2,
+                infill_angle: 45.0,
+                nozzle_diameter_mm: 0.4,
+                bridge_flow_ratio: 0.8,
+                bridge_min_area_mm2: 0.0,
+                bridge_noise_filter_mm: 0.0,
+                bridge_anchor_mm: 0.5,
+            },
+            Some(&interior_regions),
+        );
+
+        // The whole point: NO Bridge must be generated when the strip has no
+        // infill area.  Perimeters alone cover it; bridge infill would
+        // double-extrude on top.
+        assert!(
+            !layers[1].path_roles.contains(&ExtrusionRole::Bridge),
+            "Bridge must NOT be generated for an overhang strip whose entire \
+             cross-section is consumed by perimeters (interior_regions empty). \
+             This is the Benchy layer-172 deck-strip regression. roles={:?}",
             layers[1].path_roles
         );
     }
