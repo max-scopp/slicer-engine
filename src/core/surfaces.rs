@@ -56,8 +56,6 @@ const SOLID_INFILL_EXTRUSION_WIDTH_MULTIPLIER: f64 = 1.2;
 /// void regions; values smaller than 1.5 may leave convex corners unchained.
 const SERPENTINE_CONNECT_THRESHOLD: f64 = 2.0;
 
-
-
 /// Add solid infill for a computed surface `region` to a layer.
 ///
 /// Generates a rectilinear infill pattern covering only the provided `region`
@@ -197,8 +195,21 @@ fn morphological_open(paths: Paths, radius_mm: f64) -> Paths {
 /// detection to avoid placing bridge infill on top of existing walls
 /// (Benchy rear-deck overhang regression).
 fn compute_wall_bead_footprint(layer: &SliceLayer, nozzle_diameter_mm: f64) -> Paths {
-    let mut acc: Paths = Paths::new(vec![]);
+    // Group wall paths by (is_open, radius-bucket) so we can run **one**
+    // `inflate` call per group instead of one per path.  Clipper2's `inflate`
+    // takes a `Paths` and offsets every contained sub-path together — there
+    // is no per-call cost for adding more sub-paths beyond the boolean ops
+    // they trigger internally.  Doing N separate inflate+union pairs (the
+    // previous approach) was O(N²) on the union step and dominated the whole
+    // pipeline (3 s of a 4 s benchy).
+    //
+    // Radius is quantised to micrometres so near-equal Arachne widths bucket
+    // together; in practice almost every closed wall lands in the same
+    // bucket (= half the nozzle diameter) so the typical group count is 1–2.
+    use std::collections::HashMap;
+
     let default_radius = nozzle_diameter_mm * 0.5;
+    let mut buckets: HashMap<(bool, i32), Vec<clipper2::Path>> = HashMap::new();
 
     for (i, path) in layer.paths.iter().enumerate() {
         let role = layer.role_for_path(i);
@@ -221,14 +232,37 @@ fn compute_wall_bead_footprint(layer: &SliceLayer, nozzle_diameter_mm: f64) -> P
             continue;
         }
 
-        let end_type = if layer.is_path_open(i) {
+        let is_open = layer.is_path_open(i);
+        // Quantise to micrometres (× 1000) so equal-width beads share a bucket.
+        let radius_key = (radius * 1000.0).round() as i32;
+        buckets
+            .entry((is_open, radius_key))
+            .or_default()
+            .push(path.clone());
+    }
+
+    if buckets.is_empty() {
+        return Paths::new(vec![]);
+    }
+
+    // Inflate each bucket as a single batch, then union the (small) set of
+    // bucket results.  For typical Benchy-class geometry this is one or two
+    // inflate calls and zero or one union call — vs hundreds of each before.
+    let mut acc: Paths = Paths::new(vec![]);
+    for ((is_open, radius_key), paths_vec) in buckets {
+        let radius = (radius_key as f64) / 1000.0;
+        let end_type = if is_open {
             EndType::Round
         } else {
             EndType::Joined
         };
-
-        let single = Paths::new(vec![path.clone()]);
-        let inflated = clipper2::inflate(single, radius, JoinType::Round, end_type, 2.0);
+        let inflated = clipper2::inflate(
+            Paths::new(paths_vec),
+            radius,
+            JoinType::Round,
+            end_type,
+            2.0,
+        );
         if inflated.is_empty() {
             continue;
         }
@@ -973,8 +1007,27 @@ pub fn generate_top_bottom_surfaces_with_interior(
     // Snapshot the perimeter contours of every layer *before* we begin adding
     // infill paths. Surface detection must operate on sliced geometry only;
     // comparing against previously added infill would give wrong results.
+    //
+    // Both snapshots are read-only over their layer and are run in parallel
+    // on native targets — `compute_wall_bead_footprint` in particular spends
+    // the bulk of its time inside Clipper2 inflate/union calls, so per-layer
+    // parallelism gives a near-linear speedup on multi-core hosts.
     #[cfg(not(target_arch = "wasm32"))]
     let t_snap = Instant::now();
+    #[cfg(not(target_arch = "wasm32"))]
+    let (perimeters, wall_footprints): (Vec<Paths>, Vec<Paths>) = {
+        use rayon::prelude::*;
+        layers
+            .par_iter()
+            .map(|layer| {
+                (
+                    perimeter_paths_of(layer),
+                    compute_wall_bead_footprint(layer, nozzle_diameter_mm),
+                )
+            })
+            .unzip()
+    };
+    #[cfg(target_arch = "wasm32")]
     let perimeters: Vec<Paths> = layers.iter().map(perimeter_paths_of).collect();
 
     // Snapshot the **physical bead footprint** of every wall path on every
@@ -988,6 +1041,7 @@ pub fn generate_top_bottom_surfaces_with_interior(
     // inner beads inside the interior region for thin features (Benchy rear
     // deck, lips, hull flares), so the *nominal* infill void may still be
     // covered by walls that the interior calculation didn't account for.
+    #[cfg(target_arch = "wasm32")]
     let wall_footprints: Vec<Paths> = layers
         .iter()
         .map(|layer| compute_wall_bead_footprint(layer, nozzle_diameter_mm))
