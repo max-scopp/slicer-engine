@@ -611,6 +611,16 @@ export class Viewer {
     // registry so the existing raycast / drag pointer plumbing recognises
     // it. The drag handlers translate it back to a bigint.
     this.scene.registerSelectable(String(id), mesh);
+    // Auto-orient and drop to bed on first load. Applied directly through
+    // the engine (not sceneCommand) so the oriented position is the baseline
+    // state and Ctrl+Z does not revert back to the un-oriented pose.
+    this.sceneEngine.apply({ op: 'auto_orient', args: { id } });
+    this.sceneEngine.apply({ op: 'drop_to_floor', args: { id } });
+    // Sync the Three.js mesh matrix to the post-orient transform so the
+    // first rendered frame reflects the correct orientation.
+    this.tmpMatrix.fromArray(this.sceneEngine.getMatrix(id));
+    mesh.matrix.copy(this.tmpMatrix);
+    mesh.matrixWorldNeedsUpdate = true;
     this.status.set('ready');
     this.loadComplete.emit({ mode: 'model', segments: 0 });
   }

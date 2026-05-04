@@ -570,6 +570,14 @@ async fn dto_to_op(
             id: crate::scene::ObjectId(id),
             face_index,
         }),
+        SceneOpDto::AutoOrient { id, options } => Ok(SceneOp::AutoOrient {
+            id: crate::scene::ObjectId(id),
+            options,
+        }),
+        SceneOpDto::ArrangeOnBed { ids, options } => Ok(SceneOp::ArrangeOnBed {
+            ids: ids.into_iter().map(crate::scene::ObjectId).collect(),
+            options,
+        }),
     }
 }
 

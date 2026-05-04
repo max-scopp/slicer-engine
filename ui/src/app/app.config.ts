@@ -1,5 +1,10 @@
 import { provideHttpClient } from '@angular/common/http';
-import { ApplicationConfig, provideBrowserGlobalErrorListeners } from '@angular/core';
+import {
+  ApplicationConfig,
+  inject,
+  provideAppInitializer,
+  provideBrowserGlobalErrorListeners,
+} from '@angular/core';
 import { provideRouter, withViewTransitions } from '@angular/router';
 import { provideMarkdown } from 'ngx-markdown';
 import { APP_ROUTES } from './app-routes';
@@ -13,9 +18,11 @@ export const appConfig: ApplicationConfig = {
     provideRouter(APP_ROUTES, withViewTransitions()),
     provideHttpClient(),
     provideMarkdown(),
-    KeyboardShortcuts,
-    UploadGuard,
-    // Eagerly instantiate so body modality classes are stamped from first interaction.
-    UserInputModality,
+    provideAppInitializer(() => {
+      inject(KeyboardShortcuts);
+      inject(UserInputModality);
+      inject(UploadGuard);
+      inject(UserInputModality);
+    }),
   ],
 };

@@ -87,6 +87,16 @@ pub enum SceneOpJs {
         id: u64,
         face_index: usize,
     },
+    AutoOrient {
+        id: u64,
+        #[serde(default)]
+        options: crate::orient::AutoOrientOptions,
+    },
+    ArrangeOnBed {
+        ids: Vec<u64>,
+        #[serde(default)]
+        options: crate::orient::ArrangeOptions,
+    },
 }
 
 /// JS-friendly snapshot of one scene object.
@@ -516,6 +526,14 @@ fn js_to_op(op: SceneOpJs) -> SceneOp {
         SceneOpJs::PlaceFaceOnFloor { id, face_index } => SceneOp::PlaceFaceOnFloor {
             id: ObjectId(id),
             face_index,
+        },
+        SceneOpJs::AutoOrient { id, options } => SceneOp::AutoOrient {
+            id: ObjectId(id),
+            options,
+        },
+        SceneOpJs::ArrangeOnBed { ids, options } => SceneOp::ArrangeOnBed {
+            ids: ids.into_iter().map(ObjectId).collect(),
+            options,
         },
     }
 }

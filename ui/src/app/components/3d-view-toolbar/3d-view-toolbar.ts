@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
 import { NexusSlicingShell } from '../../nexus/layout/slicing-shell/slicing-shell';
 import { GcodePreview } from '../../services/gcode-preview';
+import { SceneCommand } from '../../services/scene-command/scene-command';
 import { Slicer } from '../../services/slicer';
 import { ViewerControl } from '../../services/viewer-control';
 import { Icon } from '../../shared/icon/icon';
@@ -20,6 +21,7 @@ export class ThreeDViewToolbar {
   private readonly viewerControl = inject(ViewerControl);
   private readonly slicer = inject(Slicer);
   private readonly gcodePreview = inject(GcodePreview);
+  private readonly sceneCommand = inject(SceneCommand);
   protected readonly shell = inject(NexusSlicingShell);
 
   readonly selectedView = this.viewerControl.view;
@@ -30,6 +32,11 @@ export class ThreeDViewToolbar {
 
   toggleGravity(): void {
     this.gravityEnabled.update((v) => !v);
+  }
+
+  /** Auto-orient all objects in the scene. */
+  autoOrient(): void {
+    this.sceneCommand.autoOrient();
   }
 
   /** True once a slice result is available (either loading or fully parsed). */

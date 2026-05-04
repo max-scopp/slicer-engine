@@ -62,11 +62,39 @@ export type SceneOp =
         scale: [number, number, number];
       };
     }
-  | { op: 'Rotate'; args: { id: bigint; axis: [number, number, number]; degrees: number } }
-  | { op: 'Scale'; args: { id: bigint; factors: [number, number, number] } }
-  | { op: 'CenterOnBed'; args: { id: bigint } }
-  | { op: 'DropToFloor'; args: { id: bigint } }
-  | { op: 'PlaceFaceOnFloor'; args: { id: bigint; face_index: number } };
+  | { op: 'rotate'; args: { id: bigint; axis: [number, number, number]; degrees: number } }
+  | { op: 'scale'; args: { id: bigint; factors: [number, number, number] } }
+  | { op: 'center_on_bed'; args: { id: bigint } }
+  | { op: 'drop_to_floor'; args: { id: bigint } }
+  | { op: 'place_face_on_floor'; args: { id: bigint; face_index: number } }
+  | {
+      op: 'auto_orient';
+      args: {
+        id: bigint;
+        options?: {
+          allow_rotations?: boolean;
+          preferred_z_rotation_deg?: number;
+          overhang_threshold_deg?: number;
+        };
+      };
+    }
+  | {
+      op: 'arrange_on_bed';
+      args: {
+        ids: bigint[];
+        options?: {
+          /** Gap between objects in mm (default 2). */
+          spacing_mm?: number;
+          /** Auto-orient each object before packing (default true). */
+          auto_orient?: boolean;
+          orient_options?: {
+            allow_rotations?: boolean;
+            preferred_z_rotation_deg?: number;
+            overhang_threshold_deg?: number;
+          };
+        };
+      };
+    };
 
 const DEFAULT_BED: SceneBedSnapshot = {
   width: 220,
@@ -188,6 +216,49 @@ export class SceneEngine {
     stop(op.args as unknown as Record<string, unknown>);
     this.publishOpStats(label);
     this.refreshSnapshot();
+  }
+
+  /**
+   * Convenience method: auto-orient an object by id.
+   *
+   * Equivalent to `apply({ op: 'auto_orient', args: { id, options } })`.
+   */
+  autoOrientObject(
+    id: bigint,
+    options?: {
+      allow_rotations?: boolean;
+      preferred_z_rotation_deg?: number;
+      overhang_threshold_deg?: number;
+    },
+  ): void {
+    this.apply({ op: 'auto_orient', args: { id, options } });
+  }
+
+  /**
+   * Convenience method: auto-orient and arrange multiple objects on the bed.
+   *
+   * Each object is independently oriented to minimise overhangs (when
+   * `options.auto_orient` is `true`), then the group is packed onto the bed
+   * using a shelf-first-fit algorithm and centered.
+   *
+   * Equivalent to:
+   * ```ts
+   * apply({ op: 'arrange_on_bed', args: { ids, options } });
+   * ```
+   */
+  arrangeOnBed(
+    ids: bigint[],
+    options?: {
+      spacing_mm?: number;
+      auto_orient?: boolean;
+      orient_options?: {
+        allow_rotations?: boolean;
+        preferred_z_rotation_deg?: number;
+        overhang_threshold_deg?: number;
+      };
+    },
+  ): void {
+    this.apply({ op: 'arrange_on_bed', args: { ids, options } });
   }
 
   /** Apply a batch of ops as a single snapshot update. */

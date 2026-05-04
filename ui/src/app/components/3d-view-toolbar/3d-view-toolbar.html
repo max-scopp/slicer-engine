@@ -73,6 +73,15 @@
 <button
   class="reset-view-button"
   type="button"
+  [tooltip]="'Auto-orient — rotate all objects to minimise overhangs (A)'"
+  (click)="autoOrient()"
+>
+  <nexus-icon name="auto-fix"></nexus-icon>
+</button>
+
+<button
+  class="reset-view-button"
+  type="button"
   [tooltip]="shell.editorPanelVisible() ? 'Hide operation pipeline' : 'Show operation pipeline'"
   [class.active]="shell.editorPanelVisible()"
   (click)="shell.toggleEditorPanel()"
