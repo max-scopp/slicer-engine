@@ -273,6 +273,71 @@ impl FanConfig {
     }
 }
 
+/// Where to place the start/end point ("seam") of each closed perimeter loop.
+///
+/// Closed loops are cyclic and may begin at any vertex; the chosen vertex
+/// becomes the visible blob/seam where extrusion starts and ends.  Different
+/// policies trade off visual quality against travel distance.
+///
+/// Mirrors the seam options offered by PrusaSlicer / OrcaSlicer / Bambu Studio
+/// so users can transfer their preferences.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SeamPosition {
+    /// Pick the loop vertex closest to the nozzle's current position.
+    ///
+    /// Minimises travel and therefore print time, but seams scatter randomly
+    /// across the surface.  Good for prototypes and infill-heavy parts.
+    #[default]
+    Nearest,
+    /// Place the seam at the vertex with the largest Y coordinate (rear of
+    /// the build plate).  Deterministic per-loop, gives a single visible
+    /// seam line on the back of the model — a common default for display
+    /// pieces like the Benchy.
+    Rear,
+    /// Place the seam at the vertex closest to a fixed XY direction
+    /// (default: rear-aligned).  Like `Rear` but consistent across layers
+    /// even when the loop's bounding box shifts.
+    Aligned,
+    /// Place the seam at the vertex with the sharpest convex corner.
+    ///
+    /// Hides the blob in a corner where it is geometrically expected and
+    /// least visible.  Falls back to `Nearest` for smooth (cornerless) loops.
+    SharpestCorner,
+    /// Pick a different random vertex for every loop.
+    ///
+    /// Spreads seam blobs evenly so no single line is visible — useful for
+    /// organic or cylindrical parts where a single seam line would stand
+    /// out.  Deterministic per-loop given a seed (uses path geometry hash).
+    Random,
+}
+
+impl SeamPosition {
+    /// Parse a policy name from a CLI argument or config string
+    /// (case-insensitive, hyphens and underscores both accepted).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_lowercase().replace('-', "_").as_str() {
+            "nearest" => Some(Self::Nearest),
+            "rear" => Some(Self::Rear),
+            "aligned" => Some(Self::Aligned),
+            "sharpest_corner" | "sharp_corner" | "sharp" | "corner" => Some(Self::SharpestCorner),
+            "random" => Some(Self::Random),
+            _ => None,
+        }
+    }
+
+    /// Canonical name for emitting back into config / G-code comments.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Nearest => "nearest",
+            Self::Rear => "rear",
+            Self::Aligned => "aligned",
+            Self::SharpestCorner => "sharpest_corner",
+            Self::Random => "random",
+        }
+    }
+}
+
 /// Parameters that control how a model is sliced and printed.
 ///
 /// All dimensional values are in millimeters; speeds in mm/s;
@@ -343,6 +408,19 @@ are widened proportionally to fill the gap.
     #[serde(default = "SlicingParams::default_wall_distribution_count")]
     pub wall_distribution_count: usize,
 
+    #[schemars(description = "Where to place the seam (start/end point) of each closed perimeter loop.
+
+Supported values:
+- `nearest` — closest vertex to current nozzle position (fastest, scattered seams).
+- `rear` — vertex with maximum Y (single seam line on the back of the model).
+- `aligned` — vertex closest to a fixed direction; consistent across layers.
+- `sharpest_corner` — vertex with the sharpest convex angle (hidden in geometry).
+- `random` — different random vertex per loop (no visible seam line).
+
+**Default:** `nearest`.", extend("x-group" = "Walls"))]
+    #[serde(default = "SlicingParams::default_seam_position")]
+    pub seam_position: SeamPosition,
+
     #[schemars(description = "Infill density as a fraction (0.0–1.0).
 
 - `0.0` = completely hollow
@@ -367,11 +445,169 @@ Alternating layers rotate by +90° on top of this base angle to create a crossin
     #[serde(default = "SlicingParams::default_infill_base_angle")]
     pub infill_base_angle: f64,
 
-    #[schemars(description = "Print speed in mm/s.
+    #[schemars(description = "Default print speed in mm/s used as a fallback.
 
 Slower speeds improve layer adhesion and surface quality; faster speeds reduce print time.
+Role-specific speeds (perimeter_speed, infill_speed, etc.) take precedence when set to a
+positive value.
 **Typical:** 40–100 mm/s.", extend("x-group" = "Speed"))]
     pub print_speed: f64,
+
+    #[schemars(
+        description = "Speed for outer and inner perimeter (wall) extrusions in mm/s.
+
+Lower speeds improve surface quality and layer adhesion on perimeters.
+Set to `0` to fall back to `print_speed`.
+**Typical:** 40–50 mm/s.",
+        extend("x-group" = "Speed")
+    )]
+    #[serde(default = "SlicingParams::default_perimeter_speed")]
+    pub perimeter_speed: f64,
+
+    #[schemars(
+        description = "Speed for sparse infill extrusions in mm/s.
+
+Higher speeds are acceptable for infill since it is not visible.
+Set to `0` to fall back to `print_speed`.
+**Typical:** 60–80 mm/s.",
+        extend("x-group" = "Speed")
+    )]
+    #[serde(default = "SlicingParams::default_infill_speed")]
+    pub infill_speed: f64,
+
+    #[schemars(
+        description = "Speed for bridge extrusions spanning unsupported gaps in mm/s.
+
+Slower speeds with high fan cooling reduce sagging on bridges.
+Set to `0` to fall back to `print_speed`.
+**Typical:** 20–30 mm/s.",
+        extend("x-group" = "Speed")
+    )]
+    #[serde(default = "SlicingParams::default_bridge_speed")]
+    pub bridge_speed: f64,
+
+    #[schemars(
+        description = "Flow ratio for bridge extrusions (0.0–1.5).
+
+Reducing the flow rate for bridges improves stiffness by letting the strand
+cool and tension in mid-air before the next line lands on it.  Values below
+1.0 under-extrude intentionally; the reduced bead width stretches across the
+gap with less sag.
+**Default:** 0.8 (80% of normal flow).",
+        extend("x-group" = "Speed")
+    )]
+    #[serde(default = "SlicingParams::default_bridge_flow_ratio")]
+    pub bridge_flow_ratio: f64,
+
+    #[schemars(
+        description = "Minimum area in mm² for an unsupported region to be classified as a bridge.
+
+Tiny slivers of unsupported area (caused by sub-millimetre layer-to-layer wall
+jitter on features like embossed text or fine ridges) below this threshold are
+classified as ordinary `BottomSurface` solid infill instead of `Bridge`.  This
+matches OrcaSlicer's `min_bridge_area` filter and prevents stippling of the
+preview with one-line bridge fragments.
+**Default:** 0.5 mm² (≈ a 0.7 × 0.7 mm sliver). Set to `0.0` to disable.",
+        extend("x-group" = "Quality")
+    )]
+    #[serde(default = "SlicingParams::default_bridge_min_area_mm2")]
+    pub bridge_min_area_mm2: f64,
+
+    #[schemars(
+        description = "Morphological-opening radius in mm applied to bridge regions.
+
+The unsupported area is eroded inward by this amount and then dilated back —
+removing thin slivers and filament-thin connecting strands that arise from
+sub-pixel layer-to-layer geometry differences.  Cleans up the noisy bridges
+that show up around fine surface features (e.g. Benchy's embossed name).
+**Default:** 0.05 mm (just enough to wipe sub-pixel rounding from
+Clipper2's Centi quantisation; small enough to preserve real
+0.4 mm-wide bridge frames around windows).  Set to `0.0` to disable.",
+        extend("x-group" = "Quality")
+    )]
+    #[serde(default = "SlicingParams::default_bridge_noise_filter_mm")]
+    pub bridge_noise_filter_mm: f64,
+
+    #[schemars(
+        description = "Anchor expansion length in mm at each end of every bridge.
+
+After detecting the unsupported region, it is dilated by this amount and
+re-clipped to the layer footprint so each bridge strand bites into the
+adjacent supported solid material.  Without this the bridge ends mid-air at
+the wall edge instead of being anchored, causing droopy strands.  Matches
+PrusaSlicer / OrcaSlicer `bridge_anchor` behaviour.
+**Default:** 0.5 mm.  Larger values cause bridges around small features
+(text, embossed details) to expand past the first inner wall and look
+visually wrong, even though they print fine.  Set to `0.0` to disable
+anchoring.",
+        extend("x-group" = "Quality")
+    )]
+    #[serde(default = "SlicingParams::default_bridge_anchor_mm")]
+    pub bridge_anchor_mm: f64,
+
+    #[schemars(
+        description = "Speed for top and bottom solid surface infill in mm/s.
+
+Slightly slower than infill to improve surface finish.
+Set to `0` to fall back to `print_speed`.
+**Typical:** 40–50 mm/s.",
+        extend("x-group" = "Speed")
+    )]
+    #[serde(default = "SlicingParams::default_top_surface_speed")]
+    pub top_surface_speed: f64,
+
+    #[schemars(
+        description = "Speed for all extrusions on the first layer in mm/s.
+
+Slower first-layer speeds improve bed adhesion.
+Set to `0` to fall back to `print_speed`.
+**Typical:** 20–30 mm/s.",
+        extend("x-group" = "Speed")
+    )]
+    #[serde(default = "SlicingParams::default_first_layer_speed")]
+    pub first_layer_speed: f64,
+
+    #[schemars(
+        description = "Part-cooling fan speed for normal extrusions as a fraction (0.0–1.0).
+
+- `0.0` = fan off
+- `1.0` = full speed
+**Typical:** 1.0 (100%).",
+        extend("x-group" = "Cooling")
+    )]
+    #[serde(default = "SlicingParams::default_fan_speed")]
+    pub fan_speed: f64,
+
+    #[schemars(
+        description = "Part-cooling fan speed when printing bridge extrusions as a fraction (0.0–1.0).
+
+High fan speeds cool bridge material rapidly, reducing sag.
+**Typical:** 1.0 (100%).",
+        extend("x-group" = "Cooling")
+    )]
+    #[serde(default = "SlicingParams::default_bridge_fan_speed")]
+    pub bridge_fan_speed: f64,
+
+    #[schemars(
+        description = "Part-cooling fan speed on the first layer as a fraction (0.0–1.0).
+
+Typically disabled on the first layer to improve bed adhesion.
+**Typical:** 0.0 (off).",
+        extend("x-group" = "Cooling")
+    )]
+    #[serde(default = "SlicingParams::default_first_layer_fan_speed")]
+    pub first_layer_fan_speed: f64,
+
+    #[schemars(
+        description = "Coasting distance in mm: stop extruding this far before the end of a perimeter.
+
+Reduces nozzle pressure at the seam, preventing blobs and improving surface quality.
+Set to `0.0` to disable.
+**Typical:** 0.1–0.3 mm.",
+        extend("x-group" = "Speed")
+    )]
+    #[serde(default = "SlicingParams::default_coasting_distance_mm")]
+    pub coasting_distance_mm: f64,
 
     #[schemars(description = "Nozzle temperature in °C.
 
@@ -506,6 +742,22 @@ where the infill pattern shows through the outer wall.
     pub infill_perimeter_gap_mm: f64,
 
     #[schemars(
+        description = "Minimum solid infill line length in mm.
+
+Scan-line segments shorter than this threshold are discarded instead of being
+printed. Tiny slivers at curved or diagonal surface boundaries waste printhead
+motion without meaningfully improving coverage — adjacent lines overlap to fill
+the gap naturally.
+
+Set to the nozzle diameter for best results (e.g. `0.4` for a 0.4 mm nozzle).
+Set to `0.0` to disable the filter entirely.
+**Default:** 0.4 mm (one standard nozzle diameter).",
+        extend("x-group" = "Surfaces")
+    )]
+    #[serde(default = "SlicingParams::default_min_infill_extrusion_mm")]
+    pub min_infill_extrusion_mm: f64,
+
+    #[schemars(
         description = "Maximum perpendicular deviation (mm) for path simplification (Ramer–Douglas–Peucker).
 
 Reduces the number of G-code points without visibly affecting print quality.
@@ -564,10 +816,24 @@ impl Default for SlicingParams {
             wall_transition_threshold: Self::default_wall_transition_threshold(),
             wall_transition_length: Self::default_wall_transition_length(),
             wall_distribution_count: Self::default_wall_distribution_count(),
+            seam_position: Self::default_seam_position(),
             infill_density: 0.2,
             infill_pattern: Self::default_infill_pattern(),
             infill_base_angle: Self::default_infill_base_angle(),
             print_speed: 60.0,
+            perimeter_speed: Self::default_perimeter_speed(),
+            infill_speed: Self::default_infill_speed(),
+            bridge_speed: Self::default_bridge_speed(),
+            bridge_flow_ratio: Self::default_bridge_flow_ratio(),
+            bridge_min_area_mm2: Self::default_bridge_min_area_mm2(),
+            bridge_noise_filter_mm: Self::default_bridge_noise_filter_mm(),
+            bridge_anchor_mm: Self::default_bridge_anchor_mm(),
+            top_surface_speed: Self::default_top_surface_speed(),
+            first_layer_speed: Self::default_first_layer_speed(),
+            fan_speed: Self::default_fan_speed(),
+            bridge_fan_speed: Self::default_bridge_fan_speed(),
+            first_layer_fan_speed: Self::default_first_layer_fan_speed(),
+            coasting_distance_mm: Self::default_coasting_distance_mm(),
             nozzle_temp: 210.0,
             bed_temp: 60.0,
             top_layers: Self::default_top_layers(),
@@ -583,6 +849,7 @@ impl Default for SlicingParams {
             support_threshold_angle: Self::default_support_threshold_angle(),
             infill_overlap_percent: Self::default_infill_overlap_percent(),
             infill_perimeter_gap_mm: Self::default_infill_perimeter_gap_mm(),
+            min_infill_extrusion_mm: Self::default_min_infill_extrusion_mm(),
             path_tolerance: Self::default_path_tolerance(),
             gcode_flavor: Self::default_gcode_flavor(),
             fan_configs: Self::default_fan_configs(),
@@ -616,12 +883,76 @@ impl SlicingParams {
         1
     }
 
+    fn default_seam_position() -> SeamPosition {
+        SeamPosition::Nearest
+    }
+
     fn default_infill_pattern() -> InfillPattern {
         InfillPattern::Rectilinear
     }
 
     fn default_infill_base_angle() -> f64 {
         45.0
+    }
+
+    fn default_perimeter_speed() -> f64 {
+        45.0
+    }
+
+    fn default_infill_speed() -> f64 {
+        70.0
+    }
+
+    fn default_bridge_speed() -> f64 {
+        25.0
+    }
+
+    fn default_bridge_flow_ratio() -> f64 {
+        0.8
+    }
+
+    fn default_bridge_min_area_mm2() -> f64 {
+        0.5
+    }
+
+    fn default_bridge_noise_filter_mm() -> f64 {
+        0.05
+    }
+
+    fn default_bridge_anchor_mm() -> f64 {
+        // Anchor depth = 1 × nozzle diameter.  This inflates the bridge void
+        // outward until the bridge lines start at the wall-bead inner edge
+        // (which sits nozzle_diameter/2 from the void boundary, + another
+        // nozzle_diameter/2 inside = nozzle_diameter total).  Smaller values
+        // produce strands that barely touch the wall and sag; larger values
+        // overlap the wall extrusions without the complementary wall-clipping
+        // step.  0.4 mm is the typical nozzle diameter; callers may override
+        // via `bridge_anchor_mm` in `SlicingParams`.
+        0.4
+    }
+
+    fn default_top_surface_speed() -> f64 {
+        40.0
+    }
+
+    fn default_first_layer_speed() -> f64 {
+        25.0
+    }
+
+    fn default_fan_speed() -> f64 {
+        1.0
+    }
+
+    fn default_bridge_fan_speed() -> f64 {
+        1.0
+    }
+
+    fn default_first_layer_fan_speed() -> f64 {
+        0.0
+    }
+
+    fn default_coasting_distance_mm() -> f64 {
+        0.2
     }
 
     fn default_top_layers() -> usize {
@@ -674,6 +1005,10 @@ impl SlicingParams {
 
     fn default_infill_perimeter_gap_mm() -> f64 {
         0.1 // 0.1 mm gap between wall and sparse infill
+    }
+
+    fn default_min_infill_extrusion_mm() -> f64 {
+        0.4 // one nozzle diameter — matches standard 0.4 mm nozzle default
     }
 
     fn default_path_tolerance() -> f64 {

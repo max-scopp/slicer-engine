@@ -59,8 +59,7 @@ export class SceneCommand {
    * undo reverts all of them.
    */
   autoOrient(ids?: bigint[]): void {
-    const targets =
-      ids && ids.length > 0 ? ids : this.engine.objects().map((o) => o.id);
+    const targets = ids && ids.length > 0 ? ids : this.engine.objects().map((o) => o.id);
 
     if (targets.length === 0) {
       return;
@@ -71,7 +70,7 @@ export class SceneCommand {
     }
 
     for (const id of targets) {
-      this.engine.apply({ op: 'auto_orient', args: { id } });
+      this.engine.apply({ op: 'AutoOrient', args: { id } });
     }
 
     this.flush();

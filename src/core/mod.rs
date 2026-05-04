@@ -11,7 +11,8 @@ pub use infill::add_infill_to_layers;
 pub use pipeline::process_mesh;
 pub use slicer::slice_mesh;
 pub use surfaces::{
-    generate_top_bottom_surfaces, generate_top_bottom_surfaces_with_interior, SurfaceSubTimings,
+    generate_top_bottom_surfaces, generate_top_bottom_surfaces_with_interior, SurfaceConfig,
+    SurfaceSubTimings,
 };
 pub use types::{ExtrusionRole, SliceLayer};
 
@@ -679,7 +680,7 @@ mod tests {
         let mut paths = Paths::new(vec![]);
         paths.push(square);
 
-        let infill = generate_rectilinear_infill(&paths, 1.0, 0.0);
+        let infill = generate_rectilinear_infill(&paths, 1.0, 0.0, 0.0);
 
         assert!(!infill.is_empty(), "Expected infill lines to be generated");
 
@@ -706,7 +707,7 @@ mod tests {
     fn test_add_solid_infill_for_region_empty_region() {
         let mut layer = SliceLayer::new(1.0);
         let empty: Paths = Paths::new(vec![]);
-        add_solid_infill_for_region(&mut layer, &empty, ExtrusionRole::TopSurface, 0.2, 45.0);
+        add_solid_infill_for_region(&mut layer, &empty, ExtrusionRole::TopSurface, 0.2, 45.0, 0.0);
         // Should handle empty region gracefully – no paths added
         assert!(layer.paths.is_empty());
     }
@@ -821,7 +822,7 @@ mod tests {
         let mut paths = Paths::new(vec![]);
         paths.push(square);
 
-        let infill = generate_rectilinear_infill(&paths, 1.0, 45.0);
+        let infill = generate_rectilinear_infill(&paths, 1.0, 45.0, 0.0);
 
         // Should generate some infill lines
         assert!(!infill.is_empty(), "Expected infill lines to be generated");
@@ -830,7 +831,7 @@ mod tests {
     #[test]
     fn test_generate_rectilinear_infill_empty_contours() {
         let paths = Paths::new(vec![]);
-        let infill = generate_rectilinear_infill(&paths, 1.0, 45.0);
+        let infill = generate_rectilinear_infill(&paths, 1.0, 45.0, 0.0);
         assert!(infill.is_empty());
     }
 
@@ -840,7 +841,7 @@ mod tests {
         let mut paths = Paths::new(vec![]);
         paths.push(square);
 
-        let infill = generate_rectilinear_infill(&paths, 0.0, 45.0);
+        let infill = generate_rectilinear_infill(&paths, 0.0, 45.0, 0.0);
         assert!(infill.is_empty());
     }
 
@@ -1069,6 +1070,182 @@ mod tests {
         );
     }
 
+    // ── Bridge detection ──────────────────────────────────────────────────────
+
+    /// Test that unsupported bottom areas are classified as Bridge role.
+    ///
+    /// Layout (two layers):
+    /// - Layer 0: thin 1×10 strip on the left side
+    /// - Layer 1: full 10×10 square
+    ///
+    /// The 9mm region of layer 1 not covered by layer 0 has no direct support
+    /// from the previous layer and should be labelled Bridge.
+    #[test]
+    fn test_bridge_detection_assigns_bridge_role_to_unsupported_area() {
+        use clipper2::Path;
+
+        // Layer 0: thin 1×10 strip on the left side
+        let mut layer0 = SliceLayer::new(0.2);
+        let strip: Path = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 10.0), (0.0, 10.0)].into();
+        layer0.paths.push(strip);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+
+        // Layer 1: full 10×10 square
+        let mut layer1 = SliceLayer::new(0.4);
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer1.paths.push(square);
+        layer1.path_roles.push(ExtrusionRole::OuterWall);
+
+        let mut layers = vec![layer0, layer1];
+        // Use 1 bottom layer to trigger surface detection
+        generate_top_bottom_surfaces(&mut layers, 0, 1, 0.2, 45.0);
+
+        let layer1 = &layers[1];
+        let has_bridge = layer1.path_roles.contains(&ExtrusionRole::Bridge);
+
+        assert!(
+            has_bridge,
+            "unsupported area of layer 1 should be labelled Bridge: roles={:?}",
+            layer1.path_roles
+        );
+        // No BottomSurface on layer 1: the 1mm overlap is fully covered (not a surface)
+        // and the rest is Bridge.
+        let has_bottom_surface = layer1.path_roles.contains(&ExtrusionRole::BottomSurface);
+        assert!(
+            !has_bottom_surface,
+            "no BottomSurface expected when all unsupported area is Bridge: roles={:?}",
+            layer1.path_roles
+        );
+    }
+
+    /// Test that when the entire bottom surface is fully covered by the previous
+    /// layer, no Bridge role is generated (only BottomSurface for the step-down
+    /// portion from multi-layer detection, or no surface at all).
+    ///
+    /// Layout: two identical 10×10 layers.  With bottom_layers=1, the intersection
+    /// covers the entire area so region = empty → no surface infill at all.
+    #[test]
+    fn test_bridge_detection_no_bridge_when_fully_covered() {
+        use clipper2::Path;
+
+        // Both layers are identical 10×10 squares.
+        let square_path = |z: f64| {
+            let mut layer = SliceLayer::new(z);
+            let sq: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+            layer.paths.push(sq);
+            layer.path_roles.push(ExtrusionRole::OuterWall);
+            layer
+        };
+
+        let mut layers = vec![square_path(0.2), square_path(0.4)];
+        generate_top_bottom_surfaces(&mut layers, 0, 1, 0.2, 45.0);
+
+        // Layer 1 is fully covered by layer 0 → no surface infill whatsoever.
+        let has_bridge = layers[1].path_roles.contains(&ExtrusionRole::Bridge);
+        let has_bottom = layers[1].path_roles.contains(&ExtrusionRole::BottomSurface);
+
+        assert!(
+            !has_bridge,
+            "identical layers should produce no Bridge role: roles={:?}",
+            layers[1].path_roles
+        );
+        assert!(
+            !has_bottom,
+            "identical layers should produce no BottomSurface (fully covered): roles={:?}",
+            layers[1].path_roles
+        );
+    }
+
+    /// Layer 0 (no layer below it) must produce only BottomSurface, never Bridge.
+    #[test]
+    fn test_bridge_detection_first_layer_is_not_bridge() {
+        use clipper2::Path;
+
+        let mut layer0 = SliceLayer::new(0.2);
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer0.paths.push(square);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+
+        let mut layers = vec![layer0];
+        generate_top_bottom_surfaces(&mut layers, 0, 1, 0.2, 45.0);
+
+        let has_bridge = layers[0].path_roles.contains(&ExtrusionRole::Bridge);
+
+        assert!(
+            !has_bridge,
+            "layer 0 (model bottom) must not be classified as Bridge"
+        );
+
+        let has_bottom = layers[0].path_roles.contains(&ExtrusionRole::BottomSurface);
+        assert!(
+            has_bottom,
+            "layer 0 (model bottom) must have BottomSurface infill"
+        );
+    }
+
+    /// Bridge infill paths must store a reduced path width in `path_widths`
+    /// equal to `nozzle_diameter_mm × bridge_flow_ratio`.
+    #[test]
+    fn test_bridge_flow_ratio_stored_in_path_widths() {
+        use crate::core::surfaces::{generate_top_bottom_surfaces_with_interior, SurfaceConfig};
+        use clipper2::Path;
+
+        // Layer 0: thin 1×10 strip (support)
+        let mut layer0 = SliceLayer::new(0.2);
+        let strip: Path = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 10.0), (0.0, 10.0)].into();
+        layer0.paths.push(strip);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+
+        // Layer 1: full 10×10 square — 9mm unsupported → Bridge
+        let mut layer1 = SliceLayer::new(0.4);
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer1.paths.push(square);
+        layer1.path_roles.push(ExtrusionRole::OuterWall);
+
+        let nozzle_diameter_mm = 0.4_f64;
+        let bridge_flow_ratio = 0.8_f64;
+        let expected_width = nozzle_diameter_mm * bridge_flow_ratio; // 0.32 mm
+
+        let mut layers = vec![layer0, layer1];
+        generate_top_bottom_surfaces_with_interior(
+            &mut layers,
+            &SurfaceConfig {
+                top_layers: 0,
+                bottom_layers: 1,
+                layer_height: 0.2,
+                infill_angle: 0.0,
+                nozzle_diameter_mm,
+                bridge_flow_ratio,
+                bridge_min_area_mm2: 0.0,
+                bridge_noise_filter_mm: 0.0,
+                bridge_anchor_mm: 0.0,
+                min_infill_extrusion_mm: 0.0,
+            },
+            None,
+        );
+
+        // Find all bridge paths and check their stored widths
+        let bridge_widths: Vec<Option<f64>> = layers[1]
+            .path_roles
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| **r == ExtrusionRole::Bridge)
+            .map(|(i, _)| layers[1].path_widths.get(i).copied().flatten())
+            .collect();
+
+        assert!(
+            !bridge_widths.is_empty(),
+            "expected at least one Bridge path in layer 1"
+        );
+        for w in bridge_widths {
+            let w = w.expect("Bridge path must have a stored path_width");
+            assert!(
+                (w - expected_width).abs() < 1e-9,
+                "expected bridge width {expected_width:.4} mm, got {w:.4} mm"
+            );
+        }
+    }
+
     /// Serpentine infill chaining: for a rectangular region, consecutive scan
     /// lines should be chained into a single continuous path rather than being
     /// returned as individual 2-point segments.  This eliminates travel moves
@@ -1081,7 +1258,7 @@ mod tests {
         contours.push(square);
 
         let line_spacing = 0.5_f64;
-        let infill = generate_rectilinear_infill(&contours, line_spacing, 0.0);
+        let infill = generate_rectilinear_infill(&contours, line_spacing, 0.0, 0.0);
 
         // The number of scan lines for a 10mm region at 0.5mm spacing is ~20.
         // + 2 accounts for the grid-alignment floor/ceil and the half-spacing
@@ -1132,7 +1309,7 @@ mod tests {
         contours.push(left);
         contours.push(right);
 
-        let infill = generate_rectilinear_infill(&contours, 0.5, 0.0);
+        let infill = generate_rectilinear_infill(&contours, 0.5, 0.0, 0.0);
         assert!(!infill.is_empty(), "expected infill to be generated");
 
         // Every point in the infill must be inside one of the two rectangles.
@@ -1180,7 +1357,7 @@ mod tests {
         contours.push(outer);
         contours.push(notch);
 
-        let infill = generate_rectilinear_infill(&contours, 0.5, 0.0);
+        let infill = generate_rectilinear_infill(&contours, 0.5, 0.0, 0.0);
         assert!(!infill.is_empty(), "expected infill to be generated");
 
         // No infill point should be in the notched-out region (x>5, y∈[2,3]).
@@ -1261,6 +1438,632 @@ mod tests {
             "Infill with gap ({} paths) should not have more paths than no-gap ({} paths)",
             gap_count,
             no_gap_count
+        );
+    }
+
+    // ── Bridge filter pipeline (issue: noisy bridges & overhang walls) ──────
+
+    /// A tiny sliver of unsupported area (sub-mm) must be reclassified as
+    /// `BottomSurface`, not `Bridge`, when `bridge_min_area_mm2` is set.
+    #[test]
+    fn test_bridge_min_area_filter_reclassifies_tiny_sliver() {
+        use crate::core::surfaces::{generate_top_bottom_surfaces_with_interior, SurfaceConfig};
+        use clipper2::Path;
+
+        // Layer 0: 10×10 square minus a 0.5×0.5 mm cut-out at the corner (so
+        // layer 1 has a 0.25 mm² unsupported sliver). Easiest: make layer 0
+        // slightly smaller than layer 1.
+        let mut layer0 = SliceLayer::new(0.2);
+        // 10×10 minus a 0.5mm corner = covers everything except a 0.5×0.5 corner
+        let l_shape: Path = vec![
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 9.5),
+            (9.5, 9.5),
+            (9.5, 10.0),
+            (0.0, 10.0),
+        ]
+        .into();
+        layer0.paths.push(l_shape);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+
+        // Layer 1: full 10×10 square
+        let mut layer1 = SliceLayer::new(0.4);
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer1.paths.push(square);
+        layer1.path_roles.push(ExtrusionRole::OuterWall);
+
+        let mut layers = vec![layer0, layer1];
+
+        // Min-area filter at 1.0 mm² is well above the 0.25 mm² sliver.
+        // Disable the noise filter / anchor so we isolate the area test.
+        generate_top_bottom_surfaces_with_interior(
+            &mut layers,
+            &SurfaceConfig {
+                top_layers: 0,
+                bottom_layers: 1,
+                layer_height: 0.2,
+                infill_angle: 45.0,
+                nozzle_diameter_mm: 0.4,
+                bridge_flow_ratio: 0.8,
+                bridge_min_area_mm2: 1.0,
+                bridge_noise_filter_mm: 0.0,
+                bridge_anchor_mm: 0.0,
+                min_infill_extrusion_mm: 0.0,
+            },
+            None,
+        );
+
+        let layer1 = &layers[1];
+        let has_bridge = layer1.path_roles.contains(&ExtrusionRole::Bridge);
+        assert!(
+            !has_bridge,
+            "0.25mm² sliver must NOT be classified as Bridge with min_area=1.0: roles={:?}",
+            layer1.path_roles
+        );
+    }
+
+    /// The morphological-opening filter must wipe out a thread-thin spur
+    /// connecting two larger unsupported regions, while preserving the
+    /// larger regions themselves.
+    #[test]
+    fn test_bridge_noise_filter_removes_thin_spurs() {
+        use crate::core::surfaces::{generate_top_bottom_surfaces_with_interior, SurfaceConfig};
+        use clipper2::Path;
+
+        // Layer 0: support strip in the middle. Layer 1 covers more →
+        // unsupported region is the area outside the strip.
+        let mut layer0 = SliceLayer::new(0.2);
+        let support: Path = vec![(0.0, 4.95), (10.0, 4.95), (10.0, 5.05), (0.0, 5.05)].into();
+        layer0.paths.push(support);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+
+        // Layer 1: full 10×10 square. Without the support's tiny 0.1mm
+        // height, the entire layer 1 would be a big bridge. Verify the
+        // opening filter hammers down the thinness and the result is small.
+        let mut layer1 = SliceLayer::new(0.4);
+        let sq: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer1.paths.push(sq);
+        layer1.path_roles.push(ExtrusionRole::OuterWall);
+
+        let mut layers = vec![layer0, layer1];
+
+        // A 0.5 mm opening filter is easily larger than the 0.1mm-wide
+        // sub-pixel artefacts but smaller than the genuine 4.95mm-wide
+        // unsupported zones, so the genuine bridges survive.
+        generate_top_bottom_surfaces_with_interior(
+            &mut layers,
+            &SurfaceConfig {
+                top_layers: 0,
+                bottom_layers: 1,
+                layer_height: 0.2,
+                infill_angle: 0.0,
+                nozzle_diameter_mm: 0.4,
+                bridge_flow_ratio: 0.8,
+                bridge_min_area_mm2: 0.0,
+                bridge_noise_filter_mm: 0.5,
+                bridge_anchor_mm: 0.0,
+                min_infill_extrusion_mm: 0.0,
+            },
+            None,
+        );
+
+        // Both genuine bridge halves (≈4.95×10 each = 49.5mm² each) must
+        // survive the 0.5mm opening filter.
+        let bridge_count = layers[1]
+            .path_roles
+            .iter()
+            .filter(|r| **r == ExtrusionRole::Bridge)
+            .count();
+        assert!(
+            bridge_count > 0,
+            "Genuine wide unsupported regions must still be classified as Bridge"
+        );
+    }
+
+    /// `bridge_anchor_mm` must dilate the unsupported region into the
+    /// supported area, increasing the area filled with bridge infill.
+    #[test]
+    fn test_bridge_anchor_expands_into_supported_area() {
+        use crate::core::surfaces::{generate_top_bottom_surfaces_with_interior, SurfaceConfig};
+        use clipper2::Path;
+
+        // Layer 0: 1×10 support strip on the left
+        let strip: Path = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 10.0), (0.0, 10.0)].into();
+        // Layer 1: full 10×10 square (9mm unsupported gap)
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+
+        let mut layers_no_anchor = vec![SliceLayer::new(0.2), SliceLayer::new(0.4)];
+        layers_no_anchor[0].paths.push(strip.clone());
+        layers_no_anchor[0]
+            .path_roles
+            .push(ExtrusionRole::OuterWall);
+        layers_no_anchor[1].paths.push(square.clone());
+        layers_no_anchor[1]
+            .path_roles
+            .push(ExtrusionRole::OuterWall);
+
+        let mut layers_anchor = vec![SliceLayer::new(0.2), SliceLayer::new(0.4)];
+        layers_anchor[0].paths.push(strip);
+        layers_anchor[0].path_roles.push(ExtrusionRole::OuterWall);
+        layers_anchor[1].paths.push(square);
+        layers_anchor[1].path_roles.push(ExtrusionRole::OuterWall);
+
+        let cfg = |anchor| SurfaceConfig {
+            top_layers: 0,
+            bottom_layers: 1,
+            layer_height: 0.2,
+            infill_angle: 0.0,
+            nozzle_diameter_mm: 0.4,
+            bridge_flow_ratio: 0.8,
+            bridge_min_area_mm2: 0.0,
+            bridge_noise_filter_mm: 0.0,
+            bridge_anchor_mm: anchor,
+            min_infill_extrusion_mm: 0.0,
+        };
+
+        generate_top_bottom_surfaces_with_interior(&mut layers_no_anchor, &cfg(0.0), None);
+        generate_top_bottom_surfaces_with_interior(&mut layers_anchor, &cfg(2.0), None);
+
+        // The anchored bridge region must enclose more layer-1 area than the
+        // un-anchored one (it bites 2mm into the supported strip on the left).
+        let bridge_area = |layers: &[SliceLayer]| -> f64 {
+            // solid_regions includes Bridge by design.
+            layers[1].solid_regions.signed_area().abs()
+        };
+        let no_anchor = bridge_area(&layers_no_anchor);
+        let with_anchor = bridge_area(&layers_anchor);
+        assert!(
+            with_anchor > no_anchor + 1.0,
+            "anchor expansion must add at least ~1mm² of bridge area (no_anchor={} with_anchor={})",
+            no_anchor,
+            with_anchor
+        );
+    }
+
+    /// **Regression — bridge-in-wall-zone (Benchy porthole / window frame)**
+    ///
+    /// This is the exact scenario where the original code produced NO bridge
+    /// infill even though there is a genuine unsupported horizontal span:
+    ///
+    /// - `interior_regions[i]` is the cabin interior — a small 2×2 area
+    ///   centred in a large 10×10 hull cross-section.
+    /// - The bridge area (the 2×2 hole closure at the top of the porthole)
+    ///   is in the hull **wall zone** — it does NOT overlap the cabin interior.
+    ///
+    /// The previous code did:
+    ///   `region = intersect(region, interior_regions[i])` → EMPTY (no overlap)
+    ///   then returned (empty, empty) → zero infill generated.
+    ///
+    /// The fix: interior_regions clipping is applied ONLY to `supported`
+    /// (solid bottom infill), NOT to `region` before the bridge/bottom split.
+    /// Also, `anchor_bounds = perimeters[i]` (not interior_regions[i]) so
+    /// `expand_to_anchor` can see the surrounding wall material.
+    #[test]
+    fn test_bridge_detected_when_bridge_area_is_in_wall_zone() {
+        use crate::core::surfaces::{generate_top_bottom_surfaces_with_interior, SurfaceConfig};
+        use clipper2::Path;
+
+        // Layer 0: 10×10 hull ring with a 2×2 porthole in the centre.
+        //   Outer hull boundary (CCW): (0,0)→(10,0)→(10,10)→(0,10)
+        //   Porthole hole (CW): (4,4)→(4,6)→(6,6)→(6,4)  (hole in hull).
+        //   The porthole is centred: 4mm offset on each side of the 10mm hull.
+        let mut layer0 = SliceLayer::new(0.2);
+        let hull0: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        let hole0: Path = vec![(4.0, 4.0), (4.0, 6.0), (6.0, 6.0), (6.0, 4.0)].into();
+        layer0.paths.push(hull0);
+        layer0.paths.push(hole0);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+
+        // Layer 1: solid 10×10 hull (porthole closed at this layer).
+        let mut layer1 = SliceLayer::new(0.4);
+        let hull1: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer1.paths.push(hull1);
+        layer1.path_roles.push(ExtrusionRole::OuterWall);
+
+        let mut layers = vec![layer0, layer1];
+
+        // interior_regions[1] = the cabin interior = 2×2 square at (4,4)→(6,6).
+        // This is the same area as the porthole hole but represents the
+        // imaginary cabin inside — it deliberately does NOT overlap the bridge
+        // area (which is the 2×2 porthole closure sitting in the hull-wall zone).
+        let interior_layer0 = clipper2::Paths::new(vec![]);
+        let interior_layer1: clipper2::Paths =
+            clipper2::Paths::new(vec![clipper2::Path::from(vec![
+                (4.0, 4.0),
+                (4.0, 6.0),
+                (6.0, 6.0),
+                (6.0, 4.0_f64),
+            ])]);
+        let interior_regions = vec![interior_layer0, interior_layer1];
+
+        generate_top_bottom_surfaces_with_interior(
+            &mut layers,
+            &SurfaceConfig {
+                top_layers: 0,
+                bottom_layers: 1,
+                layer_height: 0.2,
+                infill_angle: 45.0,
+                nozzle_diameter_mm: 0.4,
+                bridge_flow_ratio: 0.8,
+                bridge_min_area_mm2: 0.0, // disable area filter so small porthole still passes
+                bridge_noise_filter_mm: 0.0, // disable noise filter
+                bridge_anchor_mm: 0.0,    // disable anchor so result area is minimal / predictable
+                min_infill_extrusion_mm: 0.0,
+            },
+            Some(&interior_regions),
+        );
+
+        let has_bridge = layers[1].path_roles.contains(&ExtrusionRole::Bridge);
+        assert!(
+            has_bridge,
+            "Porthole closure (bridge in wall zone) must be detected as Bridge even when \
+             interior_regions does not overlap the bridge area. roles={:?}",
+            layers[1].path_roles
+        );
+    }
+
+    /// **Regression** — a hull that grows slightly outward (step < d/2) must
+    /// NOT produce bridge infill in the wall zone.  Before the `+d/2` inflate
+    /// fix, `difference(region, prev_perimeter)` returned the thin new-area
+    /// strip as "unsupported" even though it is within the previous bead's
+    /// physical extent.
+    #[test]
+    fn test_no_false_bridge_for_thin_outward_lean() {
+        use crate::core::surfaces::{generate_top_bottom_surfaces_with_interior, SurfaceConfig};
+        use clipper2::Path;
+
+        // Layer 0: solid 10×10 hull.
+        let mut layer0 = SliceLayer::new(0.2);
+        let hull0: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer0.paths.push(hull0);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+
+        // Layer 1: hull grown by 0.05 mm on every side (step = 0.05 mm < d/2 = 0.2 mm).
+        // The new thin annular strip IS physically supported by the previous bead.
+        let mut layer1 = SliceLayer::new(0.2);
+        let hull1: Path = vec![
+            (-0.05, -0.05),
+            (10.05, -0.05),
+            (10.05, 10.05),
+            (-0.05, 10.05),
+        ]
+        .into();
+        layer1.paths.push(hull1);
+        layer1.path_roles.push(ExtrusionRole::OuterWall);
+
+        let mut layers = vec![layer0, layer1];
+
+        // Disable area and noise filters so only the d/2 inflate guard can
+        // suppress the false bridge.
+        generate_top_bottom_surfaces_with_interior(
+            &mut layers,
+            &SurfaceConfig {
+                top_layers: 0,
+                bottom_layers: 1,
+                layer_height: 0.2,
+                infill_angle: 45.0,
+                nozzle_diameter_mm: 0.4,
+                bridge_flow_ratio: 0.8,
+                bridge_min_area_mm2: 0.0,
+                bridge_noise_filter_mm: 0.0,
+                bridge_anchor_mm: 0.0,
+                min_infill_extrusion_mm: 0.0,
+            },
+            None,
+        );
+
+        let has_bridge = layers[1].path_roles.contains(&ExtrusionRole::Bridge);
+        assert!(
+            !has_bridge,
+            "Thin outward lean (step < d/2) must NOT produce bridge infill in the wall zone. \
+             roles={:?}",
+            layers[1].path_roles
+        );
+    }
+
+    /// **Regression** — a closed wall loop that crosses over an air gap on
+    /// only one side must be **split**: the in-air sub-segment gets
+    /// `OverhangPerimeter`; the supported sub-segment keeps the original
+    /// `OuterWall` role.  The whole-path 50%-threshold would never flag this.
+    #[test]
+    fn test_classify_overhang_perimeters_splits_mixed_path() {
+        use super::walls::classify_overhang_perimeters;
+        use clipper2::Path;
+
+        // 10×10 outer wall square.  Air region: a 10×3 strip covering the top
+        // side (y ∈ [8, 11]).  Two of the four vertices sit in this strip.
+        let wall: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        let mut layer = SliceLayer::new(0.4);
+        layer.paths.push(wall);
+        layer.path_roles.push(ExtrusionRole::OuterWall);
+
+        let air: Path = vec![(0.0, 8.0), (10.0, 8.0), (10.0, 11.0), (0.0, 11.0)].into();
+        layer.unsupported_regions = Paths::new(vec![air]);
+
+        let mut layers = vec![layer];
+        classify_overhang_perimeters(&mut layers, 0.4);
+
+        // After splitting there must be at least two separate paths.
+        let path_count = layers[0].paths.iter().count();
+        assert!(
+            path_count >= 2,
+            "Mixed path must be split into at least 2 sub-segments; got {path_count}"
+        );
+        // One segment must carry OverhangPerimeter (the top-side crossing).
+        assert!(
+            layers[0]
+                .path_roles
+                .contains(&ExtrusionRole::OverhangPerimeter),
+            "Split must produce at least one OverhangPerimeter segment. \
+             roles={:?}",
+            layers[0].path_roles
+        );
+        // The remaining segment(s) must keep OuterWall.
+        assert!(
+            layers[0].path_roles.contains(&ExtrusionRole::OuterWall),
+            "Split must keep at least one OuterWall segment. roles={:?}",
+            layers[0].path_roles
+        );
+    }
+
+    /// **Regression** — on the bridge *closing* layer the outer hull path must
+    /// not survive as an `OverhangPerimeter` arc inside the bridge zone.
+    ///
+    /// Geometry:
+    /// * Layer 0: 10×10 hull ring with a 2×2 porthole hole (the porthole is
+    ///   *open* on this layer, so the next layer must bridge across it).
+    /// * Layer 1: solid 10×10 hull (the porthole *closes* here — this is the
+    ///   bridge layer).
+    ///
+    /// On layer 1 the bridge region covers the porthole void + anchor_mm strip.
+    /// Any outer hull path segments that run along the bridge zone outer
+    /// boundary would — before this fix — survive `clip_walls_against_bridge_region`
+    /// (IsOn = outside in the old strict test), then be classified as
+    /// `OverhangPerimeter`, and finally be extruded again when bridge infill
+    /// printed on top: double-extrusion.
+    ///
+    /// After the fix (IsOn = inside), those boundary segments are removed and
+    /// no `OverhangPerimeter` paths appear at the bridge layer.
+    #[test]
+    fn test_bridge_closing_layer_has_no_overhang_in_bridge_zone() {
+        use crate::core::surfaces::{generate_top_bottom_surfaces_with_interior, SurfaceConfig};
+        use crate::core::walls::classify_overhang_perimeters;
+        use clipper2::Path;
+
+        // Layer 0: 10×10 hull (CCW outer) with a 2×2 porthole hole (CW inner).
+        // Porthole at (4,4)-(6,6).
+        let mut layer0 = SliceLayer::new(0.2);
+        let hull0: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        // CW winding for the hole
+        let hole0: Path = vec![(4.0, 4.0), (4.0, 6.0), (6.0, 6.0), (6.0, 4.0)].into();
+        layer0.paths.push(hull0);
+        layer0.paths.push(hole0);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+
+        // Layer 1: solid 10×10 hull — this is the bridge (closing) layer.
+        let mut layer1 = SliceLayer::new(0.4);
+        let hull1: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer1.paths.push(hull1);
+        layer1.path_roles.push(ExtrusionRole::OuterWall);
+
+        let mut layers = vec![layer0, layer1];
+
+        generate_top_bottom_surfaces_with_interior(
+            &mut layers,
+            &SurfaceConfig {
+                top_layers: 0,
+                bottom_layers: 1,
+                layer_height: 0.2,
+                infill_angle: 45.0,
+                nozzle_diameter_mm: 0.4,
+                bridge_flow_ratio: 0.8,
+                bridge_min_area_mm2: 0.0,
+                bridge_noise_filter_mm: 0.0,
+                bridge_anchor_mm: 0.4,
+                min_infill_extrusion_mm: 0.0,
+            },
+            None,
+        );
+
+        // Bridge infill must have been generated on layer 1.
+        assert!(
+            layers[1].path_roles.contains(&ExtrusionRole::Bridge),
+            "Bridge must be detected at the porthole closing layer; \
+             roles={:?}",
+            layers[1].path_roles
+        );
+
+        // Now classify overhang perimeters (uses unsupported_regions set above).
+        classify_overhang_perimeters(&mut layers, 0.4);
+
+        // After clipping and overhang classification, no OuterWall or InnerWall
+        // paths that were *inside the bridge zone* should carry OverhangPerimeter.
+        // The fix ensures that wall segments running along the bridge zone outer
+        // boundary are removed by clip_walls_against_bridge_region so they cannot
+        // be reclassified as OverhangPerimeter and double-extruded by the bridge.
+        //
+        // For this simple geometry the outer hull vertices are far from the
+        // porthole bridge zone, so no OverhangPerimeter should appear on layer 1
+        // at all.
+        assert!(
+            !layers[1]
+                .path_roles
+                .contains(&ExtrusionRole::OverhangPerimeter),
+            "No OverhangPerimeter must exist on the bridge closing layer; \
+             double-extrusion with bridge infill would result. \
+             roles={:?}",
+            layers[1].path_roles
+        );
+    }
+
+    /// **Regression** — wall paths whose vertices fall inside the bridge zone
+    /// must never end up as `OverhangPerimeter` arcs that geometrically
+    /// overlap the bridge infill.
+    ///
+    /// This is the failure mode that produced double extrusion on Benchy
+    /// layer 172 (overhang perimeter + bridge printed in the same space).
+    /// The wall vertices land *inside* the bridge zone (which extends an
+    /// `bridge_anchor_mm` strip into the supported wall material), so
+    /// `clip_walls_against_bridge_region` either drops the path entirely
+    /// or keeps an open arc whose seam vertex still sits inside the bridge
+    /// zone.  If `unsupported_regions` were the *raw* unsupported area
+    /// (without subtracting `bridge_region`), that seam vertex would test
+    /// `IsInside` and `classify_overhang_perimeters` would emit a tiny
+    /// `OverhangPerimeter` arc inside the bridge — overlapping the bridge
+    /// extrusion.
+    ///
+    /// The fix subtracts `bridge_region` from `unsupported_regions` before
+    /// stashing it on the layer, so areas already handled by bridge cannot
+    /// be re-flagged as overhang.
+    #[test]
+    fn test_no_overhang_in_bridge_zone_with_walls_inside_bridge() {
+        use crate::core::surfaces::{generate_top_bottom_surfaces_with_interior, SurfaceConfig};
+        use crate::core::walls::classify_overhang_perimeters;
+        use clipper2::Path;
+
+        // Layer 0: 10×10 hull with a large 6×6 hole — the next layer must
+        // bridge across most of the cross-section.
+        let mut layer0 = SliceLayer::new(0.2);
+        let hull0: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        let hole0: Path = vec![(2.0, 2.0), (2.0, 8.0), (8.0, 8.0), (8.0, 2.0)].into();
+        layer0.paths.push(hull0);
+        layer0.paths.push(hole0);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+
+        // Layer 1: same outer hull plus an inner wall ring that sits
+        // partially inside the bridge zone (the 6×6 hole + anchor strip).
+        // The 4×4 inner ring's vertices land inside the anchor-expanded
+        // bridge_region, so they must not be re-flagged as OverhangPerimeter.
+        let mut layer1 = SliceLayer::new(0.4);
+        let hull1: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        let inner1: Path = vec![(3.0, 3.0), (3.0, 7.0), (7.0, 7.0), (7.0, 3.0)].into();
+        layer1.paths.push(hull1);
+        layer1.paths.push(inner1);
+        layer1.path_roles.push(ExtrusionRole::OuterWall);
+        layer1.path_roles.push(ExtrusionRole::InnerWall);
+
+        let mut layers = vec![layer0, layer1];
+
+        generate_top_bottom_surfaces_with_interior(
+            &mut layers,
+            &SurfaceConfig {
+                top_layers: 0,
+                bottom_layers: 1,
+                layer_height: 0.2,
+                infill_angle: 45.0,
+                nozzle_diameter_mm: 0.4,
+                bridge_flow_ratio: 0.8,
+                bridge_min_area_mm2: 0.0,
+                bridge_noise_filter_mm: 0.0,
+                bridge_anchor_mm: 0.5,
+                min_infill_extrusion_mm: 0.0,
+            },
+            None,
+        );
+
+        assert!(
+            layers[1].path_roles.contains(&ExtrusionRole::Bridge),
+            "Bridge must be detected at the hole closing layer; roles={:?}",
+            layers[1].path_roles
+        );
+
+        classify_overhang_perimeters(&mut layers, 0.4);
+
+        // CRITICAL: no OverhangPerimeter on the bridge layer.  Any such arc
+        // would overlap the bridge infill and produce double extrusion.
+        assert!(
+            !layers[1]
+                .path_roles
+                .contains(&ExtrusionRole::OverhangPerimeter),
+            "OverhangPerimeter must not coexist with Bridge in the same zone; \
+             this is the Benchy layer-172 double-extrusion regression. \
+             roles={:?}",
+            layers[1].path_roles
+        );
+    }
+
+    /// **Regression** — Benchy layer 172 (rear deck overhang).
+    ///
+    /// Geometry: an overhanging strip whose width is fully consumed by wall
+    /// material (multiple Arachne walls + outer perimeters).  The unsupported
+    /// area exists, but every square millimetre of it is *physically covered*
+    /// by perimeter beads — there is no genuine void to bridge.
+    ///
+    /// On the user-reported Benchy slice this produced the failure mode:
+    ///   • Bridge filled the entire strip (X∈[-4.4,6], Y∈[-12.31,-10.4]).
+    ///   • Outer + inner perimeters were *also* printed in the same strip.
+    ///   • Bridge infill ran on top of perimeters → double extrusion.
+    ///
+    /// Fix: when `interior_regions[i]` is empty for the strip (= perimeters
+    /// fully cover the cross-section, no infill area), the bridge candidate
+    /// is clipped to nothing → no Bridge role emitted.  The perimeters in the
+    /// strip are then classified as `OverhangPerimeter` by
+    /// `classify_overhang_perimeters` and printed with bridge speed/flow.
+    ///
+    /// We provide `interior_regions` explicitly here (mirroring what
+    /// `pipeline.rs` would compute via `calculate_interior_region`) so the
+    /// test exercises the actual `clip_to_void` step.
+    #[test]
+    fn test_thin_overhang_strip_no_bridge_when_perimeters_cover_it() {
+        use crate::core::surfaces::{generate_top_bottom_surfaces_with_interior, SurfaceConfig};
+        use clipper2::Path;
+
+        // Layer 0: small support stub at the bottom-back of the strip — a
+        // 10×0.4 mm anchor at Y∈[-12.31,-11.91].  This means that on layer 1
+        // most of the strip Y∈[-11.91,-10.4] is unsupported (overhang).
+        let mut layer0 = SliceLayer::new(0.2);
+        let support: Path =
+            vec![(-5.0, -12.31), (5.0, -12.31), (5.0, -11.91), (-5.0, -11.91)].into();
+        layer0.paths.push(support);
+        layer0.path_roles.push(ExtrusionRole::OuterWall);
+
+        // Layer 1: the deck strip — 10×1.91 mm, fully covered by perimeters.
+        // We model this with a single OuterWall outline; pipeline-equivalent
+        // wisdom is that 1.91 mm is too thin for any infill area, so
+        // interior_regions[1] is empty.
+        let mut layer1 = SliceLayer::new(0.2);
+        let deck: Path = vec![(-5.0, -12.31), (5.0, -12.31), (5.0, -10.4), (-5.0, -10.4)].into();
+        layer1.paths.push(deck);
+        layer1.path_roles.push(ExtrusionRole::OuterWall);
+
+        let mut layers = vec![layer0, layer1];
+
+        // Empty interior_regions[1] models "no infill area on this layer"
+        // (perimeters consume the entire cross-section).  This is what
+        // `calculate_interior_region` produces when the wall band is wider
+        // than the cross-section.
+        let interior_regions = vec![Paths::new(vec![]), Paths::new(vec![])];
+
+        generate_top_bottom_surfaces_with_interior(
+            &mut layers,
+            &SurfaceConfig {
+                top_layers: 0,
+                bottom_layers: 1,
+                layer_height: 0.2,
+                infill_angle: 45.0,
+                nozzle_diameter_mm: 0.4,
+                bridge_flow_ratio: 0.8,
+                bridge_min_area_mm2: 0.0,
+                bridge_noise_filter_mm: 0.0,
+                bridge_anchor_mm: 0.5,
+                min_infill_extrusion_mm: 0.0,
+            },
+            Some(&interior_regions),
+        );
+
+        // The whole point: NO Bridge must be generated when the strip has no
+        // infill area.  Perimeters alone cover it; bridge infill would
+        // double-extrude on top.
+        assert!(
+            !layers[1].path_roles.contains(&ExtrusionRole::Bridge),
+            "Bridge must NOT be generated for an overhang strip whose entire \
+             cross-section is consumed by perimeters (interior_regions empty). \
+             This is the Benchy layer-172 deck-strip regression. roles={:?}",
+            layers[1].path_roles
         );
     }
 }

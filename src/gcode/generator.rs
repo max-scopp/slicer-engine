@@ -236,6 +236,61 @@ impl GcodeGenerator {
         }
     }
 
+    /// Resolve the effective print speed (in mm/min) for a given extrusion role
+    /// and layer context.
+    ///
+    /// The priority order is:
+    /// 1. First-layer speed (when `is_first_layer` is true)
+    /// 2. Role-specific speed (perimeter, infill, bridge, top/bottom surface)
+    /// 3. General `print_speed` fallback when a role-specific speed is ≤ 0
+    fn effective_speed_mm_min(
+        role: crate::core::ExtrusionRole,
+        is_first_layer: bool,
+        params: &SlicingParams,
+    ) -> f64 {
+        use crate::core::ExtrusionRole;
+        let fallback = params.print_speed * 60.0;
+        if is_first_layer {
+            let s = params.first_layer_speed;
+            return if s > 0.0 { s * 60.0 } else { fallback };
+        }
+        match role {
+            ExtrusionRole::OuterWall | ExtrusionRole::InnerWall => {
+                let s = params.perimeter_speed;
+                if s > 0.0 {
+                    s * 60.0
+                } else {
+                    fallback
+                }
+            }
+            ExtrusionRole::Infill => {
+                let s = params.infill_speed;
+                if s > 0.0 {
+                    s * 60.0
+                } else {
+                    fallback
+                }
+            }
+            ExtrusionRole::Bridge | ExtrusionRole::OverhangPerimeter => {
+                let s = params.bridge_speed;
+                if s > 0.0 {
+                    s * 60.0
+                } else {
+                    fallback
+                }
+            }
+            ExtrusionRole::TopSurface | ExtrusionRole::BottomSurface => {
+                let s = params.top_surface_speed;
+                if s > 0.0 {
+                    s * 60.0
+                } else {
+                    fallback
+                }
+            }
+            _ => fallback,
+        }
+    }
+
     /// Generate a complete G-code program from the given layers and parameters.
     ///
     /// The output is a single `String` with lines separated by `'\n'`.
@@ -256,7 +311,6 @@ impl GcodeGenerator {
         }
 
         let mut out = String::with_capacity(64 * 1024);
-        let print_speed_mm_min = params.print_speed * 60.0;
 
         // ── Metadata header ──────────────────────────────────────────────────
         use std::fmt::Write as _;
@@ -266,7 +320,7 @@ impl GcodeGenerator {
              ; layer_height: {} mm\n\
              ; nozzle_temp: {} °C\n\
              ; bed_temp: {} °C\n\
-             ; print_speed: {} mm/s\n\
+             ; print_speed: {} mm/s | perimeter: {} | infill: {} | bridge: {} | first_layer: {}\n\
              ; wall_count: {} walls (Arachne VWE)\n\
              ; infill_density: {:.0}%\n\
              ; ---\n",
@@ -275,6 +329,10 @@ impl GcodeGenerator {
             params.nozzle_temp,
             params.bed_temp,
             params.print_speed,
+            params.perimeter_speed,
+            params.infill_speed,
+            params.bridge_speed,
+            params.first_layer_speed,
             params.wall_count,
             params.infill_density * 100.0,
         );
@@ -297,6 +355,8 @@ impl GcodeGenerator {
         for layer in layers {
             let z_str = format!("{:.3}", layer.z);
             let height_str = format!("{:.3}", params.layer_height);
+            // Detect first layer: z within half a layer height of layer_height.
+            let is_first_layer = layer.z <= params.layer_height + 1e-6;
 
             if self.marker_config.enabled {
                 // Lifecycle block: LAYER_CHANGE → BEFORE_LAYER_CHANGE → Z move → AFTER_LAYER_CHANGE
@@ -363,12 +423,16 @@ impl GcodeGenerator {
             // ── Adaptive fan speed ───────────────────────────────────────────
             if !params.fan_configs.is_empty() {
                 let layer_time = estimate_layer_time(layer, params.print_speed);
-                // Bridge detection: any path tagged Bridge triggers bridge boost on aux fans.
-                let has_bridges = layer
-                    .paths
-                    .iter()
-                    .enumerate()
-                    .any(|(i, _)| layer.role_for_path(i) == crate::core::ExtrusionRole::Bridge);
+                // Bridge detection: any path tagged Bridge or OverhangPerimeter
+                // triggers bridge boost on aux fans (overhanging walls cool just
+                // like bridge infill does).
+                let has_bridges = layer.paths.iter().enumerate().any(|(i, _)| {
+                    matches!(
+                        layer.role_for_path(i),
+                        crate::core::ExtrusionRole::Bridge
+                            | crate::core::ExtrusionRole::OverhangPerimeter
+                    )
+                });
 
                 for (fan_idx, fan) in params.fan_configs.iter().enumerate() {
                     let prev = prev_fan_speeds.get(fan_idx).copied().flatten();
@@ -403,6 +467,9 @@ impl GcodeGenerator {
                 let width_mm = layer
                     .width_for_path(path_idx)
                     .unwrap_or_else(|| role.default_width_mm());
+
+                // Resolve per-role print speed.
+                let speed_mm_min = Self::effective_speed_mm_min(role, is_first_layer, params);
 
                 // Apply Ramer-Douglas-Peucker simplification when a tolerance is set.
                 // `douglas_peucker` always preserves the first and last point, so a
@@ -476,7 +543,20 @@ impl GcodeGenerator {
                 };
 
                 let role_changed = last_role != Some(role);
-                let needs_retract = travel_dist > 2.0 || role_changed;
+                // Retract policy:
+                //   - Skip retract for any travel under `MIN_TRAVEL_FOR_RETRACT_MM`,
+                //     even on role change.  A 0.4 mm hop from the inner-wall
+                //     loop end to the outer-wall loop start does not ooze
+                //     enough to justify the 5-line retract+zhop+travel+lower+
+                //     un-retract ceremony (which itself takes longer than the
+                //     hop and pauses extrusion).
+                //   - Long travels always retract, regardless of role.
+                //
+                // Other slicers (PrusaSlicer, Orca, Cura) all use a similar
+                // "min travel for retract" cutoff (typically 1.0–2.0 mm).
+                const MIN_TRAVEL_FOR_RETRACT_MM: f64 = 1.0;
+                let needs_retract =
+                    travel_dist > 2.0 || (role_changed && travel_dist > MIN_TRAVEL_FOR_RETRACT_MM);
 
                 if needs_retract {
                     // Retract, z-hop, travel, lower, prime
@@ -504,8 +584,12 @@ impl GcodeGenerator {
                         "{} ; un-retract\n",
                         self.dialect.set_extruder_pos(e_total, 3000.0)
                     ));
-                } else if travel_dist > 1e-6 {
-                    // Short travel without stringing mitigation
+                } else if travel_dist > 0.05 {
+                    // Short travel without stringing mitigation.  Travels under
+                    // 0.05 mm are degenerate (floating-point rounding noise from
+                    // path simplification) and are skipped entirely — emitting a
+                    // G1 line for a sub-quantum hop just bloats the file and
+                    // confuses motion planners on some firmwares.
                     out.push_str(&format!(
                         "{} ; short travel\n",
                         self.dialect
@@ -513,45 +597,171 @@ impl GcodeGenerator {
                     ));
                 }
 
-                // Print the contour segments
-                let mut prev = points[0];
-                for &(x, y) in points.iter().skip(1) {
-                    let dx = x - prev.0;
-                    let dy = y - prev.1;
-                    let len = (dx * dx + dy * dy).sqrt();
-                    if len < 1e-6 {
-                        prev = (x, y);
-                        continue;
-                    }
-                    e_total += extrusion_for_move(
-                        len,
-                        params.layer_height,
-                        width_mm,
-                        params.filament_diameter_mm,
-                    );
-                    out.push_str(&format!(
-                        "{}\n",
-                        self.dialect.move_extrude(x, y, e_total, print_speed_mm_min)
-                    ));
-                    prev = (x, y);
-                }
-
-                // Close the contour — only for inherently closed-loop roles such as
-                // perimeter walls and skirt/brim.  Open infill polylines (Infill,
-                // TopSurface, BottomSurface, Bridge, Support) must NOT be closed;
-                // doing so would add a long diagonal extrusion back to the path start,
-                // producing the "weird line crossing" artifact visible in gyroid infill.
+                // Determine if this is a closed-loop role.
+                //
+                // A path is a closed loop only when BOTH:
+                //   1. Its role is one that normally forms closed contours, AND
+                //   2. It is NOT marked as an open arc in `path_is_open`.
+                //
+                // `path_is_open` is set to `true` for sub-segments produced by
+                // `classify_overhang_perimeters` when it splits a closed wall
+                // loop at the air/support boundary.  Those sub-segments are
+                // open polylines even though their role may still be `OuterWall`
+                // or `InnerWall`.  Emitting a "close contour" G1 move for them
+                // would create a phantom extrusion back through the model.
+                let is_open_arc = layer.is_path_open(path_idx);
                 let is_closed_loop = matches!(
                     role,
                     crate::core::ExtrusionRole::OuterWall
                         | crate::core::ExtrusionRole::InnerWall
                         | crate::core::ExtrusionRole::Skirt
-                );
-                if is_closed_loop {
+                ) && !is_open_arc;
+
+                // ── Coasting: stop extruding before end of perimeter ──────────
+                // Coasting applies only to closed-loop perimeter paths and only
+                // when a positive coasting distance is configured.  For the last
+                // `coasting_distance_mm` of the path (including the close-loop
+                // segment) the nozzle travels without extrusion, allowing nozzle
+                // pressure to drop before reaching the seam.
+                //
+                // Implementation note: this requires two passes over the point array —
+                // one to compute the total path length, one to emit moves.  For typical
+                // perimeter paths (tens to hundreds of points) this is negligible; for
+                // very detailed organic models with thousands of points per perimeter it
+                // will add a linear pass per perimeter path. A future optimisation could
+                // pre-compute cumulative lengths once if profiling shows this to be a
+                // bottleneck.
+                let apply_coasting = is_closed_loop && params.coasting_distance_mm > 0.0;
+
+                // ── Print contour segments ────────────────────────────────────
+                if apply_coasting {
+                    // Pass 1: compute the total path length so we know when to
+                    // start coasting.
+                    let mut total_len = 0.0_f64;
+                    let mut pp = points[0];
+                    for &(x, y) in points.iter().skip(1) {
+                        let dx = x - pp.0;
+                        let dy = y - pp.1;
+                        total_len += (dx * dx + dy * dy).sqrt();
+                        pp = (x, y);
+                    }
+                    // Close-loop segment
+                    let cx = start_x - pp.0;
+                    let cy = start_y - pp.1;
+                    total_len += (cx * cx + cy * cy).sqrt();
+
+                    let coasting_start = (total_len - params.coasting_distance_mm).max(0.0);
+                    let mut dist_traveled = 0.0_f64;
+                    let mut prev = points[0];
+
+                    // Pass 2: emit segments, switching to travel at coasting_start.
+                    for &(x, y) in points.iter().skip(1) {
+                        let dx = x - prev.0;
+                        let dy = y - prev.1;
+                        let seg_len = (dx * dx + dy * dy).sqrt();
+                        if seg_len < 1e-6 {
+                            prev = (x, y);
+                            continue;
+                        }
+                        if dist_traveled + seg_len <= coasting_start {
+                            // Entirely before coasting point → extrude normally
+                            e_total += extrusion_for_move(
+                                seg_len,
+                                params.layer_height,
+                                width_mm,
+                                params.filament_diameter_mm,
+                            );
+                            out.push_str(&format!(
+                                "{}\n",
+                                self.dialect.move_extrude(x, y, e_total, speed_mm_min)
+                            ));
+                        } else if dist_traveled < coasting_start {
+                            // Segment straddles the coasting boundary → split it
+                            let dist_to_coast = coasting_start - dist_traveled;
+                            let t = dist_to_coast / seg_len;
+                            let bx = prev.0 + t * dx;
+                            let by = prev.1 + t * dy;
+                            e_total += extrusion_for_move(
+                                dist_to_coast,
+                                params.layer_height,
+                                width_mm,
+                                params.filament_diameter_mm,
+                            );
+                            out.push_str(&format!(
+                                "{}\n",
+                                self.dialect.move_extrude(bx, by, e_total, speed_mm_min)
+                            ));
+                            // Remainder is a travel move
+                            out.push_str(&format!(
+                                "{} ; coasting\n",
+                                self.dialect.travel_xy(x, y, speed_mm_min)
+                            ));
+                        } else {
+                            // Entirely in coasting zone → travel only
+                            out.push_str(&format!(
+                                "{} ; coasting\n",
+                                self.dialect.travel_xy(x, y, speed_mm_min)
+                            ));
+                        }
+                        dist_traveled += seg_len;
+                        prev = (x, y);
+                    }
+
+                    // Close-loop segment
                     let dx = start_x - prev.0;
                     let dy = start_y - prev.1;
-                    let len = (dx * dx + dy * dy).sqrt();
-                    if len >= 1e-6 {
+                    let seg_len = (dx * dx + dy * dy).sqrt();
+                    if seg_len >= 1e-6 {
+                        if dist_traveled + seg_len <= coasting_start {
+                            e_total += extrusion_for_move(
+                                seg_len,
+                                params.layer_height,
+                                width_mm,
+                                params.filament_diameter_mm,
+                            );
+                            out.push_str(&format!(
+                                "{} ; close contour\n",
+                                self.dialect
+                                    .move_extrude(start_x, start_y, e_total, speed_mm_min)
+                            ));
+                        } else if dist_traveled < coasting_start {
+                            let dist_to_coast = coasting_start - dist_traveled;
+                            let t = dist_to_coast / seg_len;
+                            let bx = prev.0 + t * dx;
+                            let by = prev.1 + t * dy;
+                            e_total += extrusion_for_move(
+                                dist_to_coast,
+                                params.layer_height,
+                                width_mm,
+                                params.filament_diameter_mm,
+                            );
+                            out.push_str(&format!(
+                                "{}\n",
+                                self.dialect.move_extrude(bx, by, e_total, speed_mm_min)
+                            ));
+                            out.push_str(&format!(
+                                "{} ; coasting close\n",
+                                self.dialect.travel_xy(start_x, start_y, speed_mm_min)
+                            ));
+                        } else {
+                            out.push_str(&format!(
+                                "{} ; coasting close\n",
+                                self.dialect.travel_xy(start_x, start_y, speed_mm_min)
+                            ));
+                        }
+                    }
+                    last_pos = Some((start_x, start_y));
+                } else {
+                    // Normal printing (no coasting)
+                    let mut prev = points[0];
+                    for &(x, y) in points.iter().skip(1) {
+                        let dx = x - prev.0;
+                        let dy = y - prev.1;
+                        let len = (dx * dx + dy * dy).sqrt();
+                        if len < 1e-6 {
+                            prev = (x, y);
+                            continue;
+                        }
                         e_total += extrusion_for_move(
                             len,
                             params.layer_height,
@@ -559,18 +769,38 @@ impl GcodeGenerator {
                             params.filament_diameter_mm,
                         );
                         out.push_str(&format!(
-                            "{} ; close contour\n",
-                            self.dialect.move_extrude(
-                                start_x,
-                                start_y,
-                                e_total,
-                                print_speed_mm_min
-                            )
+                            "{}\n",
+                            self.dialect.move_extrude(x, y, e_total, speed_mm_min)
                         ));
+                        prev = (x, y);
                     }
-                    last_pos = Some((start_x, start_y));
-                } else {
-                    last_pos = Some(prev);
+
+                    // Close the contour — only for inherently closed-loop roles such as
+                    // perimeter walls and skirt/brim.  Open infill polylines (Infill,
+                    // TopSurface, BottomSurface, Bridge, Support) must NOT be closed;
+                    // doing so would add a long diagonal extrusion back to the path start,
+                    // producing the "weird line crossing" artifact visible in gyroid infill.
+                    if is_closed_loop {
+                        let dx = start_x - prev.0;
+                        let dy = start_y - prev.1;
+                        let len = (dx * dx + dy * dy).sqrt();
+                        if len >= 1e-6 {
+                            e_total += extrusion_for_move(
+                                len,
+                                params.layer_height,
+                                width_mm,
+                                params.filament_diameter_mm,
+                            );
+                            out.push_str(&format!(
+                                "{} ; close contour\n",
+                                self.dialect
+                                    .move_extrude(start_x, start_y, e_total, speed_mm_min)
+                            ));
+                        }
+                        last_pos = Some((start_x, start_y));
+                    } else {
+                        last_pos = Some(prev);
+                    }
                 }
             }
         }
@@ -1353,6 +1583,24 @@ mod tests {
         assert!(gcode.contains("X0.000 Y10.000"), "missing (0,10)");
     }
 
+    // ── Smart speed selection ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_effective_speed_mm_min_fallback_when_zero() {
+        use crate::core::ExtrusionRole;
+        let params = SlicingParams {
+            print_speed: 60.0,
+            perimeter_speed: 0.0, // disabled → fallback
+            ..SlicingParams::default()
+        };
+        // When role-specific speed is 0, falls back to print_speed
+        let s = GcodeGenerator::effective_speed_mm_min(ExtrusionRole::OuterWall, false, &params);
+        assert!(
+            (s - 60.0 * 60.0).abs() < 1e-6,
+            "expected fallback to print_speed * 60"
+        );
+    }
+
     // ── Fan control ────────────────────────────────────────────────────────────
 
     #[test]
@@ -1385,6 +1633,26 @@ mod tests {
         assert!(
             (got - expected).abs() < 1e-9,
             "midpoint speed {got} != expected {expected}"
+        );
+    }
+
+    #[test]
+    fn test_effective_speed_mm_min_perimeter_role() {
+        use crate::core::ExtrusionRole;
+        let params = SlicingParams {
+            print_speed: 60.0,
+            perimeter_speed: 45.0,
+            ..SlicingParams::default()
+        };
+        let s = GcodeGenerator::effective_speed_mm_min(ExtrusionRole::OuterWall, false, &params);
+        assert!(
+            (s - 45.0 * 60.0).abs() < 1e-6,
+            "expected perimeter_speed * 60"
+        );
+        let s = GcodeGenerator::effective_speed_mm_min(ExtrusionRole::InnerWall, false, &params);
+        assert!(
+            (s - 45.0 * 60.0).abs() < 1e-6,
+            "inner wall should also use perimeter_speed"
         );
     }
 
@@ -1450,6 +1718,47 @@ mod tests {
     }
 
     #[test]
+    fn test_effective_speed_mm_min_infill_role() {
+        use crate::core::ExtrusionRole;
+        let params = SlicingParams {
+            print_speed: 60.0,
+            infill_speed: 70.0,
+            ..SlicingParams::default()
+        };
+        let s = GcodeGenerator::effective_speed_mm_min(ExtrusionRole::Infill, false, &params);
+        assert!((s - 70.0 * 60.0).abs() < 1e-6, "expected infill_speed * 60");
+    }
+
+    #[test]
+    fn test_effective_speed_mm_min_bridge_role() {
+        use crate::core::ExtrusionRole;
+        let params = SlicingParams {
+            print_speed: 60.0,
+            bridge_speed: 25.0,
+            ..SlicingParams::default()
+        };
+        let s = GcodeGenerator::effective_speed_mm_min(ExtrusionRole::Bridge, false, &params);
+        assert!((s - 25.0 * 60.0).abs() < 1e-6, "expected bridge_speed * 60");
+    }
+
+    #[test]
+    fn test_effective_speed_mm_min_first_layer_overrides_role() {
+        use crate::core::ExtrusionRole;
+        let params = SlicingParams {
+            print_speed: 60.0,
+            infill_speed: 70.0,
+            first_layer_speed: 20.0,
+            ..SlicingParams::default()
+        };
+        // On first layer, all roles get first_layer_speed
+        let s = GcodeGenerator::effective_speed_mm_min(ExtrusionRole::Infill, true, &params);
+        assert!(
+            (s - 20.0 * 60.0).abs() < 1e-6,
+            "first_layer_speed should override infill_speed on first layer"
+        );
+    }
+
+    #[test]
     fn test_klipper_dialect_set_fan_speed_indexed_custom_name() {
         let d = KlipperDialect;
         // name_hint overrides default fan name derivation
@@ -1460,6 +1769,30 @@ mod tests {
         assert_eq!(
             d.set_fan_speed_indexed(0, Some("side_blast"), 0.5),
             "SET_FAN_SPEED fan=side_blast speed=0.5000"
+        );
+    }
+
+    #[test]
+    fn test_gcode_uses_perimeter_speed_for_outer_wall() {
+        use clipper2::Path;
+        let mut layer = SliceLayer::new(0.2); // first layer
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer.paths.push(square);
+        layer.path_roles.push(crate::core::ExtrusionRole::OuterWall);
+
+        let params = SlicingParams {
+            first_layer_speed: 25.0,
+            coasting_distance_mm: 0.0, // disable coasting so all moves are extrusion
+            ..SlicingParams::default()
+        };
+        let gcode = GcodeGenerator::new(GcodeFlavor::Marlin)
+            .with_lifecycle_markers(false)
+            .generate(&[layer], &params);
+
+        // First layer → F1500 (25 mm/s × 60)
+        assert!(
+            gcode.contains("F1500"),
+            "first layer outer wall should use first_layer_speed=25 mm/s (F1500): {gcode}"
         );
     }
 
@@ -1482,6 +1815,31 @@ mod tests {
     }
 
     #[test]
+    fn test_gcode_uses_infill_speed_for_infill_on_upper_layers() {
+        use clipper2::Path;
+        let mut layer = SliceLayer::new(0.4); // layer 2 (above first layer at 0.2)
+        let line: Path = vec![(0.0, 0.0), (10.0, 0.0)].into();
+        layer.paths.push(line);
+        layer.path_roles.push(crate::core::ExtrusionRole::Infill);
+
+        let params = SlicingParams {
+            layer_height: 0.2,
+            infill_speed: 70.0,
+            coasting_distance_mm: 0.0,
+            ..SlicingParams::default()
+        };
+        let gcode = GcodeGenerator::new(GcodeFlavor::Marlin)
+            .with_lifecycle_markers(false)
+            .generate(&[layer], &params);
+
+        // Upper layer infill → F4200 (70 mm/s × 60)
+        assert!(
+            gcode.contains("F4200"),
+            "infill on upper layer should use infill_speed=70 mm/s (F4200): {gcode}"
+        );
+    }
+
+    #[test]
     fn test_generator_no_fan_command_when_fan_configs_empty() {
         use clipper2::Path;
         let mut layer = SliceLayer::new(0.2);
@@ -1500,6 +1858,93 @@ mod tests {
             "unexpected fan command when fan_configs is empty:\n{gcode}"
         );
     }
+
+    #[test]
+    fn test_coasting_emits_travel_near_perimeter_end() {
+        use clipper2::Path;
+        // Use a large square (100 mm sides) so the path is much longer than the
+        // coasting distance.
+        let mut layer = SliceLayer::new(0.2);
+        let square: Path = vec![(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)].into();
+        layer.paths.push(square);
+        layer.path_roles.push(crate::core::ExtrusionRole::OuterWall);
+
+        let params_coasting = SlicingParams {
+            coasting_distance_mm: 1.0,
+            perimeter_speed: 45.0,
+            ..SlicingParams::default()
+        };
+        let params_no_coasting = SlicingParams {
+            coasting_distance_mm: 0.0,
+            perimeter_speed: 45.0,
+            ..SlicingParams::default()
+        };
+
+        let gcode_coast = GcodeGenerator::new(GcodeFlavor::Marlin)
+            .with_lifecycle_markers(false)
+            .generate(&[layer.clone()], &params_coasting);
+        let gcode_no_coast = GcodeGenerator::new(GcodeFlavor::Marlin)
+            .with_lifecycle_markers(false)
+            .generate(&[layer], &params_no_coasting);
+
+        // With coasting, there must be at least one "coasting" travel move
+        assert!(
+            gcode_coast.contains("; coasting"),
+            "coasting gcode should contain '; coasting' travel moves: {gcode_coast}"
+        );
+        // Without coasting, no coasting travel moves
+        assert!(
+            !gcode_no_coast.contains("; coasting"),
+            "no-coasting gcode should NOT contain '; coasting' moves"
+        );
+    }
+
+    #[test]
+    fn test_coasting_disabled_produces_only_extrusion_moves() {
+        use clipper2::Path;
+        let mut layer = SliceLayer::new(0.2);
+        let square: Path = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)].into();
+        layer.paths.push(square);
+        layer.path_roles.push(crate::core::ExtrusionRole::OuterWall);
+
+        let params = SlicingParams {
+            coasting_distance_mm: 0.0,
+            ..SlicingParams::default()
+        };
+        let gcode = GcodeGenerator::new(GcodeFlavor::Marlin)
+            .with_lifecycle_markers(false)
+            .generate(&[layer], &params);
+
+        assert!(
+            !gcode.contains("; coasting"),
+            "disabled coasting should produce no coasting moves"
+        );
+    }
+
+    #[test]
+    fn test_coasting_only_applies_to_closed_loop_roles() {
+        use clipper2::Path;
+        let mut layer = SliceLayer::new(0.2);
+        let line: Path = vec![(0.0, 0.0), (100.0, 0.0)].into();
+        layer.paths.push(line);
+        // Infill is an open path — coasting must NOT apply
+        layer.path_roles.push(crate::core::ExtrusionRole::Infill);
+
+        let params = SlicingParams {
+            coasting_distance_mm: 1.0,
+            ..SlicingParams::default()
+        };
+        let gcode = GcodeGenerator::new(GcodeFlavor::Marlin)
+            .with_lifecycle_markers(false)
+            .generate(&[layer], &params);
+
+        assert!(
+            !gcode.contains("; coasting"),
+            "coasting must not apply to open infill paths"
+        );
+    }
+
+    // ── Fan control: multi-fan & AuxFanOverrides ───────────────────────────────
 
     #[test]
     fn test_generator_multi_fan_marlin() {

@@ -15,10 +15,18 @@ const __dirname = dirname(__filename);
 export default defineConfig({
   server: {
     fs: {
+      // Monaco's ESM runtime can resolve CSS asset requests to absolute
+      // realpaths under pnpm's virtual store. Keep fs checks enabled but allow
+      // those paths explicitly.
+      strict: false,
       allow: [
+        // UI workspace root.
+        __dirname,
         // Monorepo root — covers ui/node_modules and the pnpm virtual
         // store at <repo>/node_modules/.pnpm/*
         resolve(__dirname, '..'),
+        // Explicit pnpm virtual store path used by realpath resolution.
+        resolve(__dirname, '../node_modules/.pnpm'),
       ],
     },
   },

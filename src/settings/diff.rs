@@ -58,6 +58,19 @@ pub fn compare_settings(global: &SlicingParams, object: &ObjectSettings) -> Vec<
         diff_usize!(wall_distribution_count),
         diff_f64!(infill_density),
         diff_f64!(print_speed),
+        diff_f64!(perimeter_speed),
+        diff_f64!(infill_speed),
+        diff_f64!(bridge_speed),
+        diff_f64!(bridge_flow_ratio),
+        diff_f64!(bridge_min_area_mm2),
+        diff_f64!(bridge_noise_filter_mm),
+        diff_f64!(bridge_anchor_mm),
+        diff_f64!(top_surface_speed),
+        diff_f64!(first_layer_speed),
+        diff_f64!(fan_speed),
+        diff_f64!(bridge_fan_speed),
+        diff_f64!(first_layer_fan_speed),
+        diff_f64!(coasting_distance_mm),
         diff_f64!(nozzle_temp),
         diff_f64!(bed_temp),
     ]
@@ -76,7 +89,7 @@ mod tests {
             overrides: None,
         };
         let diff = compare_settings(&global, &object);
-        assert_eq!(diff.len(), 11, "Should have 11 fields");
+        assert_eq!(diff.len(), 24, "Should have 24 fields");
         for d in &diff {
             assert!(
                 !d.is_override,
@@ -135,6 +148,19 @@ mod tests {
         assert!(field_names.contains(&"wall_distribution_count"));
         assert!(field_names.contains(&"infill_density"));
         assert!(field_names.contains(&"print_speed"));
+        assert!(field_names.contains(&"perimeter_speed"));
+        assert!(field_names.contains(&"infill_speed"));
+        assert!(field_names.contains(&"bridge_speed"));
+        assert!(field_names.contains(&"bridge_flow_ratio"));
+        assert!(field_names.contains(&"bridge_min_area_mm2"));
+        assert!(field_names.contains(&"bridge_noise_filter_mm"));
+        assert!(field_names.contains(&"bridge_anchor_mm"));
+        assert!(field_names.contains(&"top_surface_speed"));
+        assert!(field_names.contains(&"first_layer_speed"));
+        assert!(field_names.contains(&"fan_speed"));
+        assert!(field_names.contains(&"bridge_fan_speed"));
+        assert!(field_names.contains(&"first_layer_fan_speed"));
+        assert!(field_names.contains(&"coasting_distance_mm"));
         assert!(field_names.contains(&"nozzle_temp"));
         assert!(field_names.contains(&"bed_temp"));
     }

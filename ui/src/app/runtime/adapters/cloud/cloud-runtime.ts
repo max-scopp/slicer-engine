@@ -92,12 +92,12 @@ export class CloudRuntime implements RuntimePort {
         const id = Number(op.id);
         switch (op.op) {
           case 'remove':
-            return { op: 'remove', args: { id } };
+            return { op: 'Remove', args: { id } };
           case 'translate':
-            return { op: 'translate', args: { id, delta: op.delta } };
+            return { op: 'Translate', args: { id, delta: op.delta } };
           case 'set_transform':
             return {
-              op: 'set_transform',
+              op: 'SetTransform',
               args: {
                 id,
                 translation: op.translation,
@@ -106,15 +106,15 @@ export class CloudRuntime implements RuntimePort {
               },
             };
           case 'rotate':
-            return { op: 'rotate', args: { id, axis: op.axis, degrees: op.degrees } };
+            return { op: 'Rotate', args: { id, axis: op.axis, degrees: op.degrees } };
           case 'scale':
-            return { op: 'scale', args: { id, factors: op.factors } };
+            return { op: 'Scale', args: { id, factors: op.factors } };
           case 'center_on_bed':
-            return { op: 'center_on_bed', args: { id } };
+            return { op: 'CenterOnBed', args: { id } };
           case 'drop_to_floor':
-            return { op: 'drop_to_floor', args: { id } };
+            return { op: 'DropToFloor', args: { id } };
           case 'place_face_on_floor':
-            return { op: 'place_face_on_floor', args: { id, face_index: op.face_index } };
+            return { op: 'PlaceFaceOnFloor', args: { id, face_index: op.face_index } };
         }
       }),
       options: { gravity: false },

@@ -1,15 +1,16 @@
 import {
-  BufferAttribute,
-  BufferGeometry,
-  CylinderGeometry,
-  Group,
-  InstancedMesh,
-  LineBasicMaterial,
-  LineSegments,
-  MeshStandardMaterial,
-  Object3D,
-  SphereGeometry,
-  Vector3,
+    BufferAttribute,
+    BufferGeometry,
+    Color,
+    CylinderGeometry,
+    Group,
+    InstancedMesh,
+    LineBasicMaterial,
+    LineSegments,
+    MeshStandardMaterial,
+    Object3D,
+    SphereGeometry,
+    Vector3,
 } from 'three';
 import type { GcodeLayerBuffer } from '../../../generated/scene-wasm/scene_engine';
 import { ROLE_COLORS, ROLE_ORDER, type RoleName } from '../../services/gcode-preview';
@@ -51,6 +52,11 @@ const ROLE_ID_TO_NAME: Record<number, RoleName> = {
   4: 'bottomSurface',
   5: 'travel',
   6: 'other',
+  7: 'bridge',
+  8: 'skirt',
+  9: 'support',
+  10: 'seam',
+  11: 'overhangPerimeter',
 };
 
 const _dummy = new Object3D();
@@ -62,6 +68,11 @@ const _mid = new Vector3();
 const segmentGeometry = new CylinderGeometry(0.5, 0.5, 1, 8, 1, false);
 segmentGeometry.rotateX(Math.PI / 2); // Align along Z
 const jointGeometry = new SphereGeometry(0.5, 8, 8);
+
+// Seam dots are rendered as larger white spheres.  We keep a dedicated
+// geometry so they can be rendered independently of the normal joint spheres.
+const seamDotGeometry = new SphereGeometry(0.5, 10, 10);
+const SEAM_COLOR = new Color(0xffffff);
 
 export function buildLayerGroup(buf: GcodeLayerBuffer): LayerBuild {
   const group = new Group();
@@ -76,6 +87,11 @@ export function buildLayerGroup(buf: GcodeLayerBuffer): LayerBuild {
     bottomSurface: 0,
     travel: 0,
     other: 0,
+    bridge: 0,
+    overhangPerimeter: 0,
+    skirt: 0,
+    support: 0,
+    seam: 0,
   };
 
   const blockLayout: { role: RoleName; count: number }[] = [];
@@ -112,6 +128,19 @@ export function buildLayerGroup(buf: GcodeLayerBuffer): LayerBuild {
       const lines = new LineSegments(geometry, material);
       group.add(lines);
       roleSegmentsMap[role] = { role, lines, count };
+    } else if (role === 'seam') {
+      // Seam points are rendered as white spheres — no cylinder body, just dots.
+      const material = new MeshStandardMaterial({
+        color: SEAM_COLOR,
+        roughness: 0.3,
+        metalness: 0.1,
+      });
+      const dots = new InstancedMesh(seamDotGeometry, material, count);
+      dots.instanceMatrix.setUsage(35044 /* THREE.DynamicDrawUsage */);
+      dots.count = count;
+      group.add(dots);
+      // Re-use the `joints` slot so existing visibility / progress logic works.
+      roleSegmentsMap[role] = { role, joints: dots, count };
     } else {
       const material = new MeshStandardMaterial({ color, roughness: 0.6 });
       const mesh = new InstancedMesh(segmentGeometry, material, count);
@@ -137,6 +166,11 @@ export function buildLayerGroup(buf: GcodeLayerBuffer): LayerBuild {
     bottomSurface: 0,
     travel: 0,
     other: 0,
+    bridge: 0,
+    overhangPerimeter: 0,
+    skirt: 0,
+    support: 0,
+    seam: 0,
   };
 
   for (let b = 0; b < numBlocks; b++) {
@@ -166,6 +200,22 @@ export function buildLayerGroup(buf: GcodeLayerBuffer): LayerBuild {
         pts[pOff + 5] = data[off + 5];
       }
       rs.lines!.geometry.attributes['position'].needsUpdate = true;
+    } else if (role === 'seam') {
+      // Seam blocks are degenerate (p0 == p1).  Render as a scaled white dot
+      // sphere positioned at p0.  The width field (data[6]) carries the dot
+      // radius set to SEAM_DOT_RADIUS (0.6 mm) in the Rust parser.
+      const dots = rs.joints!;
+      for (let i = 0; i < count; i++) {
+        const globalI = baseOffset + i;
+        const offset = i * 8;
+        const dotSize = data[offset + 6] || 0.6; // 0.6 = SEAM_DOT_RADIUS in parser.rs
+        _dummy.position.set(data[offset], data[offset + 1], data[offset + 2]);
+        _dummy.rotation.set(0, 0, 0);
+        _dummy.scale.set(dotSize, dotSize, dotSize);
+        _dummy.updateMatrix();
+        dots.setMatrixAt(globalI, _dummy.matrix);
+      }
+      dots.instanceMatrix.needsUpdate = true;
     } else {
       const mesh = rs.mesh!;
       const joints = rs.joints!;
@@ -234,9 +284,13 @@ export function showLayerRange(
   const prevInfo = layers[prevMax];
   if (prevInfo && prevMax !== max) {
     for (const rs of prevInfo.roleSegments) {
-      if (rs.mesh) rs.mesh.count = rs.count;
-      if (rs.joints) rs.joints.count = rs.count * 2;
-      if (rs.lines) rs.lines.geometry.setDrawRange(0, Infinity);
+      if (rs.role === 'seam') {
+        if (rs.joints) rs.joints.count = rs.count;
+      } else {
+        if (rs.mesh) rs.mesh.count = rs.count;
+        if (rs.joints) rs.joints.count = rs.count * 2;
+        if (rs.lines) rs.lines.geometry.setDrawRange(0, Infinity);
+      }
     }
   }
 
@@ -263,6 +317,11 @@ export function applySegmentProgress(
     bottomSurface: 0,
     travel: 0,
     other: 0,
+    bridge: 0,
+    overhangPerimeter: 0,
+    skirt: 0,
+    support: 0,
+    seam: 0,
   };
 
   let remaining = target;
@@ -275,9 +334,14 @@ export function applySegmentProgress(
 
   for (const rs of info.roleSegments) {
     const show = visibleCounts[rs.role] || 0;
-    if (rs.mesh) rs.mesh.count = show;
-    if (rs.joints) rs.joints.count = show * 2;
-    if (rs.lines) rs.lines.geometry.setDrawRange(0, show * 2);
+    if (rs.role === 'seam') {
+      // Seam dots use only the joints slot (no cylinder mesh).
+      if (rs.joints) rs.joints.count = show;
+    } else {
+      if (rs.mesh) rs.mesh.count = show;
+      if (rs.joints) rs.joints.count = show * 2;
+      if (rs.lines) rs.lines.geometry.setDrawRange(0, show * 2);
+    }
   }
 }
 

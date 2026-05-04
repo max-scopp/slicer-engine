@@ -210,7 +210,7 @@ See [architecture-cli-layer-1.md](plan/architecture-cli-layer-1.md) for detailed
 ### Cross-Platform Testing
 
 1. Use conditional compilation (`#[cfg(...)]`) for platform-specific code
-2. Test locally: `cargo test --release`
+2. Test locally: `cargo test`
 3. Test WASM builds with `wasm-pack test --headless --firefox`
 4. Verify CI passes all platform targets before merging
 

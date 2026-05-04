@@ -17,7 +17,7 @@ use std::sync::Arc;
 /// All variants must be reversible from the current state plus the returned
 /// [`OpReceipt`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "op", content = "args", rename_all = "snake_case")]
+#[serde(tag = "op", content = "args")]
 pub enum SceneOp {
     /// Add a mesh from raw bytes.
     Add {
@@ -760,7 +760,7 @@ mod tests {
     fn arrange_on_bed_undo_restores_transforms() {
         let mut s = SceneState::new(small_bed());
         let ids: Vec<ObjectId> = (0..2)
-            .map(|i| s.add_mesh(format!("c{i}"), cube_mesh([f64::from(i as i32) * 5.0, 0.0, 0.0], 10.0)))
+            .map(|i| s.add_mesh(format!("c{i}"), cube_mesh([f64::from(i) * 5.0, 0.0, 0.0], 10.0)))
             .collect();
 
         let pre: Vec<_> = ids
@@ -784,10 +784,11 @@ mod tests {
 
         for (i, &id) in ids.iter().enumerate() {
             let restored = s.get(id).unwrap().transform.translation;
-            for axis in 0..3 {
+            let axes = ["x", "y", "z"];
+            for (axis, &axis_name) in axes.iter().enumerate() {
                 assert!(
                     (restored[axis] - pre[i].translation[axis]).abs() < 1e-4,
-                    "obj {i} axis {axis}: got {}, expected {}",
+                    "obj {i} {axis_name}: got {}, expected {}",
                     restored[axis],
                     pre[i].translation[axis]
                 );

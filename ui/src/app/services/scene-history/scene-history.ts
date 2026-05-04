@@ -94,7 +94,7 @@ export class SceneHistory {
 
     for (const id of currentIds) {
       if (!snapshot.objects.some((o) => String(o.id) === id)) {
-        this.engine.apply({ op: 'remove', args: { id: BigInt(id) } });
+        this.engine.apply({ op: 'Remove', args: { id: BigInt(id) } });
       }
     }
 
@@ -104,7 +104,7 @@ export class SceneHistory {
         continue;
       }
       this.engine.apply({
-        op: 'set_transform',
+        op: 'SetTransform',
         args: {
           id: obj.id,
           translation: obj.translation,

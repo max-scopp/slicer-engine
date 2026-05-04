@@ -12,7 +12,6 @@ use std::path::Path;
 
 /// Supported mesh file formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
 pub enum MeshFormat {
     /// STL (binary or ASCII).
     Stl,

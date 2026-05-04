@@ -120,7 +120,7 @@ function runSlice(
 function addObject(handle: SceneHandle, object: WorkerSliceObject): void {
   const id = handle.addMesh(object.name, object.format, object.bytes);
   handle.applyOp({
-    op: 'set_transform',
+    op: 'SetTransform',
     args: {
       id,
       translation: object.transform.translation,
