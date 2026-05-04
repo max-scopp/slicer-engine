@@ -191,6 +191,7 @@ pub fn process_mesh(
                 layer_height: params.layer_height,
                 infill_angle: params.surface_infill_angle,
                 nozzle_diameter_mm: params.nozzle_diameter_mm,
+                min_infill_extrusion_mm: params.min_infill_extrusion_mm,
                 bridge_flow_ratio: params.bridge_flow_ratio,
                 bridge_min_area_mm2: params.bridge_min_area_mm2,
                 bridge_noise_filter_mm: params.bridge_noise_filter_mm,

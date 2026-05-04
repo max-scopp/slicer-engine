@@ -664,6 +664,22 @@ where the infill pattern shows through the outer wall.
     pub infill_perimeter_gap_mm: f64,
 
     #[schemars(
+        description = "Minimum solid infill line length in mm.
+
+Scan-line segments shorter than this threshold are discarded instead of being
+printed. Tiny slivers at curved or diagonal surface boundaries waste printhead
+motion without meaningfully improving coverage — adjacent lines overlap to fill
+the gap naturally.
+
+Set to the nozzle diameter for best results (e.g. `0.4` for a 0.4 mm nozzle).
+Set to `0.0` to disable the filter entirely.
+**Default:** 0.4 mm (one standard nozzle diameter).",
+        extend("x-group" = "Surfaces")
+    )]
+    #[serde(default = "SlicingParams::default_min_infill_extrusion_mm")]
+    pub min_infill_extrusion_mm: f64,
+
+    #[schemars(
         description = "Maximum perpendicular deviation (mm) for path simplification (Ramer–Douglas–Peucker).
 
 Reduces the number of G-code points without visibly affecting print quality.
@@ -754,6 +770,7 @@ impl Default for SlicingParams {
             support_threshold_angle: Self::default_support_threshold_angle(),
             infill_overlap_percent: Self::default_infill_overlap_percent(),
             infill_perimeter_gap_mm: Self::default_infill_perimeter_gap_mm(),
+            min_infill_extrusion_mm: Self::default_min_infill_extrusion_mm(),
             path_tolerance: Self::default_path_tolerance(),
             gcode_flavor: Self::default_gcode_flavor(),
             fan_configs: Self::default_fan_configs(),
@@ -905,6 +922,10 @@ impl SlicingParams {
 
     fn default_infill_perimeter_gap_mm() -> f64 {
         0.1 // 0.1 mm gap between wall and sparse infill
+    }
+
+    fn default_min_infill_extrusion_mm() -> f64 {
+        0.4 // one nozzle diameter — matches standard 0.4 mm nozzle default
     }
 
     fn default_path_tolerance() -> f64 {

@@ -680,7 +680,7 @@ mod tests {
         let mut paths = Paths::new(vec![]);
         paths.push(square);
 
-        let infill = generate_rectilinear_infill(&paths, 1.0, 0.0);
+        let infill = generate_rectilinear_infill(&paths, 1.0, 0.0, 0.0);
 
         assert!(!infill.is_empty(), "Expected infill lines to be generated");
 
@@ -707,7 +707,7 @@ mod tests {
     fn test_add_solid_infill_for_region_empty_region() {
         let mut layer = SliceLayer::new(1.0);
         let empty: Paths = Paths::new(vec![]);
-        add_solid_infill_for_region(&mut layer, &empty, ExtrusionRole::TopSurface, 0.2, 45.0);
+        add_solid_infill_for_region(&mut layer, &empty, ExtrusionRole::TopSurface, 0.2, 45.0, 0.0);
         // Should handle empty region gracefully – no paths added
         assert!(layer.paths.is_empty());
     }
@@ -822,7 +822,7 @@ mod tests {
         let mut paths = Paths::new(vec![]);
         paths.push(square);
 
-        let infill = generate_rectilinear_infill(&paths, 1.0, 45.0);
+        let infill = generate_rectilinear_infill(&paths, 1.0, 45.0, 0.0);
 
         // Should generate some infill lines
         assert!(!infill.is_empty(), "Expected infill lines to be generated");
@@ -831,7 +831,7 @@ mod tests {
     #[test]
     fn test_generate_rectilinear_infill_empty_contours() {
         let paths = Paths::new(vec![]);
-        let infill = generate_rectilinear_infill(&paths, 1.0, 45.0);
+        let infill = generate_rectilinear_infill(&paths, 1.0, 45.0, 0.0);
         assert!(infill.is_empty());
     }
 
@@ -841,7 +841,7 @@ mod tests {
         let mut paths = Paths::new(vec![]);
         paths.push(square);
 
-        let infill = generate_rectilinear_infill(&paths, 0.0, 45.0);
+        let infill = generate_rectilinear_infill(&paths, 0.0, 45.0, 0.0);
         assert!(infill.is_empty());
     }
 
@@ -1219,6 +1219,7 @@ mod tests {
                 bridge_min_area_mm2: 0.0,
                 bridge_noise_filter_mm: 0.0,
                 bridge_anchor_mm: 0.0,
+                min_infill_extrusion_mm: 0.0,
             },
             None,
         );
@@ -1257,7 +1258,7 @@ mod tests {
         contours.push(square);
 
         let line_spacing = 0.5_f64;
-        let infill = generate_rectilinear_infill(&contours, line_spacing, 0.0);
+        let infill = generate_rectilinear_infill(&contours, line_spacing, 0.0, 0.0);
 
         // The number of scan lines for a 10mm region at 0.5mm spacing is ~20.
         // + 2 accounts for the grid-alignment floor/ceil and the half-spacing
@@ -1308,7 +1309,7 @@ mod tests {
         contours.push(left);
         contours.push(right);
 
-        let infill = generate_rectilinear_infill(&contours, 0.5, 0.0);
+        let infill = generate_rectilinear_infill(&contours, 0.5, 0.0, 0.0);
         assert!(!infill.is_empty(), "expected infill to be generated");
 
         // Every point in the infill must be inside one of the two rectangles.
@@ -1356,7 +1357,7 @@ mod tests {
         contours.push(outer);
         contours.push(notch);
 
-        let infill = generate_rectilinear_infill(&contours, 0.5, 0.0);
+        let infill = generate_rectilinear_infill(&contours, 0.5, 0.0, 0.0);
         assert!(!infill.is_empty(), "expected infill to be generated");
 
         // No infill point should be in the notched-out region (x>5, y∈[2,3]).
@@ -1488,6 +1489,7 @@ mod tests {
                 bridge_min_area_mm2: 1.0,
                 bridge_noise_filter_mm: 0.0,
                 bridge_anchor_mm: 0.0,
+                min_infill_extrusion_mm: 0.0,
             },
             None,
         );
@@ -1541,6 +1543,7 @@ mod tests {
                 bridge_min_area_mm2: 0.0,
                 bridge_noise_filter_mm: 0.5,
                 bridge_anchor_mm: 0.0,
+                min_infill_extrusion_mm: 0.0,
             },
             None,
         );
@@ -1596,6 +1599,7 @@ mod tests {
             bridge_min_area_mm2: 0.0,
             bridge_noise_filter_mm: 0.0,
             bridge_anchor_mm: anchor,
+            min_infill_extrusion_mm: 0.0,
         };
 
         generate_top_bottom_surfaces_with_interior(&mut layers_no_anchor, &cfg(0.0), None);
@@ -1686,6 +1690,7 @@ mod tests {
                 bridge_min_area_mm2: 0.0, // disable area filter so small porthole still passes
                 bridge_noise_filter_mm: 0.0, // disable noise filter
                 bridge_anchor_mm: 0.0,    // disable anchor so result area is minimal / predictable
+                min_infill_extrusion_mm: 0.0,
             },
             Some(&interior_regions),
         );
@@ -1744,6 +1749,7 @@ mod tests {
                 bridge_min_area_mm2: 0.0,
                 bridge_noise_filter_mm: 0.0,
                 bridge_anchor_mm: 0.0,
+                min_infill_extrusion_mm: 0.0,
             },
             None,
         );
@@ -1857,6 +1863,7 @@ mod tests {
                 bridge_min_area_mm2: 0.0,
                 bridge_noise_filter_mm: 0.0,
                 bridge_anchor_mm: 0.4,
+                min_infill_extrusion_mm: 0.0,
             },
             None,
         );
@@ -1953,6 +1960,7 @@ mod tests {
                 bridge_min_area_mm2: 0.0,
                 bridge_noise_filter_mm: 0.0,
                 bridge_anchor_mm: 0.5,
+                min_infill_extrusion_mm: 0.0,
             },
             None,
         );
@@ -2042,6 +2050,7 @@ mod tests {
                 bridge_min_area_mm2: 0.0,
                 bridge_noise_filter_mm: 0.0,
                 bridge_anchor_mm: 0.5,
+                min_infill_extrusion_mm: 0.0,
             },
             Some(&interior_regions),
         );

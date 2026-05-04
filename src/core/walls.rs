@@ -891,7 +891,9 @@ mod tests {
         // Keeping the hull as OverhangPerimeter would cause it to be extruded first,
         // then bridge infill would extrude on top — double-extrusion.
         assert!(
-            !layers[1].path_roles.contains(&ExtrusionRole::OverhangPerimeter),
+            !layers[1]
+                .path_roles
+                .contains(&ExtrusionRole::OverhangPerimeter),
             "Outer hull must be clipped (not OverhangPerimeter) when it coincides \
              with the bridge zone boundary — double-extrusion prevention; \
              roles={:?}",

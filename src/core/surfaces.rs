@@ -56,6 +56,8 @@ const SOLID_INFILL_EXTRUSION_WIDTH_MULTIPLIER: f64 = 1.2;
 /// void regions; values smaller than 1.5 may leave convex corners unchained.
 const SERPENTINE_CONNECT_THRESHOLD: f64 = 2.0;
 
+
+
 /// Add solid infill for a computed surface `region` to a layer.
 ///
 /// Generates a rectilinear infill pattern covering only the provided `region`
@@ -67,13 +69,15 @@ pub(super) fn add_solid_infill_for_region(
     role: ExtrusionRole,
     layer_height: f64,
     infill_angle: f64,
+    min_infill_extrusion_mm: f64,
 ) {
     if region.is_empty() {
         return;
     }
 
     let line_spacing = layer_height * SOLID_INFILL_EXTRUSION_WIDTH_MULTIPLIER;
-    let infill_paths = generate_rectilinear_infill(region, line_spacing, infill_angle);
+    let infill_paths =
+        generate_rectilinear_infill(region, line_spacing, infill_angle, min_infill_extrusion_mm);
 
     for path in infill_paths {
         layer.paths.push(path);
@@ -545,7 +549,7 @@ pub(super) fn add_bridge_infill_for_region(
     // Effective bead width with flow reduction.
     let bead_width = (nozzle_diameter_mm * bridge_flow_ratio).max(0.01);
 
-    let infill_paths = generate_rectilinear_infill(region, line_spacing, bridge_angle);
+    let infill_paths = generate_rectilinear_infill(region, line_spacing, bridge_angle, 0.0);
 
     // Before adding bridge paths, pad `path_widths` to align with the current
     // paths vector (existing wall/infill paths don't push width entries, so
@@ -598,6 +602,7 @@ pub(super) fn generate_rectilinear_infill(
     contours: &Paths,
     line_spacing: f64,
     angle_degrees: f64,
+    min_extrusion_length_mm: f64,
 ) -> Paths {
     if contours.is_empty() || line_spacing <= 0.0 {
         return Paths::new(vec![]);
@@ -680,11 +685,14 @@ pub(super) fn generate_rectilinear_infill(
 
         // Collect segments for this scan line
         let mut segments: Vec<(f64, f64)> = Vec::new();
+        // Always guard against degenerate zero-width segments (coincident edge crossings
+        // produce xs[k] == xs[k+1]).  The user-supplied minimum is applied on top.
+        let effective_min = min_extrusion_length_mm.max(1e-9);
         let mut k = 0;
         while k + 1 < xs.len() {
             let x_start = xs[k];
             let x_end = xs[k + 1];
-            if x_end > x_start + 1e-9 {
+            if x_end - x_start >= effective_min {
                 segments.push((x_start, x_end));
             }
             k += 2;
@@ -852,6 +860,7 @@ pub fn generate_top_bottom_surfaces(
             layer_height,
             infill_angle,
             nozzle_diameter_mm: 0.4,
+            min_infill_extrusion_mm: 0.0,
             bridge_flow_ratio: 0.8,
             bridge_min_area_mm2: 0.5,
             bridge_noise_filter_mm: 0.05,
@@ -883,6 +892,13 @@ pub struct SurfaceConfig {
     pub infill_angle: f64,
     /// Nozzle diameter in mm, used for bridge line spacing and extrusion width.
     pub nozzle_diameter_mm: f64,
+    /// Minimum absolute length (mm) for a solid infill scan-line segment to be
+    /// emitted.  Segments shorter than this are discarded — they would produce
+    /// a tiny, mechanically useless extrusion and waste printhead motion.
+    ///
+    /// Set to `nozzle_diameter_mm × 1.0` as a strong default (e.g. 0.4 mm for
+    /// a standard 0.4 mm nozzle).  Set to `0.0` to disable the filter.
+    pub min_infill_extrusion_mm: f64,
     /// Flow ratio for bridge extrusions (e.g. 0.8 = 80% of normal flow).
     ///
     /// Reducing flow stiffens bridge strands in mid-air, reducing sag.
@@ -943,6 +959,7 @@ pub fn generate_top_bottom_surfaces_with_interior(
     let bridge_min_area_mm2 = config.bridge_min_area_mm2;
     let bridge_noise_filter_mm = config.bridge_noise_filter_mm;
     let bridge_anchor_mm = config.bridge_anchor_mm;
+    let min_infill_extrusion_mm = config.min_infill_extrusion_mm;
     if layers.is_empty() || (top_layers == 0 && bottom_layers == 0) {
         return SurfaceSubTimings {
             perimeter_snapshot_ms: 0,
@@ -1398,6 +1415,7 @@ pub fn generate_top_bottom_surfaces_with_interior(
                 ExtrusionRole::BottomSurface,
                 layer_height,
                 infill_angle,
+                min_infill_extrusion_mm,
             );
             #[cfg(not(target_arch = "wasm32"))]
             {
@@ -1414,6 +1432,7 @@ pub fn generate_top_bottom_surfaces_with_interior(
                 ExtrusionRole::TopSurface,
                 layer_height,
                 infill_angle,
+                min_infill_extrusion_mm,
             );
             #[cfg(not(target_arch = "wasm32"))]
             {
