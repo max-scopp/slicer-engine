@@ -186,6 +186,18 @@ pub struct SliceCommand {
     /// When omitted, uses the value from settings (default: normal).
     #[arg(long, value_name = "QUALITY")]
     pub mesh_quality: Option<String>,
+
+    /// Where to place the seam (start/end point) of each closed perimeter loop.
+    ///
+    /// - `nearest` — closest vertex to current nozzle position (fastest, scattered).
+    /// - `rear` — single seam line at the back of the model (max Y).
+    /// - `aligned` — vertices projected onto a fixed direction; consistent across loops.
+    /// - `sharpest-corner` — hides the seam in the sharpest corner of each loop.
+    /// - `random` — different vertex per loop (no visible seam line).
+    ///
+    /// When omitted, uses the value from settings (default: nearest).
+    #[arg(long, value_name = "POLICY")]
+    pub seam_position: Option<String>,
 }
 
 /// Result payload emitted by the `slice` command.
@@ -286,6 +298,13 @@ impl SliceCommand {
                     .into())
                 }
             };
+        }
+        if let Some(ref policy_str) = self.seam_position {
+            slice_params.seam_position = crate::settings::params::SeamPosition::parse(policy_str)
+                .ok_or_else(|| format!(
+                    "Unknown seam position: '{}'. Supported: nearest, rear, aligned, sharpest-corner, random",
+                    policy_str
+                ))?;
         }
 
         // Validate input file exists
@@ -558,6 +577,7 @@ mod tests {
             scale: None,
             align_face: None,
             mesh_quality: None,
+            seam_position: None,
         };
         assert_eq!(cmd.layer_height, Some(0.2));
         assert_eq!(cmd.gcode_flavor.as_deref(), Some("marlin"));
@@ -587,6 +607,7 @@ mod tests {
             scale: None,
             align_face: None,
             mesh_quality: None,
+            seam_position: None,
         };
         assert!(cmd.gcode_flavor.is_none());
     }
@@ -615,6 +636,7 @@ mod tests {
             scale: None,
             align_face: None,
             mesh_quality: None,
+            seam_position: None,
         };
         assert_eq!(cmd.gcode_flavor.as_deref(), Some("klipper"));
     }
@@ -643,6 +665,7 @@ mod tests {
             scale: None,
             align_face: None,
             mesh_quality: None,
+            seam_position: None,
         };
         assert_eq!(
             cmd.start_print_gcode.as_deref(),
@@ -675,6 +698,7 @@ mod tests {
             scale: None,
             align_face: None,
             mesh_quality: None,
+            seam_position: None,
         };
         assert!(cmd_on.lifecycle_markers);
         assert!(!cmd_on.no_lifecycle_markers);
@@ -701,6 +725,7 @@ mod tests {
             scale: None,
             align_face: None,
             mesh_quality: None,
+            seam_position: None,
         };
         assert!(!cmd_off.lifecycle_markers);
         assert!(cmd_off.no_lifecycle_markers);

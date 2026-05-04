@@ -273,6 +273,71 @@ impl FanConfig {
     }
 }
 
+/// Where to place the start/end point ("seam") of each closed perimeter loop.
+///
+/// Closed loops are cyclic and may begin at any vertex; the chosen vertex
+/// becomes the visible blob/seam where extrusion starts and ends.  Different
+/// policies trade off visual quality against travel distance.
+///
+/// Mirrors the seam options offered by PrusaSlicer / OrcaSlicer / Bambu Studio
+/// so users can transfer their preferences.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SeamPosition {
+    /// Pick the loop vertex closest to the nozzle's current position.
+    ///
+    /// Minimises travel and therefore print time, but seams scatter randomly
+    /// across the surface.  Good for prototypes and infill-heavy parts.
+    #[default]
+    Nearest,
+    /// Place the seam at the vertex with the largest Y coordinate (rear of
+    /// the build plate).  Deterministic per-loop, gives a single visible
+    /// seam line on the back of the model — a common default for display
+    /// pieces like the Benchy.
+    Rear,
+    /// Place the seam at the vertex closest to a fixed XY direction
+    /// (default: rear-aligned).  Like `Rear` but consistent across layers
+    /// even when the loop's bounding box shifts.
+    Aligned,
+    /// Place the seam at the vertex with the sharpest convex corner.
+    ///
+    /// Hides the blob in a corner where it is geometrically expected and
+    /// least visible.  Falls back to `Nearest` for smooth (cornerless) loops.
+    SharpestCorner,
+    /// Pick a different random vertex for every loop.
+    ///
+    /// Spreads seam blobs evenly so no single line is visible — useful for
+    /// organic or cylindrical parts where a single seam line would stand
+    /// out.  Deterministic per-loop given a seed (uses path geometry hash).
+    Random,
+}
+
+impl SeamPosition {
+    /// Parse a policy name from a CLI argument or config string
+    /// (case-insensitive, hyphens and underscores both accepted).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_lowercase().replace('-', "_").as_str() {
+            "nearest" => Some(Self::Nearest),
+            "rear" => Some(Self::Rear),
+            "aligned" => Some(Self::Aligned),
+            "sharpest_corner" | "sharp_corner" | "sharp" | "corner" => Some(Self::SharpestCorner),
+            "random" => Some(Self::Random),
+            _ => None,
+        }
+    }
+
+    /// Canonical name for emitting back into config / G-code comments.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Nearest => "nearest",
+            Self::Rear => "rear",
+            Self::Aligned => "aligned",
+            Self::SharpestCorner => "sharpest_corner",
+            Self::Random => "random",
+        }
+    }
+}
+
 /// Parameters that control how a model is sliced and printed.
 ///
 /// All dimensional values are in millimeters; speeds in mm/s;
@@ -342,6 +407,19 @@ are widened proportionally to fill the gap.
 **Typical:** 1–2.", extend("x-group" = "Walls"))]
     #[serde(default = "SlicingParams::default_wall_distribution_count")]
     pub wall_distribution_count: usize,
+
+    #[schemars(description = "Where to place the seam (start/end point) of each closed perimeter loop.
+
+Supported values:
+- `nearest` — closest vertex to current nozzle position (fastest, scattered seams).
+- `rear` — vertex with maximum Y (single seam line on the back of the model).
+- `aligned` — vertex closest to a fixed direction; consistent across layers.
+- `sharpest_corner` — vertex with the sharpest convex angle (hidden in geometry).
+- `random` — different random vertex per loop (no visible seam line).
+
+**Default:** `nearest`.", extend("x-group" = "Walls"))]
+    #[serde(default = "SlicingParams::default_seam_position")]
+    pub seam_position: SeamPosition,
 
     #[schemars(description = "Infill density as a fraction (0.0–1.0).
 
@@ -738,6 +816,7 @@ impl Default for SlicingParams {
             wall_transition_threshold: Self::default_wall_transition_threshold(),
             wall_transition_length: Self::default_wall_transition_length(),
             wall_distribution_count: Self::default_wall_distribution_count(),
+            seam_position: Self::default_seam_position(),
             infill_density: 0.2,
             infill_pattern: Self::default_infill_pattern(),
             infill_base_angle: Self::default_infill_base_angle(),
@@ -802,6 +881,10 @@ impl SlicingParams {
 
     fn default_wall_distribution_count() -> usize {
         1
+    }
+
+    fn default_seam_position() -> SeamPosition {
+        SeamPosition::Nearest
     }
 
     fn default_infill_pattern() -> InfillPattern {

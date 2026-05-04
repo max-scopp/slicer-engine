@@ -2,7 +2,7 @@ use clipper2::Paths;
 
 use crate::logging::{phases, PhaseTimer, ProcessLogger};
 use crate::mesh::types::Mesh;
-use crate::settings::params::SlicingParams;
+use crate::settings::params::{SeamPosition, SlicingParams};
 
 use super::infill::{add_infill_to_layers, calculate_interior_region};
 use super::slicer::slice_mesh;
@@ -313,24 +313,20 @@ pub fn process_mesh(
                     let is_closed = role_is_closed && !layer.is_path_open(path_idx);
 
                     if is_closed {
-                        // Find vertex closest to current_pos — the loop will be
-                        // rotated to start there.
-                        let mut local_best_v = 0;
-                        let mut local_best_d = f64::MAX;
-                        for (vi, p) in path.iter().enumerate() {
-                            let dx = p.x() - current_pos.0;
-                            let dy = p.y() - current_pos.1;
-                            let d = dx * dx + dy * dy;
-                            if d < local_best_d {
-                                local_best_d = d;
-                                local_best_v = vi;
-                            }
-                        }
-                        if local_best_d < min_dist_sq {
-                            min_dist_sq = local_best_d;
+                        // Choose this loop's seam vertex per the configured
+                        // policy, then score the loop by the distance from
+                        // current_pos to that seam vertex (= actual travel
+                        // we'd incur if we picked this loop next).
+                        let seam_v = choose_seam_vertex(path, params.seam_position, current_pos);
+                        let p = path.iter().nth(seam_v).unwrap();
+                        let dx = p.x() - current_pos.0;
+                        let dy = p.y() - current_pos.1;
+                        let d = dx * dx + dy * dy;
+                        if d < min_dist_sq {
+                            min_dist_sq = d;
                             best_i = i;
                             best_reverse = false;
-                            best_seam_vertex = local_best_v;
+                            best_seam_vertex = seam_v;
                         }
                     } else {
                         // Open path: only the two endpoints are candidate starts.
@@ -417,4 +413,129 @@ pub fn process_mesh(
     t_tsp.finish();
 
     layers
+}
+
+/// Pick the start vertex of a closed loop according to the configured
+/// [`SeamPosition`] policy.  Returns an index into `path.iter()`.
+///
+/// All policies fall back to `0` for paths with fewer than 3 vertices (where
+/// the seam choice is degenerate).
+fn choose_seam_vertex(
+    path: &clipper2::Path,
+    policy: SeamPosition,
+    current_pos: (f64, f64),
+) -> usize {
+    let n = path.len();
+    if n < 3 {
+        return 0;
+    }
+
+    match policy {
+        SeamPosition::Nearest => {
+            let mut best_v = 0;
+            let mut best_d = f64::MAX;
+            for (vi, p) in path.iter().enumerate() {
+                let dx = p.x() - current_pos.0;
+                let dy = p.y() - current_pos.1;
+                let d = dx * dx + dy * dy;
+                if d < best_d {
+                    best_d = d;
+                    best_v = vi;
+                }
+            }
+            best_v
+        }
+        SeamPosition::Rear => {
+            // Vertex with the largest Y coordinate.  Ties broken by smallest X
+            // (left-back) so the choice is deterministic across runs.
+            let mut best_v = 0;
+            let mut best_y = f64::MIN;
+            let mut best_x = f64::MAX;
+            for (vi, p) in path.iter().enumerate() {
+                let y = p.y();
+                if y > best_y || (y == best_y && p.x() < best_x) {
+                    best_y = y;
+                    best_x = p.x();
+                    best_v = vi;
+                }
+            }
+            best_v
+        }
+        SeamPosition::Aligned => {
+            // Vertex with the largest projection onto a fixed preferred
+            // direction.  We use +Y (rear-aligned) by default — same as Rear
+            // for a single loop, but the per-loop projection is consistent
+            // across loops at different positions, so seams across multiple
+            // islands form a parallel set of vertical lines instead of
+            // tracking each island's bounding box independently.
+            //
+            // Future: expose `seam_aligned_direction_deg` to let users align
+            // to e.g. -X for a side-facing seam.
+            const DIR_X: f64 = 0.0;
+            const DIR_Y: f64 = 1.0;
+            let mut best_v = 0;
+            let mut best_proj = f64::MIN;
+            for (vi, p) in path.iter().enumerate() {
+                let proj = p.x() * DIR_X + p.y() * DIR_Y;
+                if proj > best_proj {
+                    best_proj = proj;
+                    best_v = vi;
+                }
+            }
+            best_v
+        }
+        SeamPosition::SharpestCorner => {
+            // Vertex with the largest *exterior* turn angle, biased toward
+            // convex corners (positive cross product on a CCW loop).  The
+            // signed turn angle θ_i ∈ (-π, π] at vertex i is the angle from
+            // edge (i-1 → i) to edge (i → i+1).  Convex corners on a CCW
+            // loop have θ > 0; concave corners have θ < 0.
+            //
+            // We use |θ| − k·max(0, −θ) (with k = 0.5) to score: sharp
+            // convex corners win, sharp concave corners come second, smooth
+            // arcs lose.  Falls back to Nearest for entirely-smooth loops
+            // (max score below ~10°) so seams don't jump randomly.
+            let pts: Vec<_> = path.iter().copied().collect();
+            let mut best_v = 0_usize;
+            let mut best_score = f64::MIN;
+            const SMOOTH_THRESHOLD_RAD: f64 = 0.175; // ≈ 10°
+            for i in 0..n {
+                let prev = pts[(i + n - 1) % n];
+                let here = pts[i];
+                let next = pts[(i + 1) % n];
+                let ax = here.x() - prev.x();
+                let ay = here.y() - prev.y();
+                let bx = next.x() - here.x();
+                let by = next.y() - here.y();
+                let cross = ax * by - ay * bx;
+                let dot = ax * bx + ay * by;
+                let theta = cross.atan2(dot); // signed turn angle
+                let convex_bias = if theta < 0.0 { 0.5 * (-theta) } else { 0.0 };
+                let score = theta.abs() - convex_bias;
+                if score > best_score {
+                    best_score = score;
+                    best_v = i;
+                }
+            }
+            if best_score < SMOOTH_THRESHOLD_RAD {
+                // No meaningful corner — fall back to Nearest.
+                return choose_seam_vertex(path, SeamPosition::Nearest, current_pos);
+            }
+            best_v
+        }
+        SeamPosition::Random => {
+            // Deterministic per-loop pseudo-random: hash the loop's first
+            // vertex coordinates so the same loop on the same layer always
+            // picks the same vertex (consistent with multi-pass slicing and
+            // reproducible builds).
+            let p0 = path.iter().next().unwrap();
+            let bits = (p0.x().to_bits()) ^ p0.y().to_bits().rotate_left(17);
+            // splitmix64 finaliser — cheap, well-mixed.
+            let mut z = bits.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^= z >> 31;
+            (z as usize) % n
+        }
+    }
 }
