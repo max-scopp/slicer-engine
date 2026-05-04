@@ -259,16 +259,68 @@ to `Vec<SliceLayer>`, with logging as a side channel.
 
 ## Performance
 
-On native targets the per-layer phases (interior region computation,
-infill snapshot) parallelise via `rayon`. On `wasm32-unknown-unknown` the
-same code falls back to sequential iteration via `cfg` gates — no rayon
-dependency reaches the wasm build.
+### Native / server (x86-64, AArch64)
+
+The three most expensive pipeline phases all parallelise across layers via
+[`rayon`](https://docs.rs/rayon):
+
+| Phase                     | Strategy                               | Notes                                                                                  |
+| ------------------------- | -------------------------------------- | -------------------------------------------------------------------------------------- |
+| `perimeter_snapshot`      | `par_iter().unzip()` across all layers | Both `perimeter_paths_of` and `compute_wall_bead_footprint` run concurrently per layer |
+| `surfaces` detection      | `into_par_iter().map(detect_region)`   | Each layer's bridge/top/bottom regions are independent                                 |
+| `overhang_classification` | `par_iter().map(process_layer)`        | Each layer's densification + boundary tests are independent                            |
+
+Measured on a 3DBenchy at 0.2 mm layer height (240 layers), 8-core host:
+
+| Phase                     | Serial (before) | Parallel (after) | Δ        |
+| ------------------------- | --------------- | ---------------- | -------- |
+| `perimeter_snapshot`      | 3 004 ms        | 108 ms           | −96%     |
+| `surfaces`                | 2 926 ms        | 273 ms           | −90%     |
+| `overhang_classification` | 426 ms          | 54 ms            | −87%     |
+| **Wall-clock total**      | **4 119 ms**    | **1 163 ms**     | **−72%** |
+
+`compute_wall_bead_footprint` was also rewritten from one Clipper2
+`inflate+union` _per wall path_ (quadratic accumulation) to one batched
+`inflate` _per `(is_open, radius)` bucket_, typically reducing it to 1–2
+Clipper2 calls per layer regardless of wall count.
+
+### WASM (`wasm32-unknown-unknown`)
+
+`rayon` is excluded from the WASM build via `cfg(not(target_arch = "wasm32"))`.
+The same phases fall back to sequential `iter()` / `map()`. Three additional
+WASM-specific constraints reduce throughput further:
+
+1. **Single-threaded execution.** WebAssembly in browsers runs on one JS
+   thread. `SharedArrayBuffer`-based threading exists but requires
+   cross-origin isolation headers that most hosts don't enable.
+2. **Clipper2 C++ allocator shim.** `src/cpp_shims.rs` provides `operator
+new/delete` implementations that compile Clipper2 entirely into the WASM
+   binary — no `env` module imports, no JS boundary crossings. However,
+   every C++ heap allocation prepends an 8-byte bookkeeping header, adding
+   a small constant overhead to the many short-lived `Paths` objects that
+   inflate/union produce in per-path loops.
+3. **Memory pressure.** Wasm32 has a 4 GiB address limit and is typically
+   allocated 256 MiB by browsers. Very large models or high layer counts
+   can OOM before completion.
+
+As a rough guide, expect the WASM slicer to be **5–15× slower** than the
+native server-side slicer for the same model and settings. The browser UI
+uses the WASM path only for the live preview; the production slice
+(server or desktop) always runs the native binary.
+
+**What this means in practice:**
+
+| Scenario                  | Binary                  | Expected slice time (Benchy 0.2 mm) |
+| ------------------------- | ----------------------- | ----------------------------------- |
+| WS server / Tauri desktop | `slicer-engine` release | ~1 s                                |
+| Browser preview (WASM)    | `scene_wasm.js`         | ~10–15 s                            |
+| CI (cross-compile test)   | debug build             | ~10–20 s (LTO off)                  |
 
 Per-phase timings are reported through the `ProcessLogger::log_phase_*`
 hooks. Sub-timings for Arachne (`collapse_depth_ms`, `bead_shrink_ms`) and
 surface generation (`perimeter_snapshot_ms`, `detection_ms`,
-`infill_gen_ms`) are summed across worker threads, so they can exceed the
-wall-clock duration of the phase.
+`infill_gen_ms`) are summed across worker threads on native, so they can
+exceed the wall-clock duration of those phases.
 
 ---
 
