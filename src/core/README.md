@@ -9,15 +9,18 @@ ready for G-code emission. It is the engine's main loop.
 
 ## Why it exists
 
-Slicing is not a single algorithm — it's six of them, glued together in a
+Slicing is not a single algorithm — it's seven of them, glued together in a
 specific order, each consuming what the previous one produced:
 
 1. Cut the mesh into 2D contours (one set per Z plane).
 2. Replace those contours with variable-width wall beads (Arachne).
 3. Snapshot the infill region _before_ any walls get stripped.
 4. Strip inner walls from first-layer / top-surface islands when configured.
-5. Detect and fill top / bottom solid surfaces.
-6. Add sparse infill to whatever is left.
+5. Detect and fill top / bottom solid surfaces (with bridge sub-classification).
+6. Re-tag perimeters that cross unsupported air as `OverhangPerimeter`.
+7. Add sparse infill to whatever is left, then order all paths per layer to
+   minimise travel — including rotating closed loops to start at the
+   configured seam vertex.
 
 Each step depends on the geometric output of the one before. Putting them in
 the wrong order — or running surface detection on the original contours
@@ -96,8 +99,32 @@ flowchart TD
     I --> SF[generate_top_bottom_surfaces_with_interior<br/>3-stage bridge filter + PCA angle]
     SF --> OV[classify_overhang_perimeters<br/>walls in air → OverhangPerimeter]
     OV --> IN[add_infill_to_layers<br/>uses pre-strip regions − solid_regions]
-    IN --> L[Vec~SliceLayer~]
+    IN --> ORD[order_paths_per_layer<br/>greedy NN + seam vertex rotation]
+    ORD --> L[Vec~SliceLayer~]
 ```
+
+### Path ordering & seam placement
+
+After every path on a layer has been classified, the pipeline runs a
+role-grouped greedy-nearest-neighbour ordering pass to minimise travel
+between extrusions. Closed loops are **cyclic** — picking vertex 0 as the
+start point would force unnecessary travel to a fixed first point — so the
+ordering pass picks the start vertex per loop using
+`SlicingParams::seam_position`:
+
+| Policy                | Vertex choice                                                                                           | Use case                                   |
+| --------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| `Nearest` _(default)_ | Vertex closest to the previous path's end                                                               | Fastest print, scattered seams             |
+| `Rear`                | Vertex with the largest Y (tie-break smallest X)                                                        | Single back-of-model seam line             |
+| `Aligned`             | Vertex with the largest projection onto a fixed direction (+Y)                                          | Consistent seam line across all layers     |
+| `SharpestCorner`      | Vertex with the largest convex turn angle; falls back to `Nearest` for smooth loops (max corner < ~10°) | Hides the blob in geometry corners         |
+| `Random`              | Hash of the loop's first-vertex bits (deterministic per loop)                                           | Spreads blobs evenly on cylinders/organics |
+
+Once the start vertex is chosen the loop's vertices are rotated in place
+(`pts[(start + k) % n]`) so the emitted G-code begins at that point. The
+rotation is the only mutation — geometry is preserved exactly. Combined
+with the role-grouped nearest-neighbour pass this single change reduced
+benchmark travel by ~18 % vs always starting at vertex 0.
 
 ### Bridge & overhang quality
 
@@ -107,7 +134,7 @@ region (matching OrcaSlicer / PrusaSlicer behaviour):
 
 1. **Morphological opening** (`bridge_noise_filter_mm`, default 0.05 mm) —
    erode then dilate to wipe out sub-pixel slivers caused by Clipper2's
-   Centi quantisation.  Kept small so genuine 0.4 mm-wide bridge frames
+   Centi quantisation. Kept small so genuine 0.4 mm-wide bridge frames
    (window mullions, text overhangs) survive intact.
 2. **Minimum-area filter** (`bridge_min_area_mm2`, default 0.5 mm²) — drop
    surviving islands smaller than the threshold; they get reclassified as
@@ -115,7 +142,7 @@ region (matching OrcaSlicer / PrusaSlicer behaviour):
 3. **Anchor expansion** (`bridge_anchor_mm`, default 0.5 mm) — dilate the
    surviving regions outward and clip back to **`interior_regions[i]`**
    (the inside-walls bound) so each strand bites into the supported solid
-   bottom material on either side of the gap *without* expanding into the
+   bottom material on either side of the gap _without_ expanding into the
    wall band.
 
 Bridge **direction** uses principal-axis analysis (PCA) of the unsupported
@@ -128,17 +155,17 @@ After surfaces are assigned, `classify_overhang_perimeters` re-tags each
 `OuterWall` / `InnerWall` whose centerline is ≥ 50 % **inside or on the
 boundary of** the layer's `unsupported_regions` as `OverhangPerimeter`.
 
-The crucial detail is how `unsupported_regions` is built.  Naïvely you
+The crucial detail is how `unsupported_regions` is built. Naïvely you
 would think `perimeters[i] − perimeters[i-1]` (raw centerline difference),
 but that is **wrong in two complementary ways** that took several rounds
 to disentangle:
 
 1. **`perimeters[i]` IS the wall path.** `perimeter_paths_of(layer)`
    returns the OuterWall centerline polygons of the layer — i.e. the same
-   closed paths the wall classifier iterates over.  So every wall vertex
-   lies *exactly on* the boundary of `perimeters[i]`, and therefore on the
+   closed paths the wall classifier iterates over. So every wall vertex
+   lies _exactly on_ the boundary of `perimeters[i]`, and therefore on the
    outer boundary of any region derived by subtracting another polygon
-   set from `perimeters[i]`.  A "strictly inside" parity test (treating
+   set from `perimeters[i]`. A "strictly inside" parity test (treating
    `IsOn` as outside) flags **nothing**, ever.
 2. **A current-layer wall is supported by the previous-layer bead, not
    by its centerline.** The previous-layer bead extends `d/2` outward
@@ -155,18 +182,18 @@ with `IsOn` counted as **inside** in the parity test:
 
 - For a slight outward lean (horizontal step `S < d/2`) the inflated
   previous perimeter fully contains `perimeters[i]`, so
-  `unsupported_regions` is empty → no wall flagged.  This kills the
+  `unsupported_regions` is empty → no wall flagged. This kills the
   "80 % of the Benchy is overhang" false positive without any vertex-
   fraction tuning.
 - For a real overhang (`S > d/2`, ≈ 45° lean for 0.2 mm layer / 0.4 mm
-  nozzle) a meaningful air strip exists.  Wall vertices lie on its outer
+  nozzle) a meaningful air strip exists. Wall vertices lie on its outer
   boundary (= the current centerline), and the `IsOn`-counts-as-inside
   parity test flags them.
 
 **Don't** restore the raw centerline difference, the strict-inside
 boundary policy, or the `0.6 × nozzle_diameter` "safety" erosion that
-was tried at one point — any one of them suppresses *all* overhang
-detection.  See `test_classify_overhang_e2e_*` in `walls.rs` for the
+was tried at one point — any one of them suppresses _all_ overhang
+detection. See `test_classify_overhang_e2e_*` in `walls.rs` for the
 production-geometry lockdown tests.
 
 Reclassified paths inherit the bridge speed (`bridge_speed`) and reduced-flow
@@ -191,15 +218,17 @@ Two things to note:
 
 ## Phase catalog
 
-| Phase                         | Function                                                              | Reads                                       | Writes                                       |
-| ----------------------------- | --------------------------------------------------------------------- | ------------------------------------------- | -------------------------------------------- |
-| Slice                         | [`slice_mesh`](slicer.rs)                                             | `Mesh`                                      | `paths` (OuterWall)                          |
-| Arachne walls                 | [`arachne::generate_arachne_walls`](../arachne/mod.rs)                | `paths`                                     | `paths`, `path_roles`, `path_widths`         |
-| Infill snapshot               | [`infill::calculate_interior_region`](infill.rs)                      | `paths` (all walls)                         | `pre_strip_infill_regions` local             |
-| Single-wall strip             | [`walls::apply_single_wall_restrictions`](walls.rs)                   | `paths`, `path_roles`                       | `paths`, `path_roles` (some islands shorter) |
-| Interior regions for surfaces | [`infill::calculate_interior_region`](infill.rs)                      | `paths` (post-strip)                        | `interior_regions` local                     |
-| Top / bottom surfaces         | [`surfaces::generate_top_bottom_surfaces_with_interior`](surfaces.rs) | `paths`, `interior_regions`                 | `paths`, `path_roles`, `solid_regions`       |
-| Sparse infill                 | [`infill::add_infill_to_layers`](infill.rs)                           | `pre_strip_infill_regions`, `solid_regions` | `paths`, `path_roles`                        |
+| Phase                         | Function                                                                      | Reads                                       | Writes                                       |
+| ----------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------- | -------------------------------------------- |
+| Slice                         | [`slice_mesh`](slicer.rs)                                                     | `Mesh`                                      | `paths` (OuterWall)                          |
+| Arachne walls                 | [`arachne::generate_arachne_walls`](../arachne/mod.rs)                        | `paths`                                     | `paths`, `path_roles`, `path_widths`         |
+| Infill snapshot               | [`infill::calculate_interior_region`](infill.rs)                              | `paths` (all walls)                         | `pre_strip_infill_regions` local             |
+| Single-wall strip             | [`walls::apply_single_wall_restrictions`](walls.rs)                           | `paths`, `path_roles`                       | `paths`, `path_roles` (some islands shorter) |
+| Interior regions for surfaces | [`infill::calculate_interior_region`](infill.rs)                              | `paths` (post-strip)                        | `interior_regions` local                     |
+| Top / bottom surfaces         | [`surfaces::generate_top_bottom_surfaces_with_interior`](surfaces.rs)         | `paths`, `interior_regions`                 | `paths`, `path_roles`, `solid_regions`       |
+| Overhang classification       | [`walls::classify_overhang_perimeters`](walls.rs)                             | `paths`, `unsupported_regions`              | `path_roles` (some `OverhangPerimeter`)      |
+| Sparse infill                 | [`infill::add_infill_to_layers`](infill.rs)                                   | `pre_strip_infill_regions`, `solid_regions` | `paths`, `path_roles`                        |
+| Path ordering & seams         | inline in [`pipeline::process_mesh`](pipeline.rs) (uses `choose_seam_vertex`) | `paths`, `path_roles`, `seam_position`      | `paths` (rotated/reordered)                  |
 
 `pre_strip_infill_regions` is computed only when at least one of
 `only_one_wall_first_layer` / `only_one_wall_top` is enabled; otherwise the

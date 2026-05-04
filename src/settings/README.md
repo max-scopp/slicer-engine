@@ -6,23 +6,37 @@ Configuration for slicing behavior and printer control. All values stored as JSO
 
 ### Slicing Parameters (`params.*`)
 
-| Parameter | Type | Default | Range | Effect |
-|-----------|------|---------|-------|--------|
-| `layer_height` | mm | 0.2 | 0.1–0.4 | Distance between layers |
-| `wall_thickness` | mm | 1.2 | 0.8–2.0 | Perimeter width |
-| `infill_density` | 0–1 | 0.2 | 0.0–1.0 | 0=hollow, 1=solid |
-| `print_speed` | mm/s | 60 | 20–100 | Nozzle movement speed |
-| `nozzle_temp` | °C | 210 | 180–250 | Heat level (material-dependent) |
-| `bed_temp` | °C | 60 | 20–100 | Bed heat (material-dependent) |
+| Parameter                 | Type | Default   | Range                               | Effect                                                        |
+| ------------------------- | ---- | --------- | ----------------------------------- | ------------------------------------------------------------- |
+| `layer_height`            | mm   | 0.2       | 0.1–0.4                             | Distance between layers                                       |
+| `wall_thickness`          | mm   | 1.2       | 0.8–2.0                             | Perimeter width                                               |
+| `infill_density`          | 0–1  | 0.2       | 0.0–1.0                             | 0=hollow, 1=solid                                             |
+| `print_speed`             | mm/s | 60        | 20–100                              | Nozzle movement speed                                         |
+| `nozzle_temp`             | °C   | 210       | 180–250                             | Heat level (material-dependent)                               |
+| `bed_temp`                | °C   | 60        | 20–100                              | Bed heat (material-dependent)                                 |
+| `seam_position`           | enum | `nearest` | see [Seam Position](#seam-position) | Where each closed-loop seam sits                              |
+| `min_infill_extrusion_mm` | mm   | 0.4       | 0.0–nozzle                          | Drops sub-threshold solid-infill segments to cut tiny travels |
+| `coasting_distance_mm`    | mm   | 0.2       | 0.0–1.0                             | Length of un-extruded tail at the end of each path            |
+
+### Bridge & overhang (`params.*`)
+
+| Parameter                | Type | Default | Effect                                                                      |
+| ------------------------ | ---- | ------- | --------------------------------------------------------------------------- |
+| `bridge_speed`           | mm/s | 25      | Print speed for bridge / overhang-perimeter extrusions                      |
+| `bridge_flow_ratio`      | 0–1  | 0.8     | Flow multiplier for bridge lines (less material = less sag)                 |
+| `bridge_anchor_mm`       | mm   | 0.4     | Inflate the bridge region outward to anchor strands into solid material     |
+| `bridge_min_area_mm2`    | mm²  | 0.5     | Drop bridge candidates smaller than this; reclassified as `BottomSurface`   |
+| `bridge_noise_filter_mm` | mm   | 0.05    | Morphological-open radius to wipe sub-pixel slivers before bridge detection |
+| `bridge_fan_speed`       | 0–1  | 1.0     | Cooling fan duty for layers that contain bridges                            |
 
 ### Global Settings (top-level)
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `gcode_flavor` | string | `"marlin"` | Firmware dialect (`"marlin"` or `"klipper"`) |
-| `start_print_gcode` | string \| null | `null` | Custom start G-code block or file path |
-| `end_print_gcode` | string \| null | `null` | Custom end G-code block or file path |
-| `lifecycle_markers` | object | `{}` | Per-flavor layer lifecycle marker config (see below) |
+| Field               | Type           | Default    | Description                                          |
+| ------------------- | -------------- | ---------- | ---------------------------------------------------- |
+| `gcode_flavor`      | string         | `"marlin"` | Firmware dialect (`"marlin"` or `"klipper"`)         |
+| `start_print_gcode` | string \| null | `null`     | Custom start G-code block or file path               |
+| `end_print_gcode`   | string \| null | `null`     | Custom end G-code block or file path                 |
+| `lifecycle_markers` | object         | `{}`       | Per-flavor layer lifecycle marker config (see below) |
 
 ## Config Priority
 
@@ -54,7 +68,7 @@ Each layer overrides only the keys it specifies; unset keys fall through to the 
 ## Project Config (`slicer.json`)
 
 Place a `slicer.json` file in your project directory to set per-project defaults that override
-the user config without touching it.  Only the keys you include are overridden.
+the user config without touching it. Only the keys you include are overridden.
 
 ```json
 {
@@ -77,11 +91,11 @@ slicer-engine slice --input model.stl --config ./path/to/slicer.json
 
 The persistent user-level config lives at:
 
-| Platform | Path |
-|----------|------|
-| Linux | `~/.config/slicer-engine/settings.json` |
-| macOS | `~/Library/Application Support/slicer-engine/settings.json` |
-| Windows | `%APPDATA%\slicer-engine\settings.json` |
+| Platform | Path                                                        |
+| -------- | ----------------------------------------------------------- |
+| Linux    | `~/.config/slicer-engine/settings.json`                     |
+| macOS    | `~/Library/Application Support/slicer-engine/settings.json` |
+| Windows  | `%APPDATA%\slicer-engine\settings.json`                     |
 
 Managed via the `settings set` / `settings get` subcommands (see below).
 
@@ -126,7 +140,7 @@ use to track progress, drive LED effects, pause at layers, etc.
 ### How it works
 
 Each firmware flavor can have its own `LifecycleMarkerConfig` entry in the `lifecycle_markers`
-map.  Flavors not present in the map use the built-in defaults (enabled, standard
+map. Flavors not present in the map use the built-in defaults (enabled, standard
 OrcaSlicer/PrusaSlicer comment format).
 
 When `enabled: false`, the generator emits a minimal `; layer z=…` comment instead of the full
@@ -134,27 +148,27 @@ lifecycle block.
 
 ### Per-flavor configuration (`LifecycleMarkerConfig`)
 
-| Field | Default emitted comment | Supported placeholders |
-|-------|------------------------|------------------------|
-| `enabled` | `true` | — |
-| `layer_change` | `;LAYER_CHANGE` | `{z}`, `{height}` |
-| `z_marker` | `;Z:{z}` | `{z}` |
-| `height_marker` | `;HEIGHT:{height}` | `{height}` |
-| `before_layer_change` | `;BEFORE_LAYER_CHANGE` | `{z}` |
-| `after_layer_change` | `;AFTER_LAYER_CHANGE` | `{z}` |
-| `type_annotation` | `;TYPE:{type}` | `{type}` |
-| `width_annotation` | `;WIDTH:{width}mm` | `{width}` |
+| Field                 | Default emitted comment | Supported placeholders |
+| --------------------- | ----------------------- | ---------------------- |
+| `enabled`             | `true`                  | —                      |
+| `layer_change`        | `;LAYER_CHANGE`         | `{z}`, `{height}`      |
+| `z_marker`            | `;Z:{z}`                | `{z}`                  |
+| `height_marker`       | `;HEIGHT:{height}`      | `{height}`             |
+| `before_layer_change` | `;BEFORE_LAYER_CHANGE`  | `{z}`                  |
+| `after_layer_change`  | `;AFTER_LAYER_CHANGE`   | `{z}`                  |
+| `type_annotation`     | `;TYPE:{type}`          | `{type}`               |
+| `width_annotation`    | `;WIDTH:{width}mm`      | `{width}`              |
 
 All string fields are optional — omit them to keep the built-in default for that marker.
 
 ### Placeholder reference
 
-| Placeholder | Replaced with | Example |
-|-------------|--------------|---------|
-| `{z}` | Layer Z coordinate (3 d.p.) | `0.200` |
-| `{height}` | Layer height from params (3 d.p.) | `0.200` |
-| `{type}` | Extrusion role type name | `WALL-OUTER`, `FILL` |
-| `{width}` | Extrusion role default width (2 d.p.) | `0.40` |
+| Placeholder | Replaced with                         | Example              |
+| ----------- | ------------------------------------- | -------------------- |
+| `{z}`       | Layer Z coordinate (3 d.p.)           | `0.200`              |
+| `{height}`  | Layer height from params (3 d.p.)     | `0.200`              |
+| `{type}`    | Extrusion role type name              | `WALL-OUTER`, `FILL` |
+| `{width}`   | Extrusion role default width (2 d.p.) | `0.40`               |
 
 ### Example: disable markers for Marlin, keep them for Klipper
 
@@ -270,15 +284,15 @@ nozzle_temp     210 → 210    (no change)
 
 ## Validation Rules
 
-| Parameter | Constraint | Notes |
-|-----------|-----------|-------|
-| `layer_height` | > 0 | Typically ≤ nozzle diameter (0.4 mm) |
-| `wall_thickness` | ≥ 0.4 mm | At least one nozzle width |
-| `infill_density` | 0.0 ≤ x ≤ 1.0 | Strict bounds |
-| `print_speed` | > 0 | Higher = faster but lower quality |
-| `nozzle_temp` | 180–250°C | Material-dependent (PLA≈210, PETG≈230) |
-| `bed_temp` | 20–120°C | Material-dependent (PLA≈60, PETG≈100) |
-| `gcode_flavor` | `"marlin"` \| `"klipper"` | Must be a known firmware dialect |
+| Parameter        | Constraint                | Notes                                  |
+| ---------------- | ------------------------- | -------------------------------------- |
+| `layer_height`   | > 0                       | Typically ≤ nozzle diameter (0.4 mm)   |
+| `wall_thickness` | ≥ 0.4 mm                  | At least one nozzle width              |
+| `infill_density` | 0.0 ≤ x ≤ 1.0             | Strict bounds                          |
+| `print_speed`    | > 0                       | Higher = faster but lower quality      |
+| `nozzle_temp`    | 180–250°C                 | Material-dependent (PLA≈210, PETG≈230) |
+| `bed_temp`       | 20–120°C                  | Material-dependent (PLA≈60, PETG≈100)  |
+| `gcode_flavor`   | `"marlin"` \| `"klipper"` | Must be a known firmware dialect       |
 
 ## Common Profiles
 
@@ -312,6 +326,37 @@ nozzle_temp     210 → 210    (no change)
 }
 ```
 
+## Seam Position
+
+`params.seam_position` controls where each closed perimeter loop begins and
+ends — the spot where the printer pauses, retracts, and lifts. That spot
+leaves a small visible blob ("the seam") on the outer wall.
+
+| Value                 | Vertex chosen per loop                                              | Visual result                                   | Best for                               |
+| --------------------- | ------------------------------------------------------------------- | ----------------------------------------------- | -------------------------------------- |
+| `nearest` _(default)_ | Closest vertex to the previous path's end                           | Scattered seams; minimum travel & print time    | Prototypes, infill-heavy parts         |
+| `rear`                | Vertex with the largest Y                                           | Single seam line at the back of the model       | Display pieces (Benchy-style)          |
+| `aligned`             | Vertex with the largest projection onto a fixed direction (+Y)      | Consistent vertical seam line across all layers | Parts whose loops shift between layers |
+| `sharpest_corner`     | Vertex with the largest convex turn angle (falls back to `nearest`) | Seam hidden in geometry corners                 | Mechanical parts with hard edges       |
+| `random`              | Hash of the loop's first-vertex bits (deterministic per loop)       | Seam blobs spread evenly; no visible line       | Cylinders, organic shapes              |
+
+Override per-invocation from the CLI:
+
+```bash
+slicer-engine slice --input model.stl --seam-position rear
+```
+
+Set persistently in `slicer.json` / `settings.json`:
+
+```json
+{ "params": { "seam_position": "sharpest_corner" } }
+```
+
+Hyphens and underscores are both accepted (`sharpest-corner` ≡
+`sharpest_corner`). See [`core/README.md`](../core/README.md#path-ordering--seam-placement)
+for the implementation details and the role-grouped path-ordering pass that
+consumes this setting.
+
 ## Integration
 
 ```mermaid
@@ -329,4 +374,6 @@ graph LR
 
 - [CLI Commands](../cli/README.md) – Full command reference
 - [Slicing](../SLICING.md) – How layer_height affects slicing
+- [Core pipeline](../core/README.md) – Path ordering & seam placement
+- [G-code generation](../gcode/README.md) – Smart-retract policy & travel sequence
 - [Root](../../README.md) – Overview
