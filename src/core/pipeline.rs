@@ -295,6 +295,12 @@ pub fn process_mesh(
                 let mut best_i = 0;
                 let mut min_dist_sq = f64::MAX;
                 let mut best_reverse = false;
+                // For closed loops: the vertex index in the path to start at
+                // (= seam position).  Loops are cyclic, so any vertex can be
+                // the start; picking the one closest to `current_pos` minimises
+                // travel and consolidates seams ("nearest" seam policy used by
+                // PrusaSlicer/Orca).  For open paths this stays 0.
+                let mut best_seam_vertex: usize = 0;
 
                 for (i, &path_idx) in remaining.iter().enumerate() {
                     let path = &paths_vec[path_idx];
@@ -306,19 +312,40 @@ pub fn process_mesh(
                     // an open arc is treated as open for path-ordering purposes.
                     let is_closed = role_is_closed && !layer.is_path_open(path_idx);
 
-                    let p_start = path.iter().next().unwrap();
-                    let dx1 = p_start.x() - current_pos.0;
-                    let dy1 = p_start.y() - current_pos.1;
-                    let dist1 = dx1 * dx1 + dy1 * dy1;
+                    if is_closed {
+                        // Find vertex closest to current_pos — the loop will be
+                        // rotated to start there.
+                        let mut local_best_v = 0;
+                        let mut local_best_d = f64::MAX;
+                        for (vi, p) in path.iter().enumerate() {
+                            let dx = p.x() - current_pos.0;
+                            let dy = p.y() - current_pos.1;
+                            let d = dx * dx + dy * dy;
+                            if d < local_best_d {
+                                local_best_d = d;
+                                local_best_v = vi;
+                            }
+                        }
+                        if local_best_d < min_dist_sq {
+                            min_dist_sq = local_best_d;
+                            best_i = i;
+                            best_reverse = false;
+                            best_seam_vertex = local_best_v;
+                        }
+                    } else {
+                        // Open path: only the two endpoints are candidate starts.
+                        let p_start = path.iter().next().unwrap();
+                        let dx1 = p_start.x() - current_pos.0;
+                        let dy1 = p_start.y() - current_pos.1;
+                        let dist1 = dx1 * dx1 + dy1 * dy1;
 
-                    if dist1 < min_dist_sq {
-                        min_dist_sq = dist1;
-                        best_i = i;
-                        best_reverse = false;
-                    }
+                        if dist1 < min_dist_sq {
+                            min_dist_sq = dist1;
+                            best_i = i;
+                            best_reverse = false;
+                            best_seam_vertex = 0;
+                        }
 
-                    // For open paths, we could also print them backwards!
-                    if !is_closed {
                         let p_end = path.iter().last().unwrap();
                         let dx2 = p_end.x() - current_pos.0;
                         let dy2 = p_end.y() - current_pos.1;
@@ -327,6 +354,7 @@ pub fn process_mesh(
                             min_dist_sq = dist2;
                             best_i = i;
                             best_reverse = true;
+                            best_seam_vertex = 0;
                         }
                     }
                 }
@@ -338,7 +366,21 @@ pub fn process_mesh(
                 let best_is_closed = role_is_closed && !layer.is_path_open(best_path_idx);
 
                 let mut final_path = clipper2::Path::default();
-                if best_reverse {
+                if best_is_closed && best_seam_vertex != 0 {
+                    // Rotate the closed loop so it starts at `best_seam_vertex`.
+                    // The path's first vertex is preserved as the closing
+                    // vertex by the G-code generator (which appends a move
+                    // back to vertex[0] for closed loops).  After rotation,
+                    // the loop reads: [v_seam, v_seam+1, …, v_n-1, v_0, v_1,
+                    // …, v_seam-1].  Note: we do NOT duplicate v_seam at the
+                    // end — the generator's "close contour" move handles the
+                    // wrap-around.
+                    let pts: Vec<_> = path.iter().copied().collect();
+                    let n = pts.len();
+                    for k in 0..n {
+                        final_path.push(pts[(best_seam_vertex + k) % n]);
+                    }
+                } else if best_reverse {
                     for p in path.iter().rev() {
                         final_path.push(*p);
                     }
@@ -350,6 +392,8 @@ pub fn process_mesh(
 
                 if !final_path.is_empty() {
                     if best_is_closed {
+                        // Closed loop: nozzle ends at the start vertex (the
+                        // closing move in G-code returns to vertex[0]).
                         let p = final_path.iter().next().unwrap();
                         current_pos = (p.x(), p.y());
                     } else {

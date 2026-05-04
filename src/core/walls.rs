@@ -325,7 +325,7 @@ pub(crate) fn classify_overhang_perimeters(layers: &mut [SliceLayer], _nozzle_di
 
             let edge_count = if is_already_open { nd - 1 } else { nd };
             // Per-edge in-air status (midpoint test against `air`).
-            let edge_air: Vec<bool> = (0..edge_count)
+            let mut edge_air: Vec<bool> = (0..edge_count)
                 .map(|i| {
                     let j = if is_already_open { i + 1 } else { (i + 1) % nd };
                     let mx = (dense_pts[i].0 + dense_pts[j].0) * 0.5;
@@ -333,6 +333,19 @@ pub(crate) fn classify_overhang_perimeters(layers: &mut [SliceLayer], _nozzle_di
                     point_inside_or_on_paths_eo(mx, my, &air)
                 })
                 .collect();
+
+            // Hysteresis filter: collapse short alternating runs that arise
+            // from grazing the air boundary (Centi quantisation noise, slight
+            // wobble in the layer-i-1 perimeter, etc.).  A genuine overhang on
+            // the Benchy hull spans many millimetres of arc; tiny < ~1 mm
+            // flips are noise and turn one wall loop into dozens of fragments
+            // downstream (huge travel/seam/marker overhead).
+            //
+            // Threshold: max(2 × nozzle_diameter, 1.5 mm).  Larger than typical
+            // densifier-inserted noise, smaller than the shortest meaningful
+            // overhang strip we'd want to print at bridge speed.
+            let min_run_len_mm = (2.0 * _nozzle_diameter_mm).max(1.5);
+            collapse_short_runs(&mut edge_air, &dense_pts, is_already_open, min_run_len_mm);
 
             let any_air = edge_air.iter().any(|&b| b);
             if !any_air {
@@ -595,6 +608,113 @@ fn point_inside_or_on_paths_eo(x: f64, y: f64, paths: &Paths) -> bool {
         }
     }
     inside_count % 2 == 1
+}
+
+/// Hysteresis filter: collapse any contiguous run of equal-status edges whose
+/// total arc length is below `min_run_len_mm` by flipping its status to that
+/// of its longer neighbour.  Operates in-place on `edge_air`.
+///
+/// Closed paths are treated cyclically: the last and first runs are merged
+/// when they share the same status before length analysis.  Open paths use
+/// linear runs.
+///
+/// The pass is iterated until convergence — flipping a short run can let two
+/// neighbouring runs merge into a longer one that was previously interrupted.
+/// Convergence is bounded by `edge_air.len()` iterations because every pass
+/// either flips at least one edge or terminates.
+fn collapse_short_runs(
+    edge_air: &mut [bool],
+    dense_pts: &[(f64, f64)],
+    is_open: bool,
+    min_run_len_mm: f64,
+) {
+    let n = edge_air.len();
+    if n < 2 || min_run_len_mm <= 0.0 {
+        return;
+    }
+
+    // Precompute per-edge length in mm (in the same coord space as dense_pts).
+    let nd = dense_pts.len();
+    let edge_len: Vec<f64> = (0..n)
+        .map(|i| {
+            let j = if is_open { i + 1 } else { (i + 1) % nd };
+            let dx = dense_pts[j].0 - dense_pts[i].0;
+            let dy = dense_pts[j].1 - dense_pts[i].1;
+            (dx * dx + dy * dy).sqrt()
+        })
+        .collect();
+
+    for _ in 0..n {
+        // Build runs as (start_edge_idx, end_edge_idx_exclusive, status, length).
+        let mut runs: Vec<(usize, usize, bool, f64)> = Vec::new();
+        let mut i = 0;
+        while i < n {
+            let s = edge_air[i];
+            let mut j = i + 1;
+            let mut len = edge_len[i];
+            while j < n && edge_air[j] == s {
+                len += edge_len[j];
+                j += 1;
+            }
+            runs.push((i, j, s, len));
+            i = j;
+        }
+
+        // Cyclic merge: if first and last runs share status, treat as one
+        // run with combined length for the threshold test (we won't actually
+        // merge the indices — flipping logic below handles wrap correctly).
+        let cyclic_pair = if !is_open
+            && runs.len() >= 2
+            && runs.first().unwrap().2 == runs.last().unwrap().2
+        {
+            Some((0_usize, runs.len() - 1, runs[0].3 + runs[runs.len() - 1].3))
+        } else {
+            None
+        };
+
+        // Find the shortest run below threshold that still has at least one
+        // neighbour with the opposite status to flip into.  Skip runs whose
+        // cyclic-merged length is already above the threshold.
+        let mut victim: Option<usize> = None;
+        let mut victim_len = f64::MAX;
+        for (idx, run) in runs.iter().enumerate() {
+            let effective_len = if let Some((a, b, merged)) = cyclic_pair {
+                if idx == a || idx == b { merged } else { run.3 }
+            } else {
+                run.3
+            };
+            if effective_len >= min_run_len_mm {
+                continue;
+            }
+            // For open paths a single-run path has nothing to flip into.
+            if runs.len() == 1 {
+                continue;
+            }
+            if effective_len < victim_len {
+                victim_len = effective_len;
+                victim = Some(idx);
+            }
+        }
+
+        let Some(v) = victim else {
+            return; // Converged.
+        };
+
+        // Flip the victim run's edges to the opposite status.
+        let new_status = !runs[v].2;
+        for k in runs[v].0..runs[v].1 {
+            edge_air[k] = new_status;
+        }
+        // If we merged the cyclic pair into one logical run, flip *both* halves.
+        if let Some((a, b, _)) = cyclic_pair {
+            if v == a || v == b {
+                let other = if v == a { b } else { a };
+                for k in runs[other].0..runs[other].1 {
+                    edge_air[k] = new_status;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -543,7 +543,20 @@ impl GcodeGenerator {
                 };
 
                 let role_changed = last_role != Some(role);
-                let needs_retract = travel_dist > 2.0 || role_changed;
+                // Retract policy:
+                //   - Skip retract for any travel under `MIN_TRAVEL_FOR_RETRACT_MM`,
+                //     even on role change.  A 0.4 mm hop from the inner-wall
+                //     loop end to the outer-wall loop start does not ooze
+                //     enough to justify the 5-line retract+zhop+travel+lower+
+                //     un-retract ceremony (which itself takes longer than the
+                //     hop and pauses extrusion).
+                //   - Long travels always retract, regardless of role.
+                //
+                // Other slicers (PrusaSlicer, Orca, Cura) all use a similar
+                // "min travel for retract" cutoff (typically 1.0–2.0 mm).
+                const MIN_TRAVEL_FOR_RETRACT_MM: f64 = 1.0;
+                let needs_retract =
+                    travel_dist > 2.0 || (role_changed && travel_dist > MIN_TRAVEL_FOR_RETRACT_MM);
 
                 if needs_retract {
                     // Retract, z-hop, travel, lower, prime
@@ -571,8 +584,12 @@ impl GcodeGenerator {
                         "{} ; un-retract\n",
                         self.dialect.set_extruder_pos(e_total, 3000.0)
                     ));
-                } else if travel_dist > 1e-6 {
-                    // Short travel without stringing mitigation
+                } else if travel_dist > 0.05 {
+                    // Short travel without stringing mitigation.  Travels under
+                    // 0.05 mm are degenerate (floating-point rounding noise from
+                    // path simplification) and are skipped entirely — emitting a
+                    // G1 line for a sub-quantum hop just bloats the file and
+                    // confuses motion planners on some firmwares.
                     out.push_str(&format!(
                         "{} ; short travel\n",
                         self.dialect
