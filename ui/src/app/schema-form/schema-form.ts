@@ -2,15 +2,20 @@ import { AccordionGroup, AccordionPanel, AccordionTrigger } from '@angular/aria/
 import {
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
+  ElementRef,
   computed,
   inject,
   input,
   output,
   signal,
+  viewChild,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import Fuse, { type IFuseOptions } from 'fuse.js';
+import { Sidebar } from '../nexus/sidebar/sidebar';
 import { BrowserStorage } from '../services/browser-storage';
+import { KeyboardShortcuts } from '../services/keyboard-shortcuts/keyboard-shortcuts';
 import { Icon } from '../shared/icon/icon';
 import { UserInputModality } from '../shared/input-modality/input-modality';
 import { FieldHost } from './field-host/field-host';
@@ -74,14 +79,7 @@ const FUSE_OPTIONS: IFuseOptions<FieldDefIndexed> = {
 @Component({
   selector: 'se-schema-form',
   standalone: true,
-  imports: [
-    FormsModule,
-    Icon,
-    FieldHost,
-    AccordionGroup,
-    AccordionPanel,
-    AccordionTrigger,
-  ],
+  imports: [FormsModule, Icon, FieldHost, AccordionGroup, AccordionPanel, AccordionTrigger],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './schema-form.component.html',
   styleUrl: './schema-form.component.scss',
@@ -89,6 +87,8 @@ const FUSE_OPTIONS: IFuseOptions<FieldDefIndexed> = {
 export class SchemaForm {
   private readonly storage = inject(BrowserStorage);
   private readonly inputModality = inject(UserInputModality);
+  private readonly sidebar = inject(Sidebar, { optional: true });
+  private readonly keyboardShortcuts = inject(KeyboardShortcuts);
 
   /** Raw JSON Schema object. Changing this input re-parses the schema. */
   readonly schema = input.required<Record<string, unknown>>();
@@ -102,7 +102,19 @@ export class SchemaForm {
   /** Emitted whenever the user changes a single field. */
   readonly fieldChange = output<FieldChangeEvent>();
 
+  private readonly searchInputRef = viewChild<ElementRef<HTMLInputElement>>('searchInput');
+
   protected readonly searchQuery = signal('');
+
+  constructor() {
+    this.keyboardShortcuts.schemaFormRef = this;
+    inject(DestroyRef).onDestroy(() => (this.keyboardShortcuts.schemaFormRef = null));
+  }
+
+  focusSearch(): void {
+    this.sidebar?.expand();
+    setTimeout(() => this.searchInputRef()?.nativeElement.focus({ preventScroll: true }), 0);
+  }
 
   protected readonly groups = computed<SchemaGroup[]>(() => {
     const { groups } = parseSchema(this.schema());

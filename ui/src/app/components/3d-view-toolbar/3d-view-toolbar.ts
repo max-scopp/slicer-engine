@@ -62,6 +62,7 @@ export class ThreeDViewToolbar {
       title: 'Keyboard Shortcuts',
       confirmLabel: 'Got it',
       content: KeyboardShortcutsPanel,
+      preferredWidth: '600px',
     });
   }
 

@@ -4,6 +4,7 @@
   [class.dialog--leaving]="dialog()?.isLeaving"
   [attr.aria-labelledby]="dialog() ? 'dialog-title-' + dialog()!.id : null"
   [attr.aria-describedby]="dialog()?.config?.message ? 'dialog-message-' + dialog()!.id : null"
+  [style.--dialog-preferred-width]="dialog()?.config?.preferredWidth ?? null"
   (cancel)="onNativeCancel($event)"
   (click)="onDialogClick($event)"
 >

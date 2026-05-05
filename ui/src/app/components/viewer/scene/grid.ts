@@ -17,12 +17,17 @@ const GRID_MIN_SPACING_MM = 1;
 const GRID_MAX_SPACING_MM = 1000;
 const MAJOR_EVERY = 10;
 const TARGET_MINOR_PIXELS = 14;
-const MINOR_OPACITY = 0.25;
-const MAJOR_OPACITY = 0.6;
-const BED_OUTLINE_OPACITY = 0.9;
+const MINOR_OPACITY = 0.12;
+const MAJOR_OPACITY = 0.3;
+const BED_OUTLINE_OPACITY = 0.55;
 
 const GRID_FADE_HIDE = 0.05;
 const GRID_FADE_FULL = 0.25;
+
+// Fraction of the log10 zoom range used for the crossfade transition.
+// The grid holds fully visible outside this central band.
+const LEVEL_FADE_BAND_START = 0.35;
+const LEVEL_FADE_BAND_END = 0.65;
 
 const DEFAULT_PRINT_AREA: PrintAreaConfig = {
   printableAreaWidth: 220,
@@ -33,7 +38,8 @@ const DEFAULT_PRINT_AREA: PrintAreaConfig = {
 
 export class SceneGrid {
   private grid: Group;
-  private levelMaterials: Map<number, { minor: LineBasicMaterial[]; major: LineBasicMaterial[] }> = new Map();
+  private levelMaterials: Map<number, { minor: LineBasicMaterial[]; major: LineBasicMaterial[] }> =
+    new Map();
   private outlineMaterials: LineBasicMaterial[] = [];
   private currentGridSpacingMm = 0;
   private printArea: PrintAreaConfig = { ...DEFAULT_PRINT_AREA };
@@ -89,15 +95,22 @@ export class SceneGrid {
     const power = Math.floor(levelRaw);
     const progress = clamp01(levelRaw - power);
 
+    // Remap progress so the grid holds stable outside the central band and
+    // only crossfades within [LEVEL_FADE_BAND_START, LEVEL_FADE_BAND_END].
+    const bandProgress = clamp01(
+      (progress - LEVEL_FADE_BAND_START) / (LEVEL_FADE_BAND_END - LEVEL_FADE_BAND_START),
+    );
+    const smoothBandProgress = bandProgress * bandProgress * (3 - 2 * bandProgress);
+
     // Apply opacities based on continuous zoom progress
     for (const [spacing, mats] of this.levelMaterials.entries()) {
       const spacingPower = Math.log10(spacing);
-      
+
       let levelFade = 0;
       if (spacingPower === power) {
-        levelFade = 1.0 - progress; // currently active, fading out
+        levelFade = 1.0 - smoothBandProgress; // currently active, fading out
       } else if (spacingPower === power + 1) {
-        levelFade = progress; // next level, fading in
+        levelFade = smoothBandProgress; // next level, fading in
       } else if (spacingPower > power + 1) {
         levelFade = 0.0;
       } else if (spacingPower < power) {
@@ -152,11 +165,23 @@ export class SceneGrid {
       );
 
       if (minorPositions.length > 0) {
-        const minor = makeLineSegments(minorPositions, offset, readBorderColor(), MINOR_OPACITY, minorMats);
+        const minor = makeLineSegments(
+          minorPositions,
+          offset,
+          readBorderColor(),
+          MINOR_OPACITY,
+          minorMats,
+        );
         this.grid.add(minor);
       }
       if (majorPositions.length > 0) {
-        const major = makeLineSegments(majorPositions, offset, readBorderColor(), MAJOR_OPACITY, majorMats);
+        const major = makeLineSegments(
+          majorPositions,
+          offset,
+          readBorderColor(),
+          MAJOR_OPACITY,
+          majorMats,
+        );
         major.renderOrder = 1;
         this.grid.add(major);
       }
@@ -165,7 +190,13 @@ export class SceneGrid {
     }
 
     const outlinePositions = buildBedOutlinePositions(printableAreaWidth, printableAreaHeight);
-    const outline = makeLineSegments(outlinePositions, offset, readBorderColor(), BED_OUTLINE_OPACITY, this.outlineMaterials);
+    const outline = makeLineSegments(
+      outlinePositions,
+      offset,
+      readBorderColor(),
+      BED_OUTLINE_OPACITY,
+      this.outlineMaterials,
+    );
     outline.renderOrder = 2;
     this.grid.add(outline);
 
@@ -241,8 +272,12 @@ function clamp01(v: number): number {
 }
 
 function readBorderColor(): number {
-  if (typeof document === 'undefined') return 0x333333;
-  const raw = getComputedStyle(document.documentElement).getPropertyValue('--border-base').trim();
+  if (typeof document === 'undefined') return 0x888888;
+  // --color-text-tertiary is a medium grey in both light (#757880) and dark
+  // (#888c98) themes, giving contrast on both light and dark viewer backgrounds.
+  const raw = getComputedStyle(document.documentElement)
+    .getPropertyValue('--color-text-tertiary')
+    .trim();
   if (raw.startsWith('#')) return parseInt(raw.substring(1), 16);
-  return 0x333333;
+  return 0x888888;
 }

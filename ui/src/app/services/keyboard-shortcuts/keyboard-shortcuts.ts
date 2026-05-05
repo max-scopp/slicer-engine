@@ -9,7 +9,7 @@ import { SceneHistory } from '../scene-history/scene-history';
 import { Slicer } from '../slicer';
 import { ViewerControl } from '../viewer-control';
 
-interface ShortcutConfig {
+export interface ShortcutConfig {
   actionId: string;
   /** tinykeys-format shortcut string, e.g. `"$mod+z"`, `"$mod+Shift+z"`, `"a"`. */
   shortcut: string;
@@ -109,7 +109,17 @@ export class KeyboardShortcuts {
       canMatch: () => !this.isTextInputFocused(),
       handleAction: () => this.toggleViewMode(),
     },
+    {
+      actionId: 'focus-settings-search',
+      shortcut: '$mod+f',
+      displayDescription: 'Focus settings search',
+      canMatch: () => this.schemaFormRef !== null,
+      handleAction: () => this.schemaFormRef!.focusSearch(),
+    },
   ].map((s) => ({ ...s, _parsed: parseKeybinding(s.shortcut) }));
+
+  /** Set by SchemaForm on mount/destroy so the shortcut knows when search is available. */
+  schemaFormRef: { focusSearch(): void } | null = null;
 
   constructor() {
     fromEvent<KeyboardEvent>(document, 'keydown')

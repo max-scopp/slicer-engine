@@ -13,6 +13,8 @@ export interface DialogConfig {
   alertOnly?: boolean;
   /** Optional component rendered as the dialog body below the message. */
   content?: Type<unknown>;
+  /** Optional preferred width for the dialog (e.g. '600px'). Capped by the default max-width rule. */
+  preferredWidth?: string;
 }
 
 export interface ActiveDialog {

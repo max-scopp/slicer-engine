@@ -1,29 +1,29 @@
 import {
-    ChangeDetectionStrategy,
-    Component,
-    DestroyRef,
-    ElementRef,
-    afterNextRender,
-    inject,
-    viewChild,
+  ChangeDetectionStrategy,
+  Component,
+  DestroyRef,
+  ElementRef,
+  afterNextRender,
+  inject,
+  viewChild,
 } from '@angular/core';
 import {
-    BoxGeometry,
-    CanvasTexture,
-    ConeGeometry,
-    CylinderGeometry,
-    Group,
-    LinearFilter,
-    Mesh,
-    MeshBasicMaterial,
-    PerspectiveCamera,
-    Raycaster,
-    Scene,
-    Sprite,
-    SpriteMaterial,
-    Vector2,
-    Vector3,
-    WebGLRenderer,
+  BoxGeometry,
+  CanvasTexture,
+  ConeGeometry,
+  CylinderGeometry,
+  Group,
+  LinearFilter,
+  Mesh,
+  MeshBasicMaterial,
+  PerspectiveCamera,
+  Raycaster,
+  Scene,
+  Sprite,
+  SpriteMaterial,
+  Vector2,
+  Vector3,
+  WebGLRenderer,
 } from 'three';
 import { ViewerControl } from '../../services/viewer-control';
 
@@ -534,7 +534,8 @@ function readPalette(): CubePalette {
   const get = (name: string, fallback: string): string =>
     styles.getPropertyValue(name).trim() || fallback;
   return {
-    surface: get('--color-surface', '#ffffff'),
+    // Outer fill matches the viewer background so face seams are invisible.
+    surface: get('--color-bg-primary', '#f4f5f8'),
     surfaceHover: get('--color-surface-hover', '#f0f0f0'),
     text: get('--color-text-primary', '#222222'),
     border: get('--color-border', '#cccccc'),

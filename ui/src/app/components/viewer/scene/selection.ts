@@ -242,8 +242,7 @@ export class SceneSelection {
     const onGizmo =
       this.gizmo.isHovering() ||
       this.gizmo.isDragging() ||
-      (event.pointerType === 'touch' &&
-        this.gizmo.hitTest(event, this.camera, this.renderer));
+      (event.pointerType === 'touch' && this.gizmo.hitTest(event, this.camera, this.renderer));
     if (onGizmo) {
       return;
     }

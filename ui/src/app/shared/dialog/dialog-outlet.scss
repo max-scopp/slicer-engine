@@ -11,7 +11,7 @@ nexus-dialog-outlet {
     background: var(--color-surface, #1e2128);
     color: inherit;
     outline: none;
-    width: min(440px, calc(100vw - 48px));
+    width: min(var(--dialog-preferred-width, 440px), calc(100vw - 48px));
     max-height: calc(100dvh - 48px);
     overflow: hidden;
     box-shadow:
