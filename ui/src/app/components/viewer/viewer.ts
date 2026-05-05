@@ -1,19 +1,20 @@
 import {
-    ChangeDetectionStrategy,
-    Component,
-    DestroyRef,
-    ElementRef,
-    afterNextRender,
-    computed,
-    effect,
-    inject,
-    input,
-    output,
-    signal,
-    untracked,
-    viewChild,
+  ChangeDetectionStrategy,
+  Component,
+  DestroyRef,
+  ElementRef,
+  afterNextRender,
+  computed,
+  effect,
+  inject,
+  input,
+  output,
+  signal,
+  untracked,
+  viewChild,
 } from '@angular/core';
 import { BufferAttribute, BufferGeometry, Matrix4, Mesh, MeshPhongMaterial } from 'three';
+import { AppTheme } from '../../services/app-theme';
 import { GcodePreview } from '../../services/gcode-preview';
 import { ObjectTracker } from '../../services/object-tracker';
 import { PrintArea } from '../../services/print-area';
@@ -65,6 +66,7 @@ export class Viewer {
   private readonly sceneEngine = inject(SceneEngine);
   private readonly sceneCommand = inject(SceneCommand);
   private readonly gcodePreview = inject(GcodePreview);
+  private readonly appTheme = inject(AppTheme);
   private readonly destroyRef = inject(DestroyRef);
 
   /** Current loading status for the optional overlay. */
@@ -245,6 +247,12 @@ export class Viewer {
     effect(() => {
       const hidden = this.gcodePreview.hiddenRoles();
       this.gcode?.applyHiddenRoles(hidden);
+    });
+
+    // React to theme changes — update all material colors without rebuilding geometry.
+    effect(() => {
+      const colors = this.gcodePreview.roleColors();
+      this.gcode?.updateColors(colors);
     });
 
     // Build (or rebuild) the layer graph when the parsed handle becomes
@@ -638,7 +646,8 @@ export class Viewer {
     }
 
     this.cancelInFlightLoad();
-    const { totalSegments } = gcode.buildFromHandle(handle);
+    const colors = untracked(() => this.gcodePreview.roleColors());
+    const { totalSegments } = gcode.buildFromHandle(handle, colors);
 
     const min = untracked(() => this.gcodePreview.layerMin());
     const max = untracked(() => this.gcodePreview.layerMax());

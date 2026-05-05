@@ -1,15 +1,34 @@
 import { Injectable, computed, effect, inject, signal } from '@angular/core';
 import init, { GcodeHandle } from '../../generated/scene-wasm/scene_engine';
+import { AppTheme } from './app-theme';
 import { Slicer } from './slicer';
 
 // ── Role palette — single source of truth shared by the viewer and controls ──
 
-export const ROLE_COLORS = {
+/** Keys that identify an extrusion role in the G-code viewer. */
+export type RoleName =
+  | 'outerWall'
+  | 'innerWall'
+  | 'infill'
+  | 'topSurface'
+  | 'bottomSurface'
+  | 'travel'
+  | 'other'
+  | 'bridge'
+  | 'overhangPerimeter'
+  | 'skirt'
+  | 'support'
+  | 'seam';
+
+/** Palette mapping every role to a numeric RGB hex color. */
+export type RoleColorPalette = Record<RoleName, number>;
+
+export const ROLE_COLORS_DARK: RoleColorPalette = {
   outerWall: 0xff8800, // amber-orange  (legend: outer wall)
   innerWall: 0xffcc00, // golden-yellow (legend: inner wall)
   infill: 0xcc44ff, // violet-purple (legend: sparse infill)
   topSurface: 0xff3355, // crimson-pink  (legend: top surface)
-  bottomSurface: 0x00bbff, // vivid cyan  (legend: bottom surface)
+  bottomSurface: 0x00bbff, // vivid cyan    (legend: bottom surface)
   travel: 0x334466, // dark slate    (legend: travel)
   other: 0x44ffaa, // mint-green    (twist: stands apart)
   bridge: 0x0057ff, // vivid azure   (legend: bridge)
@@ -17,9 +36,30 @@ export const ROLE_COLORS = {
   skirt: 0x888888, // mid-gray      (legend: skirt/brim)
   support: 0x7dff00, // neon lime     (legend: support material)
   seam: 0xffffff, // white         (legend: seam point)
-} as const;
+};
 
-export type RoleName = keyof typeof ROLE_COLORS;
+export const ROLE_COLORS_LIGHT: RoleColorPalette = {
+  outerWall: 0xdd5500, // dark-orange    (legend: outer wall)
+  innerWall: 0xbb8800, // deep-amber     (legend: inner wall)
+  infill: 0x9900cc, // deep-violet    (legend: sparse infill)
+  topSurface: 0xcc0033, // dark-crimson   (legend: top surface)
+  bottomSurface: 0x0077bb, // ocean-blue     (legend: bottom surface)
+  travel: 0x445566, // dark-slate     (legend: travel)
+  other: 0x008855, // forest-teal    (twist: stands apart)
+  bridge: 0x0044cc, // dark-azure     (legend: bridge)
+  overhangPerimeter: 0x005e30, // deep-green     (legend: overhang perimeter)
+  skirt: 0x666666, // dark-gray      (legend: skirt/brim)
+  support: 0x557700, // dark-lime      (legend: support material)
+  seam: 0x111122, // near-black     (legend: seam point — white bg)
+};
+
+/** Returns the correct palette for the current theme. */
+export function getRoleColors(isDark: boolean): RoleColorPalette {
+  return isDark ? ROLE_COLORS_DARK : ROLE_COLORS_LIGHT;
+}
+
+/** @deprecated Use `ROLE_COLORS_DARK` or `getRoleColors()` instead. */
+export const ROLE_COLORS = ROLE_COLORS_DARK;
 
 export const ROLE_LABELS: Record<RoleName, string> = {
   outerWall: 'Outer Wall',
@@ -36,9 +76,17 @@ export const ROLE_LABELS: Record<RoleName, string> = {
   seam: 'Seam',
 };
 
-export const ROLE_CSS = Object.fromEntries(
-  Object.entries(ROLE_COLORS).map(([k, v]) => [k, `#${v.toString(16).padStart(6, '0')}`]),
-) as Record<RoleName, string>;
+function makeRoleCss(colors: RoleColorPalette): Record<RoleName, string> {
+  return Object.fromEntries(
+    Object.entries(colors).map(([k, v]) => [k, `#${v.toString(16).padStart(6, '0')}`]),
+  ) as Record<RoleName, string>;
+}
+
+export const ROLE_CSS_DARK = makeRoleCss(ROLE_COLORS_DARK);
+export const ROLE_CSS_LIGHT = makeRoleCss(ROLE_COLORS_LIGHT);
+
+/** @deprecated Use `ROLE_CSS_DARK` or `GcodePreview.roleCss` signal instead. */
+export const ROLE_CSS = ROLE_CSS_DARK;
 
 export const ROLE_ORDER: readonly RoleName[] = [
   'outerWall',
@@ -69,9 +117,18 @@ export const ROLE_ORDER: readonly RoleName[] = [
 @Injectable({ providedIn: 'root' })
 export class GcodePreview {
   private readonly slicer = inject(Slicer);
+  private readonly appTheme = inject(AppTheme);
 
   /** Parsed handle — `null` until a slice download URL is available. */
   readonly gcodeHandle = signal<GcodeHandle | null>(null);
+
+  /** Active role color palette — switches with the current theme. */
+  readonly roleColors = computed<RoleColorPalette>(() => getRoleColors(this.appTheme.isDarkMode()));
+
+  /** Active CSS color map for legend/controls — switches with the current theme. */
+  readonly roleCss = computed<Record<RoleName, string>>(() =>
+    this.appTheme.isDarkMode() ? ROLE_CSS_DARK : ROLE_CSS_LIGHT,
+  );
 
   /** `true` while bytes are being fetched / parsed. */
   readonly loading = signal(false);

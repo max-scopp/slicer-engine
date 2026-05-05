@@ -108,7 +108,7 @@
           type="button"
           class="role-badge"
           [class.hidden]="preview.hiddenRoles().has(role)"
-          [style.--role-color]="roleCss[role]"
+          [style.--role-color]="roleCss()[role]"
           (click)="toggleRole(role)"
           [title]="(preview.hiddenRoles().has(role) ? 'Show ' : 'Hide ') + roleLabels[role]"
         >

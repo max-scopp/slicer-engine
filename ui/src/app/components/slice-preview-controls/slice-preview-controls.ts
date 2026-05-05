@@ -1,11 +1,10 @@
 import { DecimalPipe } from '@angular/common';
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
 import {
-    GcodePreview,
-    ROLE_CSS,
-    ROLE_LABELS,
-    ROLE_ORDER,
-    type RoleName,
+  GcodePreview,
+  ROLE_LABELS,
+  ROLE_ORDER,
+  type RoleName,
 } from '../../services/gcode-preview';
 import { Card } from '../card/card';
 
@@ -20,7 +19,8 @@ import { Card } from '../card/card';
 export class SlicePreviewControls {
   protected readonly preview = inject(GcodePreview);
 
-  protected readonly roleCss = ROLE_CSS;
+  /** Reactive CSS color map \u2014 updates when the application theme changes. */
+  protected readonly roleCss = this.preview.roleCss;
   protected readonly roleLabels = ROLE_LABELS;
   protected readonly roleOrder: readonly RoleName[] = ROLE_ORDER;
 
