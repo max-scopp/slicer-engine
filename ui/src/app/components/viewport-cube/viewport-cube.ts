@@ -420,7 +420,9 @@ export class ViewportCube {
         this.setHover(-1);
       }
       if (this.dragMoved) {
-        this.viewerControl.orbitSink?.(dx * DRAG_SENSITIVITY, -dy * DRAG_SENSITIVITY);
+        // dx > 0 = drag right → positive azimuth → camera orbits CCW from above → RIGHT face shown.
+        // dy < 0 = drag up  → negative polar → phi decreases → camera rises toward TOP.
+        this.viewerControl.orbitSink?.(dx * DRAG_SENSITIVITY, dy * DRAG_SENSITIVITY);
       }
       return;
     }

@@ -16,5 +16,4 @@ export interface SceneGizmoHandlers {
   facePicked(objectId: string, faceIndex: number): void;
 }
 
-export type ViewerView = '3D' | 'Top' | 'Front';
-export type ViewerCursorMode = 'orbit' | 'pan' | 'zoom';
+export type ViewerView = 'perspective' | 'ortho';

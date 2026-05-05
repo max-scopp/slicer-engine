@@ -1,10 +1,13 @@
 import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
 import { NexusSlicingShell } from '../../nexus/layout/slicing-shell/slicing-shell';
+import { Dialog } from '../../services/dialog';
 import { GcodePreview } from '../../services/gcode-preview';
+import { KeyboardShortcuts } from '../../services/keyboard-shortcuts/keyboard-shortcuts';
 import { SceneCommand } from '../../services/scene-command/scene-command';
 import { Slicer } from '../../services/slicer';
 import { ViewerControl } from '../../services/viewer-control';
 import { Icon } from '../../shared/icon/icon';
+import { KeyboardShortcutsPanel } from '../../shared/keyboard-shortcuts/keyboard-shortcuts';
 import { RadioButtonValue } from '../../shared/radio-group/radio-button-value';
 import { RadioGroup } from '../../shared/radio-group/radio-group';
 import { TooltipDirective } from '../../shared/tooltip/tooltip.directive';
@@ -22,10 +25,11 @@ export class ThreeDViewToolbar {
   private readonly slicer = inject(Slicer);
   private readonly gcodePreview = inject(GcodePreview);
   private readonly sceneCommand = inject(SceneCommand);
+  private readonly dialog = inject(Dialog);
   protected readonly shell = inject(NexusSlicingShell);
+  protected readonly keyboardShortcuts = inject(KeyboardShortcuts);
 
   readonly selectedView = this.viewerControl.view;
-  readonly selectedCursorMode = this.viewerControl.cursorMode;
   readonly selectedObjectMode = this.viewerControl.objectMode;
   readonly viewMode = this.viewerControl.viewMode;
   readonly gravityEnabled = this.viewerControl.gravityEnabled;
@@ -51,6 +55,14 @@ export class ThreeDViewToolbar {
 
   resetView(): void {
     this.viewerControl.reset();
+  }
+
+  showKeyboardShortcuts(): void {
+    this.dialog.alert({
+      title: 'Keyboard Shortcuts',
+      confirmLabel: 'Got it',
+      content: KeyboardShortcutsPanel,
+    });
   }
 
   toggleViewMode(): void {

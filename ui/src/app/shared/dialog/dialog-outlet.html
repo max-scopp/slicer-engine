@@ -1,0 +1,44 @@
+<dialog
+  [class.dialog--warning]="dialog()?.config?.type === 'warning'"
+  [class.dialog--danger]="dialog()?.config?.type === 'danger'"
+  [class.dialog--leaving]="dialog()?.isLeaving"
+  [attr.aria-labelledby]="dialog() ? 'dialog-title-' + dialog()!.id : null"
+  [attr.aria-describedby]="dialog()?.config?.message ? 'dialog-message-' + dialog()!.id : null"
+  (cancel)="onNativeCancel($event)"
+  (click)="onDialogClick($event)"
+>
+  @if (dialog(); as d) {
+    <div class="dialog__header">
+      <h2 class="dialog__title" [id]="'dialog-title-' + d.id">{{ d.config.title }}</h2>
+    </div>
+
+    @if (d.config.message) {
+      <p class="dialog__message" [id]="'dialog-message-' + d.id">{{ d.config.message }}</p>
+    }
+
+    @if (d.config.content) {
+      <div class="dialog__body">
+        <ng-container [ngComponentOutlet]="d.config.content" />
+      </div>
+    }
+
+    <div class="dialog__actions">
+      @if (!d.config.alertOnly) {
+        <button class="dialog__btn dialog__btn--ghost" type="button" (click)="cancel()">
+          {{ d.config.cancelLabel ?? 'Cancel' }}
+        </button>
+      }
+
+      <button
+        class="dialog__btn"
+        [class.dialog__btn--primary]="(d.config.type ?? 'default') === 'default'"
+        [class.dialog__btn--warning]="d.config.type === 'warning'"
+        [class.dialog__btn--danger]="d.config.type === 'danger'"
+        type="button"
+        (click)="confirm()"
+      >
+        {{ d.config.confirmLabel ?? (d.config.alertOnly ? 'OK' : 'Confirm') }}
+      </button>
+    </div>
+  }
+</dialog>

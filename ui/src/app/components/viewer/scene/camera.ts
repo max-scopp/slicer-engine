@@ -34,7 +34,7 @@ interface CameraAnimation {
  * and near/far plane management for the viewer scene.
  */
 export class SceneCamera {
-  private currentView: ViewerView = '3D';
+  private currentView: ViewerView = 'perspective';
   private animation: CameraAnimation | null = null;
   private printArea: PrintAreaConfig;
 
@@ -89,7 +89,7 @@ export class SceneCamera {
   }
 
   resetView(): void {
-    this.currentView = '3D';
+    this.currentView = 'perspective';
     const pose = this.initialPoseForBed();
     this.animateToPose({
       position: pose.position,
@@ -116,26 +116,33 @@ export class SceneCamera {
     this.controls.enabled = true;
     const target = this.controls.target;
     const offset = this.camera.position.clone().sub(target);
-    const up = this.camera.up.clone().normalize();
-    let right = new Vector3().crossVectors(offset, up);
-    if (right.lengthSq() < 1e-6) {
-      right.set(1, 0, 0);
-    } else {
-      right.normalize();
+    const r = offset.length();
+    if (r < 1e-6) {
+      return;
     }
-    if (azimuth !== 0) {
-      offset.applyAxisAngle(up, -azimuth);
-      right.applyAxisAngle(up, -azimuth).normalize();
-    }
-    if (polar !== 0) {
-      const rotatedOffset = offset.clone().applyAxisAngle(right, -polar);
-      const rotatedUp = up.clone().applyAxisAngle(right, -polar);
-      offset.copy(rotatedOffset);
-      up.copy(rotatedUp);
-    }
+
+    // Work in Z-up spherical coordinates to avoid gimbal lock and holonomy.
+    // phi = angle from +Z (0 = top, PI = bottom), theta = azimuth around Z.
+    const phi = Math.acos(Math.max(-1, Math.min(1, offset.z / r)));
+    const theta = Math.atan2(offset.y, offset.x);
+
+    const newTheta = theta - azimuth;
+    // Clamp phi away from the poles to prevent lookAt degeneracy and flicker.
+    const eps = 0.01;
+    const newPhi = Math.max(eps, Math.min(Math.PI - eps, phi - polar));
+
+    const sinPhi = Math.sin(newPhi);
+    offset.set(
+      r * sinPhi * Math.cos(newTheta),
+      r * sinPhi * Math.sin(newTheta),
+      r * Math.cos(newPhi),
+    );
+
     this.camera.position.copy(target).add(offset);
-    this.camera.up.copy(up).normalize();
-    this.camera.lookAt(target);
+    // Do NOT touch camera.up here. OrbitControls' own lookAt call inside
+    // update() uses the scene's stable Z-up (0,0,1) to compute a roll-free
+    // orientation. Setting camera.up to a derived vector here fights with
+    // OrbitControls every frame and causes the left-right tilt.
     this.controls.update();
   }
 
@@ -209,38 +216,31 @@ export class SceneCamera {
     target: Vector3;
     up: Vector3;
   } {
-    const sphere = this.contentBoundingSphere() ?? new Sphere(new Vector3(), 100);
+    // Preserve the current camera direction and up so the transition is a
+    // pure FOV + distance change — no jarring re-orientation.
+    const target = this.controls.target.clone();
+    const offset = this.camera.position.clone().sub(target);
+    const currentDir =
+      offset.lengthSq() > 1e-6 ? offset.clone().normalize() : DEFAULT_VIEW_DIR.clone();
+    const currentUp = this.camera.up.clone().normalize();
     switch (view) {
-      case 'Top':
-        return {
-          dir: new Vector3(0, 0, 1),
-          fov: ORTHO_FOV,
-          target: sphere.center.clone(),
-          up: new Vector3(0, 1, 0),
-        };
-      case 'Front':
-        return {
-          dir: new Vector3(0, -1, 0),
-          fov: ORTHO_FOV,
-          target: sphere.center.clone(),
-          up: new Vector3(0, 0, 1),
-        };
-      case '3D':
+      case 'ortho':
+        return { dir: currentDir, fov: ORTHO_FOV, target, up: currentUp };
+      case 'perspective':
       default:
-        return {
-          dir: DEFAULT_VIEW_DIR.clone(),
-          fov: PERSPECTIVE_FOV,
-          target: sphere.center.clone(),
-          up: new Vector3(0, 0, 1),
-        };
+        return { dir: currentDir, fov: PERSPECTIVE_FOV, target, up: currentUp };
     }
   }
 
   private animateToView(view: ViewerView): void {
     const plan = this.planView(view);
-    const sphere = this.contentBoundingSphere() ?? new Sphere(new Vector3(), 100);
-    const toFovRad = (plan.fov * Math.PI) / 180;
-    const toDistance = (sphere.radius * DEFAULT_FIT_PADDING) / Math.sin(toFovRad / 2);
+    const currentDistance = Math.max(this.camera.position.distanceTo(this.controls.target), 1);
+    // Target distance that preserves apparent size: d × tan(fov/2) = const.
+    // advanceAnimation interpolates in apparent-size space, so this ensures
+    // fromApparent === toApparent and content never zooms mid-transition.
+    const fromTan = Math.tan(((this.camera.fov / 2) * Math.PI) / 180);
+    const toTan = Math.tan(((plan.fov / 2) * Math.PI) / 180);
+    const toDistance = currentDistance * (fromTan / toTan);
     this.startAnimation({
       toDir: plan.dir,
       toFov: plan.fov,
@@ -319,7 +319,21 @@ export class SceneCamera {
       up.normalize();
     }
     const fov = lerp(anim.fromFov, anim.toFov, eased);
-    const distance = lerp(anim.fromDistance, anim.toDistance, eased);
+    // When FOV changes, interpolate in apparent-size space so content never
+    // appears to zoom mid-transition:
+    //   apparentSize = distance × tan(fov/2)  →  distance = apparent / tan(fov/2)
+    // Linearly blending apparent size from start to end is perceptually uniform
+    // regardless of how large the FOV change is, and works for both the
+    // perspective↔ortho toggle and the home-button reset.
+    let distance: number;
+    if (anim.fromFov !== anim.toFov) {
+      const fromApparent = anim.fromDistance * Math.tan(((anim.fromFov / 2) * Math.PI) / 180);
+      const toApparent = anim.toDistance * Math.tan(((anim.toFov / 2) * Math.PI) / 180);
+      const apparent = lerp(fromApparent, toApparent, eased);
+      distance = apparent / Math.tan(((fov / 2) * Math.PI) / 180);
+    } else {
+      distance = lerp(anim.fromDistance, anim.toDistance, eased);
+    }
     const target = anim.fromTarget.clone().lerp(anim.toTarget, eased);
     this.camera.up.copy(up);
     this.camera.fov = fov;

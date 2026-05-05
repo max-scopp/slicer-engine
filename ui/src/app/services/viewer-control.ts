@@ -2,13 +2,12 @@ import { Injectable, signal } from '@angular/core';
 import { Vector3 } from 'three';
 import type { ViewerMode } from '../components/viewer';
 
-export type ViewerView = '3D' | 'Top' | 'Front';
+export type ViewerView = 'perspective' | 'ortho';
 /**
  * Camera-navigation cursor mode. Controls how left-drag on empty space is
  * interpreted by OrbitControls. Object manipulation is governed separately
  * by {@link ObjectMode}.
  */
-export type ViewerCursorMode = 'orbit' | 'pan' | 'zoom';
 /**
  * Object-manipulation mode. Drives the on-canvas gizmo for the current
  * selection. `'none'` is the default — no gizmo is shown, clicks select.
@@ -27,20 +26,17 @@ export type ObjectMode = 'none' | 'translate' | 'rotate' | 'scale' | 'pullToFloo
 @Injectable({ providedIn: 'root' })
 export class ViewerControl {
   /** Currently selected camera view preset. */
-  readonly view = signal<ViewerView>('3D');
+  readonly view = signal<ViewerView>('perspective');
 
   /** Whether the viewport shows the raw mesh ('model') or sliced G-code ('gcode'). */
   readonly viewMode = signal<ViewerMode>('model');
 
-  /** Currently selected pointer interaction mode. */
-  readonly cursorMode = signal<ViewerCursorMode>('orbit');
-
   /**
    * Currently selected object-manipulation mode. Drives the gizmo shown
-   * over the current selection. Independent of {@link cursorMode} — the
+   * over the current selection. Independent of camera orbit/pan — the
    * user picks a camera mode and an object mode separately.
    */
-  readonly objectMode = signal<ObjectMode>('none');
+  readonly objectMode = signal<ObjectMode>('translate');
 
   /**
    * Monotonically increasing counter that is bumped every time the user
@@ -92,7 +88,7 @@ export class ViewerControl {
 
   /** Request the viewer to fully reset its camera framing. */
   reset(): void {
-    this.view.set('3D');
+    this.view.set('perspective');
     this.resetTick.update((v) => v + 1);
   }
 

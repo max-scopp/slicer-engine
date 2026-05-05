@@ -1,7 +1,15 @@
 @if (mode() === 'block') {
   <div class="tooltip-block">
     <markdown [data]="text()" />
+    @if (shortcut()) {
+      <span class="tooltip-shortcut">{{ shortcut() }}</span>
+    }
   </div>
 } @else {
-  <span class="tooltip-text">{{ text() }}</span>
+  <span class="tooltip-text">
+    {{ text() }}
+    @if (shortcut()) {
+      <kbd class="tooltip-shortcut">{{ shortcut() }}</kbd>
+    }
+  </span>
 }

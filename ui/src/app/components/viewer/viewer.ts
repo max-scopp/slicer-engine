@@ -1,17 +1,17 @@
 import {
-  ChangeDetectionStrategy,
-  Component,
-  DestroyRef,
-  ElementRef,
-  afterNextRender,
-  computed,
-  effect,
-  inject,
-  input,
-  output,
-  signal,
-  untracked,
-  viewChild,
+    ChangeDetectionStrategy,
+    Component,
+    DestroyRef,
+    ElementRef,
+    afterNextRender,
+    computed,
+    effect,
+    inject,
+    input,
+    output,
+    signal,
+    untracked,
+    viewChild,
 } from '@angular/core';
 import { BufferAttribute, BufferGeometry, Matrix4, Mesh, MeshPhongMaterial } from 'three';
 import { GcodePreview } from '../../services/gcode-preview';
@@ -144,12 +144,6 @@ export class Viewer {
     effect(() => {
       const view = this.viewerControl.view();
       this.scene?.setView(view);
-    });
-
-    // React to cursor-mode changes from the toolbar.
-    effect(() => {
-      const mode = this.viewerControl.cursorMode();
-      this.scene?.setCursorMode(mode);
     });
 
     // React to object-mode (gizmo) changes from the toolbar.
@@ -407,8 +401,7 @@ export class Viewer {
       facePicked: (objectId, faceIndex) => this.handleFacePicked(objectId, faceIndex),
     };
     // Apply the current toolbar selections so the scene starts in sync with
-    // whatever view / cursor / object mode the user already had selected.
-    this.scene.setCursorMode(this.viewerControl.cursorMode());
+    // whatever view / object mode the user already had selected.
     this.scene.setObjectMode(this.viewerControl.objectMode());
     this.scene.setView(this.viewerControl.view());
     this.gcode = new GcodeOrchestrator(this.scene.contentRoot);

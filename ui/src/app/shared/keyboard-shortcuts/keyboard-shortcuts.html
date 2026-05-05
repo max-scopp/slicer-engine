@@ -1,0 +1,15 @@
+<table class="shortcuts">
+  <tbody>
+    @for (item of shortcuts; track item.actionId) {
+      <tr class="shortcuts__row">
+        <td class="shortcuts__desc">{{ item.displayDescription }}</td>
+        <td class="shortcuts__action-id">
+          <code>{{ item.actionId }}</code>
+        </td>
+        <td class="shortcuts__key">
+          <kbd>{{ item.displayText }}</kbd>
+        </td>
+      </tr>
+    }
+  </tbody>
+</table>
