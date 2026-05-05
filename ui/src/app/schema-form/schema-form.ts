@@ -88,7 +88,7 @@ export class SchemaForm {
   private readonly storage = inject(BrowserStorage);
   private readonly inputModality = inject(UserInputModality);
   private readonly sidebar = inject(Sidebar, { optional: true });
-  private readonly keyboardShortcuts = inject(KeyboardShortcuts);
+  readonly keyboardShortcuts = inject(KeyboardShortcuts);
 
   /** Raw JSON Schema object. Changing this input re-parses the schema. */
   readonly schema = input.required<Record<string, unknown>>();

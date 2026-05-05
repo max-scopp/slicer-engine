@@ -102,6 +102,7 @@ $transition-easing: ease;
   overflow-y: auto;
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
 
   // Hide the scrollbar on touch devices — momentum scrolling still works,
   // and the scrollbar chrome looks out of place on mobile/tablet.

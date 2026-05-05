@@ -110,6 +110,13 @@ export class KeyboardShortcuts {
       handleAction: () => this.toggleViewMode(),
     },
     {
+      actionId: 'toggle-projection',
+      shortcut: 'Shift+Space',
+      displayDescription: 'Switch between orthographic and perspective views',
+      canMatch: () => !this.isTextInputFocused(),
+      handleAction: () => this.toggleProjection(),
+    },
+    {
       actionId: 'focus-settings-search',
       shortcut: '$mod+f',
       displayDescription: 'Focus settings search',
@@ -145,8 +152,8 @@ export class KeyboardShortcuts {
     if (!config) {
       return undefined;
     }
-    const isMac = navigator.platform.toUpperCase().includes('MAC');
-    return config.shortcut.replace(/\$mod/g, isMac ? '⌘' : 'Ctrl').replace(/\+/g, '+');
+    const isApplePlatform = this.isApplePlatform();
+    return config.shortcut.replace(/\$mod/g, isApplePlatform ? '⌘' : 'Ctrl').replace(/\+/g, '+');
   }
 
   /** Returns all registered shortcuts as plain data for display in a panel. */
@@ -180,6 +187,12 @@ export class KeyboardShortcuts {
     }
   }
 
+  private toggleProjection(): void {
+    const currentView = this.viewerControl.view();
+    const newView = currentView === 'perspective' ? 'ortho' : 'perspective';
+    this.viewerControl.view.set(newView);
+  }
+
   private isTextInputFocused(): boolean {
     const target = document.activeElement as HTMLElement | null;
     if (!target) {
@@ -187,5 +200,27 @@ export class KeyboardShortcuts {
     }
     const tag = target.tagName.toUpperCase();
     return tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable;
+  }
+
+  private isApplePlatform(): boolean {
+    const uaData = navigator as Navigator & {
+      userAgentData?: {
+        platform?: string;
+      };
+    };
+    const platform = navigator.platform ?? '';
+    const uaDataPlatform = uaData.userAgentData?.platform ?? '';
+    const userAgent = navigator.userAgent ?? '';
+
+    if (/mac|iphone|ipad|ipod/i.test(`${uaDataPlatform} ${platform}`)) {
+      return true;
+    }
+
+    // iPadOS can report MacIntel while still being a touch device.
+    if (platform === 'MacIntel' && navigator.maxTouchPoints > 1) {
+      return true;
+    }
+
+    return /ipad/i.test(userAgent);
   }
 }

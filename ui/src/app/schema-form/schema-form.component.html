@@ -4,7 +4,9 @@
     #searchInput
     class="schema-form-search-input"
     type="search"
-    placeholder="Search settings…"
+    [placeholder]="
+      'Search settings… (' + keyboardShortcuts.shortcutFor('focus-settings-search') + ')'
+    "
     autocomplete="off"
     [(ngModel)]="searchQuery"
   />
