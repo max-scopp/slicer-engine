@@ -11,7 +11,6 @@ import {
   type WebGLRenderer,
 } from 'three';
 import type { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import type { ViewerCursorMode } from './types';
 
 const TOUCH_DISABLED = -1 as unknown as TOUCH;
 const TWO_FINGER_DOLLY_DEAD_ZONE_PX = 1.5;
@@ -20,7 +19,7 @@ const TWO_FINGER_ROLL_DEAD_ZONE_RAD = 0.01;
 const AUTOSCROLL_DEAD_ZONE_PX = 6;
 const AUTOSCROLL_SPEED_PER_PX = 0.012;
 const AUTOSCROLL_ACCEL_REF_PX = 100;
-const AUTOSCROLL_ACCEL_EXPONENT = 1.6;
+const AUTOSCROLL_ACCEL_EXPONENT = 4;
 const AUTOSCROLL_MAX_FACTOR_PER_FRAME = 4;
 
 interface AutoscrollState {
@@ -60,30 +59,12 @@ export class SceneControls {
     this.installTouchOrbitTuning();
     this.installCustomTwoFingerControls();
     this.installAutoscrollZoom();
-  }
-
-  /** Configure mouse-button and touch-gesture mapping for the given mode. */
-  setCursorMode(mode: ViewerCursorMode): void {
-    const c = this.controls;
-    c.enableRotate = true;
-    c.enablePan = true;
-    c.enableZoom = true;
+    this.installAlwaysOnWheelZoom();
+    // Orbit is the fixed cursor mode: left-drag rotates, right-drag pans.
     // Middle mouse is reserved for autoscroll zoom; disable OrbitControls' drag-dolly.
     const MIDDLE = null as unknown as MOUSE;
-    switch (mode) {
-      case 'orbit':
-        c.mouseButtons = { LEFT: MOUSE.ROTATE, MIDDLE, RIGHT: MOUSE.PAN };
-        c.touches = { ONE: TOUCH.ROTATE, TWO: TOUCH_DISABLED };
-        break;
-      case 'pan':
-        c.mouseButtons = { LEFT: MOUSE.PAN, MIDDLE, RIGHT: MOUSE.ROTATE };
-        c.touches = { ONE: TOUCH.PAN, TWO: TOUCH_DISABLED };
-        break;
-      case 'zoom':
-        c.mouseButtons = { LEFT: MOUSE.DOLLY, MIDDLE, RIGHT: MOUSE.PAN };
-        c.touches = { ONE: TOUCH.DOLLY_PAN, TWO: TOUCH_DISABLED };
-        break;
-    }
+    this.controls.mouseButtons = { LEFT: MOUSE.ROTATE, MIDDLE, RIGHT: MOUSE.PAN };
+    this.controls.touches = { ONE: TOUCH.ROTATE, TWO: TOUCH_DISABLED };
   }
 
   hasAutoscroll(): boolean {
@@ -153,15 +134,21 @@ export class SceneControls {
     );
     const target = this.controls.target;
     const offset = this.camera.position.clone().sub(target);
-    offset.multiplyScalar(scale);
-    const len = offset.length();
-    const minD = (this.controls as unknown as { minDistance?: number }).minDistance ?? 0;
-    const maxD = (this.controls as unknown as { maxDistance?: number }).maxDistance ?? Infinity;
-    if (len < minD && len > 0) {
-      offset.multiplyScalar(minD / len);
-    } else if (len > maxD) {
-      offset.multiplyScalar(maxD / len);
+    const oldLen = offset.length();
+    if (oldLen < 1e-6) {
+      return;
     }
+    // Blend proportional zoom with a minimum absolute step (same approach as wheel zoom).
+    const proportionalLen = oldLen * scale;
+    const minStep = Math.abs(rate * dt) * this.controls.minDistance;
+    let newLen: number;
+    if (scale < 1) {
+      newLen = Math.min(proportionalLen, oldLen - minStep);
+    } else {
+      newLen = Math.max(proportionalLen, oldLen + minStep);
+    }
+    newLen = Math.max(this.controls.minDistance, Math.min(this.controls.maxDistance, newLen));
+    offset.multiplyScalar(newLen / oldLen);
     this.camera.position.copy(target).add(offset);
   }
 
@@ -215,7 +202,70 @@ export class SceneControls {
   dispose(): void {
     this.uninstallAutoscrollZoom();
     this.uninstallRendererPointerListeners();
+    this.renderer.domElement.removeEventListener('wheel', this.onWheel, { capture: true });
   }
+
+  // -------------------------------------------------------------------------
+  // Always-on wheel zoom (bypasses OrbitControls state-machine blocking)
+  // -------------------------------------------------------------------------
+
+  /**
+   * OrbitControls blocks scroll-wheel zoom when its internal state is PAN
+   * or DOLLY (i.e. while a left-drag is in progress in pan/zoom cursor
+   * mode). To allow simultaneous left-drag + scroll-wheel zoom we take over
+   * wheel handling entirely with a capture-phase listener that directly
+   * moves the camera, then stops propagation so OrbitControls never sees
+   * the event.
+   */
+  private installAlwaysOnWheelZoom(): void {
+    this.renderer.domElement.addEventListener('wheel', this.onWheel, {
+      passive: false,
+      capture: true,
+    });
+  }
+
+  private onWheel = (event: WheelEvent): void => {
+    if (!this.controls.enabled || !this.controls.enableZoom || this.autoscroll !== null) {
+      return;
+    }
+    event.preventDefault();
+    event.stopImmediatePropagation();
+
+    const zoomSpeed = this.controls.zoomSpeed;
+    let normalised: number;
+    switch (event.deltaMode) {
+      case WheelEvent.DOM_DELTA_LINE:
+        normalised = (-event.deltaY * zoomSpeed) / 10;
+        break;
+      case WheelEvent.DOM_DELTA_PAGE:
+        normalised = -event.deltaY * zoomSpeed;
+        break;
+      default:
+        normalised = (-event.deltaY * zoomSpeed) / 480;
+        break;
+    }
+    const target = this.controls.target;
+    const offset = this.camera.position.clone().sub(target);
+    const oldDist = offset.length();
+    if (oldDist < 1e-6) {
+      return;
+    }
+    // Blend proportional zoom with a minimum absolute step scaled to current
+    // distance so close-range zoom stays responsive at any zoom level.
+    const proportionalDist = oldDist * Math.pow(0.85, normalised);
+    const minStep = Math.abs(normalised) * Math.max(this.controls.minDistance, oldDist * 0.1);
+    let newDist: number;
+    if (normalised > 0) {
+      newDist = Math.min(proportionalDist, oldDist - minStep);
+    } else if (normalised < 0) {
+      newDist = Math.max(proportionalDist, oldDist + minStep);
+    } else {
+      newDist = oldDist;
+    }
+    newDist = Math.max(this.controls.minDistance, Math.min(this.controls.maxDistance, newDist));
+    const f = newDist / oldDist;
+    this.camera.position.copy(target).add(offset.multiplyScalar(f));
+  };
 
   // -------------------------------------------------------------------------
   // Orbit inertia

@@ -114,6 +114,7 @@ export class Slicer {
     // perspective. Runtime init errors still surface through `status` + logs.
     return 'connected';
   });
+  readonly shouldShowConnectionStatus = computed(() => this.runtimeMode === 'cloud');
   readonly outputLog = signal<string[]>([]);
   readonly phaseTimings = signal<PhaseTimingData[]>([]);
 

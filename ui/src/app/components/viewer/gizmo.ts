@@ -1,5 +1,6 @@
 import {
   Box3,
+  BoxGeometry,
   Camera,
   Color,
   Group,
@@ -98,6 +99,16 @@ export class GizmoManager {
   private readonly anchor = new Vector3();
   /** True while the user is actively dragging a handle. */
   private dragging = false;
+  /**
+   * The scale factor emitted in the previous objectChange event for an XYZ
+   * uniform-scale drag, used to derive a per-frame incremental ratio from the
+   * cumulative total-factor.
+   */
+  private scaleXyzPrevFactor = 1;
+  /** Canvas clientY recorded at the start of an XYZ scale drag. */
+  private scaleXyzStartY = 0;
+  /** Latest canvas clientY seen during a drag (updated by pointermove). */
+  private scaleXyzCurrentY = 0;
 
   /** Callback fired when dragging starts (so the host can disable OrbitControls). */
   onDragStart: (() => void) | null = null;
@@ -106,15 +117,34 @@ export class GizmoManager {
   /** Callback fired when dragging ends (so the host can flush history). */
   onDragEnd: (() => void) | null = null;
 
+  /** Record the pointer Y at the start of any drag so the XYZ scale handler
+   *  has a stable origin regardless of TC's internal state. */
+  private readonly onScalePointerDown = (e: PointerEvent): void => {
+    this.scaleXyzStartY = e.clientY;
+    this.scaleXyzCurrentY = e.clientY;
+    this.scaleXyzPrevFactor = 1;
+  };
+
+  /** Track current pointer Y continuously during drag. */
+  private readonly onScalePointerMove = (e: PointerEvent): void => {
+    this.scaleXyzCurrentY = e.clientY;
+  };
+
   /** Bound key listeners so we can detach them on dispose. */
   private readonly onKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Shift') {
-      this.setSnapEnabled(true);
+      // Translate & scale snap on Shift; rotation goes free on Shift.
+      this.translateControls.translationSnap = GIZMO_SNAP.translate;
+      this.scaleControls.scaleSnap = GIZMO_SNAP.scale;
+      this.rotateControls.rotationSnap = null;
     }
   };
   private readonly onKeyUp = (e: KeyboardEvent) => {
     if (e.key === 'Shift') {
-      this.setSnapEnabled(false);
+      // Release Shift: translate & scale go free; rotation returns to snap.
+      this.translateControls.translationSnap = null;
+      this.scaleControls.scaleSnap = null;
+      this.rotateControls.rotationSnap = GIZMO_SNAP.rotate;
     }
   };
 
@@ -132,19 +162,22 @@ export class GizmoManager {
     this.rotateControls = this.makeControls('rotate');
     this.scaleControls = this.makeControls('scale');
 
+    this.applyInitialSnapState();
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
+    this.renderer.domElement.addEventListener('pointerdown', this.onScalePointerDown);
+    this.renderer.domElement.addEventListener('pointermove', this.onScalePointerMove);
   }
 
   /**
-   * Toggle snap-to-step mode on every TransformControls instance. When
-   * enabled, drags snap to {@link GIZMO_SNAP} increments; when disabled
-   * (`null`) motion is continuous.
+   * Snap state is mode-specific: rotate is snapped by default (Shift frees
+   * it), while translate and scale are free by default (Shift snaps them).
+   * Called once at construction to set the initial state.
    */
-  private setSnapEnabled(enabled: boolean): void {
-    this.translateControls.translationSnap = enabled ? GIZMO_SNAP.translate : null;
-    this.rotateControls.rotationSnap = enabled ? GIZMO_SNAP.rotate : null;
-    this.scaleControls.scaleSnap = enabled ? GIZMO_SNAP.scale : null;
+  private applyInitialSnapState(): void {
+    this.translateControls.translationSnap = null;
+    this.rotateControls.rotationSnap = GIZMO_SNAP.rotate;
+    this.scaleControls.scaleSnap = null;
   }
 
   /**
@@ -159,15 +192,6 @@ export class GizmoManager {
     tc.setColors(AXIS_COLORS.x, AXIS_COLORS.y, AXIS_COLORS.z, AXIS_COLORS.active);
     tc.setSize(GIZMO_SCREEN_SIZE);
     tc.enabled = false;
-
-    // Hide planar handles in scale mode — only axis + uniform XYZ remain.
-    // TransformControls re-applies these flags every frame, so setting
-    // `node.visible = false` in traverse() doesn't stick.
-    if (mode === 'scale') {
-      tc.showXY = false;
-      tc.showYZ = false;
-      tc.showXZ = false;
-    }
 
     // The visual helper must be added to the scene separately; the
     // TransformControls instance itself is just an event source.
@@ -189,6 +213,36 @@ export class GizmoManager {
         node.renderOrder = 999;
       }
     });
+
+    // Permanently suppress certain handles that TC would re-show every frame:
+    //   rotate   — hide the outer 'E' ring (use XYZ axis rings instead)
+    //   scale    — hide the planar 'XY'/'YZ'/'XZ' square handles but keep the
+    //              central 'XYZ' box for proportional scaling
+    //   translate — hide the planar 'XY'/'YZ'/'XZ' squares; replace the central
+    //              'XYZ' octahedron with a plain box matching the scale handle
+    if (mode === 'rotate' || mode === 'scale' || mode === 'translate') {
+      const hiddenNames = mode === 'rotate' ? new Set(['E']) : new Set(['XY', 'YZ', 'XZ']);
+      helper.traverse((node) => {
+        if (hiddenNames.has(node.name)) {
+          Object.defineProperty(node, 'visible', {
+            get: () => false,
+            set: () => {},
+            configurable: true,
+          });
+        }
+      });
+    }
+
+    // Replace the translate XYZ octahedron (diamond shape) with a plain box
+    // identical to the scale XYZ handle so both look the same.
+    if (mode === 'translate') {
+      helper.traverse((node) => {
+        if (node.name === 'XYZ' && node instanceof Mesh) {
+          node.geometry = new BoxGeometry(0.1, 0.1, 0.1);
+        }
+      });
+    }
+
     this.scene.add(helper);
 
     tc.addEventListener('mouseDown', () => {
@@ -255,6 +309,24 @@ export class GizmoManager {
       return;
     }
     // mode === 'scale'
+    if (this.scaleControls.axis === 'XYZ') {
+      // Use raw canvas pixel coordinates — immune to TC's internal NDC maths.
+      // Drag up 150 px = 2× scale; drag down 150 px = 0.5×. Adjust the
+      // divisor to taste (larger = slower / less sensitive).
+      const dy = this.scaleXyzStartY - this.scaleXyzCurrentY; // positive = drag up
+      const totalFactor = Math.pow(2, dy / 150);
+      const f = totalFactor / this.scaleXyzPrevFactor;
+      this.scaleXyzPrevFactor = totalFactor;
+      // Keep lastScale in sync so single-axis drags after an XYZ drag start
+      // from a consistent baseline.
+      this.lastScale.copy(this.ghost.scale);
+      if (Math.abs(f - 1) < 1e-6) {
+        return;
+      }
+      this.onDelta({ kind: 'scale', factors: [f, f, f] });
+      return;
+    }
+    // Single-axis or planar scale — use the ghost scale ratio directly.
     const fx = this.ghost.scale.x / this.lastScale.x;
     const fy = this.ghost.scale.y / this.lastScale.y;
     const fz = this.ghost.scale.z / this.lastScale.z;
@@ -351,6 +423,27 @@ export class GizmoManager {
     return this.active !== null && this.active.axis !== null;
   }
 
+  /**
+   * Raycast the active gizmo helper's hit meshes for a pointer position.
+   * Used on touch where no prior hover move has set `axis`, so `isHovering()`
+   * would incorrectly return false at the moment of touchdown.
+   */
+  hitTest(event: PointerEvent, camera: Camera, renderer: WebGLRenderer): boolean {
+    if (!this.active) {
+      return false;
+    }
+    const el = renderer.domElement;
+    const rect = el.getBoundingClientRect();
+    const ndcX = ((event.clientX - rect.left) / Math.max(rect.width, 1)) * 2 - 1;
+    const ndcY = -(((event.clientY - rect.top) / Math.max(rect.height, 1)) * 2 - 1);
+    const ndc = new Vector2(ndcX, ndcY);
+    const rc = new Raycaster();
+    rc.setFromCamera(ndc, camera);
+    const helper = this.active.getHelper();
+    const hits = rc.intersectObject(helper, true);
+    return hits.length > 0;
+  }
+
   /** Currently active object-manipulation mode. */
   getMode(): ObjectMode {
     return this.mode;
@@ -362,6 +455,8 @@ export class GizmoManager {
       this.scene.remove(tc.getHelper());
       tc.dispose();
     }
+    this.renderer.domElement.removeEventListener('pointerdown', this.onScalePointerDown);
+    this.renderer.domElement.removeEventListener('pointermove', this.onScalePointerMove);
     this.scene.remove(this.ghost);
   }
 

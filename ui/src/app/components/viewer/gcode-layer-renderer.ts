@@ -1,19 +1,24 @@
 import {
-    BufferAttribute,
-    BufferGeometry,
-    Color,
-    CylinderGeometry,
-    Group,
-    InstancedMesh,
-    LineBasicMaterial,
-    LineSegments,
-    MeshStandardMaterial,
-    Object3D,
-    SphereGeometry,
-    Vector3,
+  BufferAttribute,
+  BufferGeometry,
+  Color,
+  CylinderGeometry,
+  Group,
+  InstancedMesh,
+  LineBasicMaterial,
+  LineSegments,
+  MeshStandardMaterial,
+  Object3D,
+  SphereGeometry,
+  Vector3,
 } from 'three';
 import type { GcodeLayerBuffer } from '../../../generated/scene-wasm/scene_engine';
-import { ROLE_COLORS, ROLE_ORDER, type RoleName } from '../../services/gcode-preview';
+import {
+  ROLE_COLORS_DARK,
+  ROLE_ORDER,
+  type RoleColorPalette,
+  type RoleName,
+} from '../../services/gcode-preview';
 
 // -- Shared types -------------------------------------------------------------
 
@@ -69,12 +74,14 @@ const segmentGeometry = new CylinderGeometry(0.5, 0.5, 1, 8, 1, false);
 segmentGeometry.rotateX(Math.PI / 2); // Align along Z
 const jointGeometry = new SphereGeometry(0.5, 8, 8);
 
-// Seam dots are rendered as larger white spheres.  We keep a dedicated
-// geometry so they can be rendered independently of the normal joint spheres.
+// Seam dots are rendered as larger spheres.  We keep a dedicated geometry so
+// they can be rendered independently of the normal joint spheres.
 const seamDotGeometry = new SphereGeometry(0.5, 10, 10);
-const SEAM_COLOR = new Color(0xffffff);
 
-export function buildLayerGroup(buf: GcodeLayerBuffer): LayerBuild {
+export function buildLayerGroup(
+  buf: GcodeLayerBuffer,
+  colors: RoleColorPalette = ROLE_COLORS_DARK,
+): LayerBuild {
   const group = new Group();
   group.userData['handle'] = buf;
 
@@ -118,7 +125,7 @@ export function buildLayerGroup(buf: GcodeLayerBuffer): LayerBuild {
     const count = roleTotals[role];
     if (count === 0) continue;
 
-    const color = ROLE_COLORS[role];
+    const color = colors[role];
 
     if (role === 'travel') {
       const pts = new Float32Array(count * 6);
@@ -129,9 +136,9 @@ export function buildLayerGroup(buf: GcodeLayerBuffer): LayerBuild {
       group.add(lines);
       roleSegmentsMap[role] = { role, lines, count };
     } else if (role === 'seam') {
-      // Seam points are rendered as white spheres — no cylinder body, just dots.
+      // Seam points are rendered as spheres — no cylinder body, just dots.
       const material = new MeshStandardMaterial({
-        color: SEAM_COLOR,
+        color,
         roughness: 0.3,
         metalness: 0.1,
       });
@@ -270,6 +277,28 @@ export function disposeLayerGroup(group: Group): void {
         for (const m of child.material) m.dispose();
       } else {
         child.material.dispose();
+      }
+    }
+  }
+}
+
+/**
+ * Update the material colors of all built layers to match a new palette.
+ * Called when the application theme changes; no geometry is rebuilt.
+ */
+export function updateLayerColors(layers: LayerInfo[], colors: RoleColorPalette): void {
+  const c = new Color();
+  for (const info of layers) {
+    for (const rs of info.roleSegments) {
+      c.set(colors[rs.role]);
+      if (rs.mesh) {
+        (rs.mesh.material as MeshStandardMaterial).color.copy(c);
+      }
+      if (rs.joints) {
+        (rs.joints.material as MeshStandardMaterial).color.copy(c);
+      }
+      if (rs.lines) {
+        (rs.lines.material as LineBasicMaterial).color.copy(c);
       }
     }
   }

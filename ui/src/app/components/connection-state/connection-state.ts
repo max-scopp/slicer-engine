@@ -21,6 +21,9 @@ const STATUS_CONFIG: Record<string, StatusConfig> = {
   imports: [Badge],
   templateUrl: './connection-state.html',
   styleUrl: './connection-state.scss',
+  host: {
+    '[hidden]': '!slicer.shouldShowConnectionStatus()',
+  },
 })
 export class ConnectionState {
   readonly slicer = inject(Slicer);

@@ -1,15 +1,15 @@
 import {
-  AmbientLight,
-  BoxGeometry,
-  DirectionalLight,
-  Group,
-  Mesh,
-  MeshBasicMaterial,
-  Object3D,
-  PerspectiveCamera,
-  Scene,
-  Vector3,
-  WebGLRenderer,
+    AmbientLight,
+    BoxGeometry,
+    DirectionalLight,
+    Group,
+    Mesh,
+    MeshBasicMaterial,
+    Object3D,
+    PerspectiveCamera,
+    Scene,
+    Vector3,
+    WebGLRenderer,
 } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { PrintAreaConfig } from '../../../services/print-area';
@@ -19,12 +19,7 @@ import { INITIAL_CAMERA_UP, INITIAL_PERSPECTIVE_FOV, SceneCamera } from './camer
 import { SceneControls } from './controls';
 import { SceneGrid } from './grid';
 import { SceneSelection } from './selection';
-import type {
-  SceneGizmoHandlers,
-  SceneSelectionHandlers,
-  ViewerCursorMode,
-  ViewerView,
-} from './types';
+import type { SceneGizmoHandlers, SceneSelectionHandlers, ViewerView } from './types';
 import { disposeObject } from './utils';
 
 const CAMERA_NEAR = 0.1;
@@ -241,11 +236,6 @@ export class ViewerScene {
     this._camera.orbitBy(azimuth, polar);
   }
 
-  setCursorMode(mode: ViewerCursorMode): void {
-    this._selection.setCursorMode(mode);
-    this._controls.setCursorMode(mode);
-  }
-
   setObjectMode(mode: ObjectMode): void {
     this._selection.setObjectMode(mode);
   }
@@ -369,7 +359,7 @@ export class ViewerScene {
 }
 
 // Re-export public types so callers can import from './scene' directly.
-export type { SceneGizmoHandlers, SceneSelectionHandlers, ViewerCursorMode, ViewerView };
+export type { SceneGizmoHandlers, SceneSelectionHandlers, ViewerView };
 
 // -----------------------------------------------------------------------------
 // RGB axes gizmo

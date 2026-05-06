@@ -1,9 +1,12 @@
 <div class="schema-form-search">
   <nexus-icon name="search" class="schema-form-search-icon" aria-hidden="true" />
   <input
+    #searchInput
     class="schema-form-search-input"
     type="search"
-    placeholder="Search settings…"
+    [placeholder]="
+      'Search settings… (' + keyboardShortcuts.shortcutFor('focus-settings-search') + ')'
+    "
     autocomplete="off"
     [(ngModel)]="searchQuery"
   />

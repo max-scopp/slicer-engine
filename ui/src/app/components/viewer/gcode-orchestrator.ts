@@ -1,12 +1,17 @@
 import type { Group } from 'three';
 import type { GcodeLayerBuffer } from '../../../generated/scene-wasm/scene_engine';
-import type { RoleName } from '../../services/gcode-preview';
+import {
+  ROLE_COLORS_DARK,
+  type RoleColorPalette,
+  type RoleName,
+} from '../../services/gcode-preview';
 import {
   applyHiddenRoles,
   applySegmentProgress,
   buildLayerGroup,
   disposeLayerGroup,
   type LayerInfo,
+  updateLayerColors,
 } from './gcode-layer-renderer';
 
 /**
@@ -46,7 +51,10 @@ export class GcodeOrchestrator {
    * add them to the content root.  Any previously built layers are disposed
    * first.
    */
-  buildFromHandle(handle: GcodeSource): { totalSegments: number } {
+  buildFromHandle(
+    handle: GcodeSource,
+    colors: RoleColorPalette = ROLE_COLORS_DARK,
+  ): { totalSegments: number } {
     this.dispose();
 
     const count = handle.layerCount();
@@ -54,7 +62,7 @@ export class GcodeOrchestrator {
 
     for (let i = 0; i < count; i++) {
       const buf = handle.getLayer(i);
-      const built = buildLayerGroup(buf);
+      const built = buildLayerGroup(buf, colors);
       const info: LayerInfo = {
         index: i,
         z: buf.z ?? i,
@@ -91,6 +99,14 @@ export class GcodeOrchestrator {
    */
   applyProgress(topIndex: number, progress: number): void {
     applySegmentProgress(this.layers, topIndex, progress);
+  }
+
+  /**
+   * Update all material colors to match a new palette.
+   * Call this when the application theme changes.
+   */
+  updateColors(colors: RoleColorPalette): void {
+    updateLayerColors(this.layers, colors);
   }
 
   /**

@@ -11,7 +11,7 @@ html.dark {
   --color-surface: #1e2128;
   --color-surface-hover: #252b34;
   --color-surface-active: #2e3640;
-  --surface-transparency: 97%;
+  --surface-transparency: 86%;
 
   // Text Colors
   --color-text-primary: #f5f6f8;
@@ -23,26 +23,26 @@ html.dark {
   --color-border-light: #252b34;
   --color-border-lighter: #1e2128;
 
-  // Primary (Indigo)
-  --color-primary: #7c84f5;
-  --color-primary-hover: #9aa2ff;
-  --color-primary-active: #7c84f5;
-  --color-primary-light: #2a2d5e;
-  --color-primary-lighter: #1f2138;
+  // Primary (Indigo, translucent over surface)
+  --color-primary: #7c84f5c7;
+  --color-primary-hover: #9aa2ffd9;
+  --color-primary-active: #7c84f5e6;
+  --color-primary-light: #7c84f533;
+  --color-primary-lighter: #7c84f51f;
 
-  // Secondary (Amber)
-  --color-secondary: #fbbf24;
-  --color-secondary-hover: #fcd34d;
-  --color-secondary-active: #fbbf24;
-  --color-secondary-light: #451a03;
-  --color-secondary-lighter: #2d1200;
+  // Secondary (Amber, translucent over surface)
+  --color-secondary: #fbbf24c7;
+  --color-secondary-hover: #fcd34dd9;
+  --color-secondary-active: #fbbf24e6;
+  --color-secondary-light: #fbbf2433;
+  --color-secondary-lighter: #fbbf241f;
 
-  // Tertiary (Violet)
-  --color-tertiary: #c084fc;
-  --color-tertiary-hover: #d8b4fe;
-  --color-tertiary-active: #c084fc;
-  --color-tertiary-light: #3b1a5c;
-  --color-tertiary-lighter: #2a0f45;
+  // Tertiary (Violet, translucent over surface)
+  --color-tertiary: #c084fcc7;
+  --color-tertiary-hover: #d8b4fed9;
+  --color-tertiary-active: #c084fce6;
+  --color-tertiary-light: #c084fc33;
+  --color-tertiary-lighter: #c084fc1f;
 
   // Focus ring
   --color-focus-ring: #9aa2ff;

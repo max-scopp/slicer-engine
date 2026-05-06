@@ -14,6 +14,7 @@ import {
   viewChild,
 } from '@angular/core';
 import { BufferAttribute, BufferGeometry, Matrix4, Mesh, MeshPhongMaterial } from 'three';
+import { AppTheme } from '../../services/app-theme';
 import { GcodePreview } from '../../services/gcode-preview';
 import { ObjectTracker } from '../../services/object-tracker';
 import { PrintArea } from '../../services/print-area';
@@ -65,6 +66,7 @@ export class Viewer {
   private readonly sceneEngine = inject(SceneEngine);
   private readonly sceneCommand = inject(SceneCommand);
   private readonly gcodePreview = inject(GcodePreview);
+  private readonly appTheme = inject(AppTheme);
   private readonly destroyRef = inject(DestroyRef);
 
   /** Current loading status for the optional overlay. */
@@ -144,12 +146,6 @@ export class Viewer {
     effect(() => {
       const view = this.viewerControl.view();
       this.scene?.setView(view);
-    });
-
-    // React to cursor-mode changes from the toolbar.
-    effect(() => {
-      const mode = this.viewerControl.cursorMode();
-      this.scene?.setCursorMode(mode);
     });
 
     // React to object-mode (gizmo) changes from the toolbar.
@@ -251,6 +247,12 @@ export class Viewer {
     effect(() => {
       const hidden = this.gcodePreview.hiddenRoles();
       this.gcode?.applyHiddenRoles(hidden);
+    });
+
+    // React to theme changes — update all material colors without rebuilding geometry.
+    effect(() => {
+      const colors = this.gcodePreview.roleColors();
+      this.gcode?.updateColors(colors);
     });
 
     // Build (or rebuild) the layer graph when the parsed handle becomes
@@ -407,8 +409,7 @@ export class Viewer {
       facePicked: (objectId, faceIndex) => this.handleFacePicked(objectId, faceIndex),
     };
     // Apply the current toolbar selections so the scene starts in sync with
-    // whatever view / cursor / object mode the user already had selected.
-    this.scene.setCursorMode(this.viewerControl.cursorMode());
+    // whatever view / object mode the user already had selected.
     this.scene.setObjectMode(this.viewerControl.objectMode());
     this.scene.setView(this.viewerControl.view());
     this.gcode = new GcodeOrchestrator(this.scene.contentRoot);
@@ -645,7 +646,8 @@ export class Viewer {
     }
 
     this.cancelInFlightLoad();
-    const { totalSegments } = gcode.buildFromHandle(handle);
+    const colors = untracked(() => this.gcodePreview.roleColors());
+    const { totalSegments } = gcode.buildFromHandle(handle, colors);
 
     const min = untracked(() => this.gcodePreview.layerMin());
     const max = untracked(() => this.gcodePreview.layerMax());

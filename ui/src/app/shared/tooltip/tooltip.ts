@@ -11,4 +11,5 @@ import { MarkdownComponent } from 'ngx-markdown';
 export class Tooltip {
   readonly text = input.required<string>();
   readonly mode = input<'inline' | 'block'>('inline');
+  readonly shortcut = input<string | undefined>(undefined);
 }

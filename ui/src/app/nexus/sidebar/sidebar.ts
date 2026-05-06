@@ -1,14 +1,14 @@
 import {
-    afterNextRender,
-    Component,
-    computed,
-    DestroyRef,
-    DOCUMENT,
-    ElementRef,
-    HostListener,
-    inject,
-    Renderer2,
-    signal,
+  afterNextRender,
+  Component,
+  computed,
+  DestroyRef,
+  DOCUMENT,
+  ElementRef,
+  HostListener,
+  inject,
+  Renderer2,
+  signal,
 } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { ConnectionState } from '../../components/connection-state/connection-state';
@@ -68,6 +68,12 @@ export class Sidebar {
         fn();
       }
     });
+  }
+
+  expand(): void {
+    if (this.collapsed()) {
+      this.pinnedOpen.set(true);
+    }
   }
 
   protected onCollapseToggle(event: MouseEvent): void {

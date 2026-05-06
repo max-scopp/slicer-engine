@@ -15,7 +15,7 @@ import {
 } from 'three';
 import type { ObjectMode } from '../../../services/viewer-control';
 import { computeSelectionCentroid, type GizmoManager, raycastFace } from '../gizmo';
-import type { SceneGizmoHandlers, SceneSelectionHandlers, ViewerCursorMode } from './types';
+import type { SceneGizmoHandlers, SceneSelectionHandlers } from './types';
 
 const SELECTION_DRAG_THRESHOLD_PX = 4;
 const SELECTION_EMISSIVE = new Color(0xff8a3d);
@@ -39,7 +39,6 @@ export class SceneSelection {
   gizmoHandlers: SceneGizmoHandlers | null = null;
 
   private currentObjectMode: ObjectMode = 'none';
-  private currentCursorMode: ViewerCursorMode = 'orbit';
   private readonly selectables = new Map<string, Object3D>();
   private currentSelectedIds: ReadonlySet<string> = new Set();
 
@@ -218,13 +217,6 @@ export class SceneSelection {
     }
   }
 
-  setCursorMode(mode: ViewerCursorMode): void {
-    if (this.currentCursorMode !== mode) {
-      this.cancelActiveDrag();
-    }
-    this.currentCursorMode = mode;
-  }
-
   dispose(): void {
     this.uninstall();
     if (this.highlightRafHandle !== 0) {
@@ -244,7 +236,14 @@ export class SceneSelection {
     if (event.button !== 0 || !this.selectionHandlers) {
       return;
     }
-    if (this.gizmo.isHovering() || this.gizmo.isDragging()) {
+    // On touch there is no prior pointermove, so axis is null and isHovering()
+    // returns false even when the finger is directly over a gizmo handle.
+    // hitTest does a live raycast so touch can still pass through to TC.
+    const onGizmo =
+      this.gizmo.isHovering() ||
+      this.gizmo.isDragging() ||
+      (event.pointerType === 'touch' && this.gizmo.hitTest(event, this.camera, this.renderer));
+    if (onGizmo) {
       return;
     }
     if (this.currentObjectMode === 'pullToFloor') {
@@ -252,13 +251,18 @@ export class SceneSelection {
       if (hit) {
         event.preventDefault();
         event.stopPropagation();
+        this.hideFaceHighlight();
         this.gizmoHandlers?.facePicked(hit.objectId, hit.faceIndex);
+      } else if (this.currentSelectedIds.size > 0) {
+        this.emptyPressState = {
+          pointerId: event.pointerId,
+          downX: event.clientX,
+          downY: event.clientY,
+        };
       }
       return;
     }
-    if (this.currentCursorMode !== 'orbit') {
-      return;
-    }
+    // Orbit mode is fixed; clicks always attempt object selection.
     if (this.selectables.size === 0) {
       return;
     }

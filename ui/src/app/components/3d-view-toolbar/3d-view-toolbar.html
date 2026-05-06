@@ -1,8 +1,11 @@
 <div class="view-group">
-  <nexus-card class="button-radio-group" [(radioGroup)]="selectedView">
-    <button radioButtonValue="3D" [tooltip]="'3D perspective view'">3D</button>
-    <button radioButtonValue="Top" [tooltip]="'Top-down orthographic view'">Top</button>
-    <button radioButtonValue="Front" [tooltip]="'Front orthographic view'">Front</button>
+  <nexus-card class="button-radio-group icon-group" [(radioGroup)]="selectedView">
+    <button radioButtonValue="perspective" [tooltip]="'Perspective projection'">
+      <nexus-icon name="perspective-view"></nexus-icon>
+    </button>
+    <button radioButtonValue="ortho" [tooltip]="'Orthographic projection'">
+      <nexus-icon name="orthogonal-view"></nexus-icon>
+    </button>
   </nexus-card>
 
   <button
@@ -11,80 +14,95 @@
     [tooltip]="'Reset camera to default position'"
     (click)="resetView()"
   >
-    <nexus-icon name="restart"></nexus-icon>
+    <nexus-icon name="home"></nexus-icon>
   </button>
 
+  <button
+    class="reset-view-button"
+    type="button"
+    [tooltip]="
+      gravityEnabled()
+        ? 'Gravity on — objects drop to floor after every move'
+        : 'Gravity off — objects stay where placed'
+    "
+    [tooltipShortcut]="keyboardShortcuts.shortcutFor('toggle-gravity')"
+    [class.active]="gravityEnabled()"
+    (click)="toggleGravity()"
+  >
+    <nexus-icon name="depth"></nexus-icon>
+  </button>
+
+  <button
+    class="reset-view-button"
+    type="button"
+    [tooltip]="'Auto-orient — rotate all objects to minimise overhangs'"
+    [tooltipShortcut]="keyboardShortcuts.shortcutFor('auto-orient')"
+    (click)="autoOrient()"
+  >
+    <nexus-icon name="magic-wand"></nexus-icon>
+  </button>
+</div>
+
+<nexus-card class="button-radio-group icon-group" [(radioGroup)]="selectedObjectMode">
+  <button
+    radioButtonValue="translate"
+    [tooltip]="'Select & move — click to select, drag handles to translate'"
+    [tooltipShortcut]="keyboardShortcuts.shortcutFor('object-mode-translate')"
+  >
+    <nexus-icon name="cursor-pointer"></nexus-icon>
+  </button>
+  <button
+    radioButtonValue="rotate"
+    [tooltip]="'Rotate around an axis'"
+    [tooltipShortcut]="keyboardShortcuts.shortcutFor('object-mode-rotate')"
+  >
+    <nexus-icon name="crop-rotate-br"></nexus-icon>
+  </button>
+  <button
+    radioButtonValue="scale"
+    [tooltip]="'Scale along axes'"
+    [tooltipShortcut]="keyboardShortcuts.shortcutFor('object-mode-scale')"
+  >
+    <nexus-icon name="enlarge"></nexus-icon>
+  </button>
+  <button
+    radioButtonValue="pullToFloor"
+    [tooltip]="'Pull a face to the floor'"
+    [tooltipShortcut]="keyboardShortcuts.shortcutFor('object-mode-pull-to-floor')"
+  >
+    <nexus-icon name="constrained-surface"></nexus-icon>
+  </button>
+</nexus-card>
+
+<div class="view-group">
   <button
     class="reset-view-button"
     type="button"
     [class.active]="viewMode() === 'gcode'"
     [disabled]="!canSlice"
     [tooltip]="viewMode() === 'gcode' ? 'Switch to model view' : 'Switch to G-code preview'"
+    [tooltipShortcut]="keyboardShortcuts.shortcutFor('toggle-view-mode')"
     (click)="toggleViewMode()"
   >
     <nexus-icon [name]="viewMode() === 'gcode' ? 'cube' : 'multiple-pages'"></nexus-icon>
   </button>
+
+  <button
+    class="reset-view-button"
+    type="button"
+    [tooltip]="shell.editorPanelVisible() ? 'Hide operation pipeline' : 'Show operation pipeline'"
+    [class.active]="shell.editorPanelVisible()"
+    (click)="shell.toggleEditorPanel()"
+  >
+    <nexus-icon name="developer"></nexus-icon>
+  </button>
+
+  <button
+    class="reset-view-button"
+    type="button"
+    [tooltip]="'Keyboard shortcuts'"
+    (click)="showKeyboardShortcuts()"
+  >
+    <nexus-icon name="headset-help"></nexus-icon>
+  </button>
 </div>
-
-<nexus-card class="button-radio-group icon-group" [(radioGroup)]="selectedCursorMode">
-  <button radioButtonValue="orbit" [tooltip]="'Orbit — rotate the view'">
-    <nexus-icon name="rotate-camera-right"></nexus-icon>
-  </button>
-  <button radioButtonValue="pan" [tooltip]="'Pan — drag to move'">
-    <nexus-icon name="drag-hand-gesture"></nexus-icon>
-  </button>
-  <button radioButtonValue="zoom" [tooltip]="'Zoom in / out'">
-    <nexus-icon name="zoom-in"></nexus-icon>
-  </button>
-</nexus-card>
-
-<nexus-card class="button-radio-group icon-group" [(radioGroup)]="selectedObjectMode">
-  <button radioButtonValue="none" [tooltip]="'Select only — no gizmo'">
-    <nexus-icon name="cursor-pointer"></nexus-icon>
-  </button>
-  <button radioButtonValue="translate" [tooltip]="'Translate — move along axes or planes'">
-    <nexus-icon name="drag"></nexus-icon>
-  </button>
-  <button radioButtonValue="rotate" [tooltip]="'Rotate around an axis'">
-    <nexus-icon name="crop-rotate-br"></nexus-icon>
-  </button>
-  <button radioButtonValue="scale" [tooltip]="'Scale along axes'">
-    <nexus-icon name="enlarge"></nexus-icon>
-  </button>
-  <button radioButtonValue="pullToFloor" [tooltip]="'Pull a face to the floor'">
-    <nexus-icon name="constrained-surface"></nexus-icon>
-  </button>
-</nexus-card>
-
-<button
-  class="reset-view-button"
-  type="button"
-  [tooltip]="
-    gravityEnabled()
-      ? 'Gravity on — objects drop to floor after every move'
-      : 'Gravity off — objects stay where placed'
-  "
-  [class.active]="gravityEnabled()"
-  (click)="toggleGravity()"
->
-  <nexus-icon name="depth"></nexus-icon>
-</button>
-
-<button
-  class="reset-view-button"
-  type="button"
-  [tooltip]="'Auto-orient — rotate all objects to minimise overhangs (A)'"
-  (click)="autoOrient()"
->
-  <nexus-icon name="auto-fix"></nexus-icon>
-</button>
-
-<button
-  class="reset-view-button"
-  type="button"
-  [tooltip]="shell.editorPanelVisible() ? 'Hide operation pipeline' : 'Show operation pipeline'"
-  [class.active]="shell.editorPanelVisible()"
-  (click)="shell.toggleEditorPanel()"
->
-  <nexus-icon name="filter-list"></nexus-icon>
-</button>
