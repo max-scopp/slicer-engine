@@ -4,11 +4,6 @@ import type { ViewerMode } from '../components/viewer';
 
 export type ViewerView = 'perspective' | 'ortho';
 /**
- * Camera-navigation cursor mode. Controls how left-drag on empty space is
- * interpreted by OrbitControls. Object manipulation is governed separately
- * by {@link ObjectMode}.
- */
-/**
  * Object-manipulation mode. Drives the on-canvas gizmo for the current
  * selection. `'none'` is the default — no gizmo is shown, clicks select.
  * `'pullToFloor'` is a transient face-pick mode that auto-exits to
