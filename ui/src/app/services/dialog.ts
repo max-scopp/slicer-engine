@@ -58,13 +58,18 @@ export class Dialog {
       return;
     }
 
+    const dialogId = dialog.id;
+
     // Start leave animation, then emit and clear.
     this.activeDialog.set({ ...dialog, isLeaving: true });
 
     setTimeout(() => {
       dialog.result$.next(confirmed);
       dialog.result$.complete();
-      this.activeDialog.set(null);
+      // Only clear if no new dialog was opened while the leave animation ran.
+      if (this.activeDialog()?.id === dialogId) {
+        this.activeDialog.set(null);
+      }
     }, LEAVE_DURATION_MS);
   }
 
