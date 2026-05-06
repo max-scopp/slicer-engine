@@ -235,13 +235,13 @@ export class SceneControls {
     let normalised: number;
     switch (event.deltaMode) {
       case WheelEvent.DOM_DELTA_LINE:
-        normalised = (event.deltaY * zoomSpeed) / 10;
+        normalised = (-event.deltaY * zoomSpeed) / 10;
         break;
       case WheelEvent.DOM_DELTA_PAGE:
-        normalised = event.deltaY * zoomSpeed;
+        normalised = -event.deltaY * zoomSpeed;
         break;
       default:
-        normalised = (event.deltaY * zoomSpeed) / 480;
+        normalised = (-event.deltaY * zoomSpeed) / 480;
         break;
     }
     const target = this.controls.target;

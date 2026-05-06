@@ -421,8 +421,9 @@ export class ViewportCube {
       }
       if (this.dragMoved) {
         // dx > 0 = drag right → positive azimuth → camera orbits CCW from above → RIGHT face shown.
-        // dy < 0 = drag up  → −dy > 0 → positive polar → newPhi = phi − polar decreases → camera rises toward TOP.
-        this.viewerControl.orbitSink?.(dx * DRAG_SENSITIVITY, -dy * DRAG_SENSITIVITY);
+        // dy > 0 = drag down → positive polar → newPhi = phi − polar decreases → camera rises toward TOP.
+        // (natural "grab-and-tilt": dragging up pulls the front face up, revealing the bottom)
+        this.viewerControl.orbitSink?.(dx * DRAG_SENSITIVITY, dy * DRAG_SENSITIVITY);
       }
       return;
     }
