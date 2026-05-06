@@ -1,0 +1,70 @@
+@if (preview.gcodeHandle() !== null) {
+  <div class="layer-bar" (pointerdown)="$event.stopPropagation()">
+    <!-- ── Layer info ── -->
+    <div class="meta">
+      <span class="num">{{ preview.layerMax() + 1 }}</span>
+      <span class="total">/ {{ preview.layerCount() }}</span>
+    </div>
+
+    <!-- ── Vertical layer slider ── -->
+    <div class="slider-wrap" (wheel)="onWheel($event)">
+      <div class="track-bg">
+        <div class="track-fill" [style.height.%]="fillPercent()"></div>
+      </div>
+      <input
+        type="range"
+        class="layer-input"
+        min="0"
+        [max]="preview.layerCount() - 1"
+        [value]="preview.layerMax()"
+        (input)="onInput($event)"
+        orient="vertical"
+      />
+    </div>
+
+    <!-- ── Show-all vs current-only toggle ── -->
+    <button
+      type="button"
+      class="mode-btn"
+      [class.active]="preview.showAllLayers()"
+      (click)="toggleMode()"
+      [title]="
+        preview.showAllLayers()
+          ? 'Showing all layers — click to show current only'
+          : 'Showing current layer only — click to show all from bottom'
+      "
+    >
+      @if (preview.showAllLayers()) {
+        <!-- layers-stack icon -->
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <polygon points="12 2 2 7 12 12 22 7 12 2" />
+          <polyline points="2 17 12 22 22 17" />
+          <polyline points="2 12 12 17 22 12" />
+        </svg>
+      } @else {
+        <!-- single-layer icon -->
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <polygon points="12 2 2 7 12 12 22 7 12 2" />
+        </svg>
+      }
+    </button>
+  </div>
+}

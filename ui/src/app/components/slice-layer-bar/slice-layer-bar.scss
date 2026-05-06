@@ -1,0 +1,160 @@
+:host {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.layer-bar {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-height: min(560px, 80%);
+  height: 100%;
+  padding: 14px 10px;
+  width: 50px;
+
+  background: linear-gradient(
+    color-mix(in srgb, var(--color-surface) calc(var(--surface-transparency) * 0.9), transparent),
+    color-mix(in srgb, var(--color-surface) calc(var(--surface-transparency) * 1.1), transparent)
+  );
+  backdrop-filter: blur(8px) saturate(2);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+// ── Layer info ────────────────────────────────────────────────────────────────
+
+.meta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--color-border);
+  width: 100%;
+}
+
+.num {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1;
+}
+
+.total {
+  font-size: 10px;
+  color: var(--color-text-tertiary);
+  line-height: 1;
+}
+
+// ── Vertical slider ───────────────────────────────────────────────────────────
+
+.slider-wrap {
+  flex: 1;
+  position: relative;
+  width: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60px;
+}
+
+// Custom track background (positioned behind the native input)
+.track-bg {
+  position: absolute;
+  left: 8px; // (20px wide − 4px track) / 2
+  top: 7px; // half thumb height
+  bottom: 7px;
+  width: 4px;
+  background: var(--color-border);
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+// Filled portion of the track (grows from bottom)
+.track-fill {
+  position: absolute;
+  bottom: 0;
+  width: 100%;
+  background: var(--color-primary);
+  border-radius: 2px;
+  transition: height 40ms linear;
+}
+
+.layer-input {
+  writing-mode: vertical-lr;
+  direction: rtl; // min at bottom, max at top
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  outline: none;
+  cursor: pointer;
+  height: 100%;
+  width: 20px;
+  margin: 0;
+  padding: 0;
+  position: relative;
+  z-index: 1;
+
+  // Hide the native track — our custom .track-bg replaces it
+  &::-webkit-slider-runnable-track {
+    background: transparent;
+  }
+
+  &::-moz-range-track {
+    background: transparent;
+    width: 4px;
+  }
+
+  &::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--color-primary-hover);
+    border: 2px solid var(--color-surface);
+    cursor: pointer;
+  }
+
+  &::-moz-range-thumb {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--color-primary-hover);
+    border: 2px solid var(--color-surface);
+    cursor: pointer;
+  }
+}
+
+// ── Mode toggle ───────────────────────────────────────────────────────────────
+
+.mode-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text-tertiary);
+
+  &.active {
+    background: var(--color-primary-lighter);
+    border-color: var(--color-primary-light);
+    color: var(--color-primary);
+  }
+}

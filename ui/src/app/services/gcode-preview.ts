@@ -107,12 +107,12 @@ export const ROLE_ORDER: readonly RoleName[] = [
 
 /**
  * Owns the parsed `GcodeHandle` for the current slice session and exposes
- * reactive signals consumed by both the `SlicePreviewControlsComponent` and
+ * reactive signals consumed by both the layer/segment control components and
  * the `Viewer` gcode rendering path.
  *
- * When `isProgressMode` is `true` the UI collapses to a single-thumb slider:
- * `layerMin` is always 0 and `layerMax` sweeps forward as the user drags,
- * simulating the printer building the object layer by layer.
+ * When `showAllLayers` is `true` (default) all layers from 0 to `layerMax` are
+ * rendered, giving a cumulative "layers built so far" view.  When `false` only
+ * the single layer at `layerMax` is shown.
  */
 @Injectable({ providedIn: 'root' })
 export class GcodePreview {
@@ -137,32 +137,32 @@ export class GcodePreview {
   readonly layerCount = computed(() => this.gcodeHandle()?.layerCount() ?? 0);
 
   /**
-   * Lower bound of the visible layer range (0-based index).
-   * Always 0 when `isProgressMode` is `true`.
-   */
-  readonly layerMin = signal(0);
-
-  /**
    * Upper bound of the visible layer range (0-based index).
-   * The single moving thumb in progress mode.
+   * The single moving thumb on the vertical layer scrollbar.
    */
   readonly layerMax = signal(0);
 
   /**
+   * When `true` (default) all layers from 0 up to `layerMax` are rendered.
+   * When `false` only the single layer at `layerMax` is shown.
+   */
+  readonly showAllLayers = signal(true);
+
+  /**
+   * Lower bound of the visible layer range (0-based index).
+   * Derived: always 0 when `showAllLayers` is true, otherwise equals `layerMax`.
+   */
+  readonly layerMin = computed(() => (this.showAllLayers() ? 0 : this.layerMax()));
+
+  /**
    * Fractional scrub position within the top-most visible layer [0, 1].
    * 0 = nothing shown; 1 = full layer revealed.
+   * Automatically resets to 1 when navigating to a different layer via `setLayerMax`.
    */
   readonly segmentProgress = signal(1);
 
   /** Set of roles to hide in the viewer. */
   readonly hiddenRoles = signal<ReadonlySet<RoleName>>(new Set<RoleName>());
-
-  /**
-   * When `false` (range mode) both `layerMin` and `layerMax` are independent
-   * thumbs.  When `true` (progress mode) `layerMin` is locked to 0 and only
-   * `layerMax` moves.
-   */
-  readonly isProgressMode = signal(false);
 
   constructor() {
     // React to every new download URL produced by the slicer service.
@@ -177,43 +177,18 @@ export class GcodePreview {
 
   // ── Mutators ────────────────────────────────────────────────────────────
 
-  setLayerMin(value: number): void {
-    const count = this.layerCount();
-    if (count === 0) {
-      return;
-    }
-    const clamped = Math.max(0, Math.min(value, this.layerMax()));
-    this.layerMin.set(clamped);
-  }
-
   setLayerMax(value: number): void {
     const count = this.layerCount();
     if (count === 0) {
       return;
     }
-    if (this.isProgressMode()) {
-      // Progress mode: only one layer visible at a time.
-      const clamped = Math.max(0, Math.min(value, count - 1));
-      this.layerMin.set(clamped);
-      this.layerMax.set(clamped);
-    } else {
-      const clamped = Math.max(this.layerMin(), Math.min(value, count - 1));
-      this.layerMax.set(clamped);
+    const clamped = Math.max(0, Math.min(value, count - 1));
+    // Reset segment scrub to fully-revealed whenever the active layer changes
+    // so the thumb doesn't visually jump as the new layer's segment count differs.
+    if (clamped !== this.layerMax()) {
+      this.segmentProgress.set(1);
     }
-  }
-
-  /** Shift the entire range window by `delta` layers without changing window size. */
-  shiftRange(delta: number): void {
-    const count = this.layerCount();
-    if (count === 0) {
-      return;
-    }
-    const min = this.layerMin();
-    const max = this.layerMax();
-    const span = max - min;
-    const newMin = Math.max(0, Math.min(count - 1 - span, min + delta));
-    this.layerMin.set(newMin);
-    this.layerMax.set(newMin + span);
+    this.layerMax.set(clamped);
   }
 
   setSegmentProgress(value: number): void {
@@ -231,13 +206,8 @@ export class GcodePreview {
     this.hiddenRoles.set(next);
   }
 
-  toggleProgressMode(): void {
-    const next = !this.isProgressMode();
-    this.isProgressMode.set(next);
-    if (next) {
-      // Progress mode: collapse to single layer at current max.
-      this.layerMin.set(this.layerMax());
-    }
+  toggleShowAllLayers(): void {
+    this.showAllLayers.set(!this.showAllLayers());
   }
 
   // ── Private ──────────────────────────────────────────────────────────────
@@ -252,11 +222,10 @@ export class GcodePreview {
       const handle = GcodeHandle.parse(new Uint8Array(buffer));
       const count = handle.layerCount();
       this.gcodeHandle.set(handle);
-      this.layerMin.set(0);
       this.layerMax.set(Math.max(0, count - 1));
       this.segmentProgress.set(1);
       this.hiddenRoles.set(new Set<RoleName>());
-      this.isProgressMode.set(false);
+      this.showAllLayers.set(true);
     } catch (error) {
       console.error('[GcodePreview] Failed to load gcode:', error);
     } finally {

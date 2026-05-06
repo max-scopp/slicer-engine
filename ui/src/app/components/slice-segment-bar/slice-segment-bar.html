@@ -1,0 +1,36 @@
+@if (preview.gcodeHandle() !== null) {
+  <div class="segment-bar" (pointerdown)="$event.stopPropagation()">
+    <!-- ── Nozzle / segment scrub ── -->
+    <div class="scrub-row">
+      <span class="scrub-label">Layer progress</span>
+      <div class="range-slider" (wheel)="onWheelSegment($event)">
+        <div class="range-track-fill" [style.right.%]="scrubFillRight()"></div>
+        <input
+          type="range"
+          class="thumb"
+          min="0"
+          [max]="layerSegmentCount()"
+          [value]="segmentSliderValue()"
+          (input)="onSegmentInput($event)"
+        />
+      </div>
+    </div>
+
+    <!-- ── Role legend ── -->
+    <div class="legend">
+      @for (role of roleOrder; track role) {
+        <button
+          type="button"
+          class="role-badge"
+          [class.hidden]="preview.hiddenRoles().has(role)"
+          [style.--role-color]="roleCss()[role]"
+          (click)="toggleRole(role)"
+          [title]="(preview.hiddenRoles().has(role) ? 'Show ' : 'Hide ') + roleLabels[role]"
+        >
+          <span class="role-swatch"></span>
+          <span class="role-name">{{ roleLabels[role] }}</span>
+        </button>
+      }
+    </div>
+  </div>
+}
