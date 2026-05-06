@@ -143,14 +143,14 @@ export class KeyboardShortcuts {
 
   /**
    * Returns a human-readable shortcut label for the given action ID,
-   * or `undefined` if no shortcut is registered.
+   * or `'unset'` if no shortcut is registered.
    *
    * `$mod` is resolved to `Ctrl` on Windows/Linux and `⌘` on macOS.
    */
-  shortcutFor(actionId: string): string | undefined {
+  shortcutFor(actionId: string): string {
     const config = this.shortcuts.find((s) => s.actionId === actionId);
     if (!config) {
-      return undefined;
+      return 'unset';
     }
     const isApplePlatform = this.isApplePlatform();
     return config.shortcut.replace(/\$mod/g, isApplePlatform ? '⌘' : 'Ctrl').replace(/\+/g, '+');
@@ -160,7 +160,7 @@ export class KeyboardShortcuts {
   getAll(): { actionId: string; displayText: string; displayDescription: string }[] {
     return this.shortcuts.map(({ actionId, displayDescription }) => ({
       actionId,
-      displayText: this.shortcutFor(actionId) ?? '',
+      displayText: this.shortcutFor(actionId),
       displayDescription,
     }));
   }
