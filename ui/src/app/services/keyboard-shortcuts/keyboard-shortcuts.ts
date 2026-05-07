@@ -117,6 +117,34 @@ export class KeyboardShortcuts {
       handleAction: () => this.toggleProjection(),
     },
     {
+      actionId: 'gcode-next-extrusion',
+      shortcut: 'ArrowRight',
+      displayDescription: 'Next extrusion (G-code viewer)',
+      canMatch: () => this.viewerControl.viewMode() === 'gcode',
+      handleAction: () => this.gcodeNextExtrusion(),
+    },
+    {
+      actionId: 'gcode-prev-extrusion',
+      shortcut: 'ArrowLeft',
+      displayDescription: 'Previous extrusion (G-code viewer)',
+      canMatch: () => this.viewerControl.viewMode() === 'gcode',
+      handleAction: () => this.gcodePrevExtrusion(),
+    },
+    {
+      actionId: 'gcode-next-layer',
+      shortcut: 'ArrowUp',
+      displayDescription: 'Next layer (G-code viewer)',
+      canMatch: () => this.viewerControl.viewMode() === 'gcode',
+      handleAction: () => this.gcodeNextLayer(),
+    },
+    {
+      actionId: 'gcode-prev-layer',
+      shortcut: 'ArrowDown',
+      displayDescription: 'Previous layer (G-code viewer)',
+      canMatch: () => this.viewerControl.viewMode() === 'gcode',
+      handleAction: () => this.gcodePrevLayer(),
+    },
+    {
       actionId: 'focus-settings-search',
       shortcut: '$mod+f',
       displayDescription: 'Focus settings search',
@@ -222,5 +250,54 @@ export class KeyboardShortcuts {
     }
 
     return /ipad/i.test(userAgent);
+  }
+
+  private gcodeNextExtrusion(): void {
+    const handle = this.gcodePreview.gcodeHandle();
+    const layerIndex = this.gcodePreview.layerMax();
+    if (!handle) {
+      return;
+    }
+    const layer = handle.getLayer(layerIndex);
+    const blockCount = layer.blocksCount();
+    if (blockCount === 0) {
+      return;
+    }
+    const current = this.gcodePreview.segmentProgress();
+    const step = 1 / blockCount;
+    const next = Math.min(1, current + step);
+    this.gcodePreview.setSegmentProgress(next);
+  }
+
+  private gcodePrevExtrusion(): void {
+    const handle = this.gcodePreview.gcodeHandle();
+    const layerIndex = this.gcodePreview.layerMax();
+    if (!handle) {
+      return;
+    }
+    const layer = handle.getLayer(layerIndex);
+    const blockCount = layer.blocksCount();
+    if (blockCount === 0) {
+      return;
+    }
+    const current = this.gcodePreview.segmentProgress();
+    const step = 1 / blockCount;
+    const prev = Math.max(0, current - step);
+    this.gcodePreview.setSegmentProgress(prev);
+  }
+
+  private gcodeNextLayer(): void {
+    const current = this.gcodePreview.layerMax();
+    const count = this.gcodePreview.layerCount();
+    if (current < count - 1) {
+      this.gcodePreview.setLayerMax(current + 1);
+    }
+  }
+
+  private gcodePrevLayer(): void {
+    const current = this.gcodePreview.layerMax();
+    if (current > 0) {
+      this.gcodePreview.setLayerMax(current - 1);
+    }
   }
 }
