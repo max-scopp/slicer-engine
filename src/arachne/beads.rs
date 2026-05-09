@@ -271,6 +271,117 @@ pub fn compute_arachne_beads(input: &Paths, params: &ArachneParams) -> Vec<Bead>
     beads
 }
 
+/// Debug variant of [`compute_arachne_beads`].
+///
+/// Behaves identically to the production function but additionally records
+/// every intermediate `shrink` result into `inflate_steps` so that the
+/// caller can convert them into `DebugStage::ArachneInflateStep` records.
+///
+/// Each entry in `inflate_steps` is `(bead_k, paths)` where `bead_k` is the
+/// zero-based bead index (outermost = 0) and `paths` is the raw Clipper2
+/// output of `shrink` at that depth — including both successful fits and the
+/// final geometry-limited miss.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn compute_arachne_beads_debug(
+    input: &Paths,
+    params: &ArachneParams,
+    inflate_steps: &mut Vec<(usize, Paths)>,
+) -> Vec<Bead> {
+    let d = params.nozzle_diameter_mm;
+    let min_w = params.wall_line_width_min_mm;
+    let max_w = params.wall_line_width_max_mm;
+    let tol = 1e-4 * d.max(0.01);
+    let min_bead_area = 0.01 * d * d;
+
+    if collapses_at(input, 1e-6, tol) {
+        return vec![];
+    }
+
+    let mut beads = Vec::new();
+    let mut bead_path_counts: Vec<usize> = Vec::with_capacity(params.wall_count);
+    let mut last_fit_depth: f64 = 0.0;
+    let mut first_miss_depth: f64 = (params.wall_count as f64 + 0.5) * d;
+    let mut n_fit: usize = 0;
+
+    for k in 0..params.wall_count {
+        let depth = (k as f64 + 0.5) * d;
+        let paths = shrink(input, depth, tol);
+        // Capture the intermediate regardless of whether it's empty.
+        inflate_steps.push((k, paths.clone()));
+        if paths.is_empty() {
+            first_miss_depth = depth;
+            break;
+        }
+        last_fit_depth = depth;
+        let kept = drop_degenerate_beads(paths, min_bead_area);
+        bead_path_counts.push(kept.len());
+        for p in kept.iter() {
+            beads.push(Bead {
+                path: p.clone(),
+                width_mm: d,
+                is_outer: k == 0,
+            });
+        }
+        n_fit += 1;
+    }
+
+    let geometry_limited = n_fit < params.wall_count;
+
+    if !geometry_limited {
+        return beads;
+    }
+
+    let lo = if n_fit > 0 { last_fit_depth } else { 0.0 };
+    let big_d = narrow_collapse_search(input, lo, first_miss_depth, tol);
+
+    if 2.0 * big_d < min_w {
+        return beads;
+    }
+
+    let inner_edge_depth = n_fit as f64 * d;
+    let remaining_half = big_d - inner_edge_depth;
+    let remaining_width = 2.0 * remaining_half;
+
+    if remaining_width >= min_w {
+        let center_depth = inner_edge_depth + remaining_half / 2.0;
+        let width = remaining_width.min(max_w);
+        let paths = shrink(input, center_depth, tol);
+        inflate_steps.push((n_fit, paths.clone()));
+        let kept = drop_degenerate_beads(paths, min_bead_area);
+        for p in kept.iter() {
+            beads.push(Bead {
+                path: p.clone(),
+                width_mm: width,
+                is_outer: n_fit == 0,
+            });
+        }
+    } else if remaining_width > 0.0 && !beads.is_empty() {
+        let n_absorb = params.wall_distribution_count.min(n_fit).max(1);
+        let extra_per_bead = remaining_width / n_absorb as f64;
+        let absorb_start_k = n_fit.saturating_sub(n_absorb);
+        let paths_to_remove: usize = bead_path_counts[absorb_start_k..n_fit].iter().sum();
+        let keep = beads.len().saturating_sub(paths_to_remove);
+        beads.truncate(keep);
+        for k in absorb_start_k..n_fit {
+            let new_width = (d + extra_per_bead).min(max_w);
+            let outer_edge = k as f64 * d;
+            let new_depth = outer_edge + new_width / 2.0;
+            let paths = shrink(input, new_depth, tol);
+            inflate_steps.push((k, paths.clone()));
+            let kept = drop_degenerate_beads(paths, min_bead_area);
+            for p in kept.iter() {
+                beads.push(Bead {
+                    path: p.clone(),
+                    width_mm: new_width,
+                    is_outer: k == 0,
+                });
+            }
+        }
+    }
+
+    beads
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

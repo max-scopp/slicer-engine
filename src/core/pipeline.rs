@@ -7,7 +7,7 @@ use crate::settings::params::{SeamPosition, SlicingParams};
 use super::infill::{add_infill_to_layers, calculate_interior_region};
 use super::slicer::slice_mesh;
 use super::surfaces::{generate_top_bottom_surfaces_with_interior, SurfaceConfig};
-use super::types::SliceLayer;
+use super::types::{ExtrusionRole, SliceLayer};
 use super::walls::{apply_single_wall_restrictions, classify_overhang_perimeters};
 
 /// Central entry point for the complete slicing pipeline.
@@ -411,6 +411,190 @@ pub fn process_mesh(
         layer.path_is_open = ordered_is_open;
     }
     t_tsp.finish();
+
+    layers
+}
+
+/// Debug variant of [`process_mesh`].
+///
+/// Runs the full slicing pipeline and additionally collects geometry snapshots
+/// at every major stage into `debug`.  The returned `Vec<SliceLayer>` is
+/// identical to what `process_mesh` would produce.
+///
+/// Because Arachne is run sequentially in debug mode (to allow in-order
+/// snapshot capture), this function is **significantly slower** than
+/// `process_mesh` on large models.  Use it only for debugging.
+///
+/// # Snapshots captured
+///
+/// | Stage | When |
+/// |---|---|
+/// | `RawContours` | After `slice_mesh`, before Arachne |
+/// | `ArachneNormalisedInput` | Per layer: EvenOdd-union result fed to Arachne |
+/// | `ArachneInflateStep { bead_k }` | Per layer / per bead: each `shrink` intermediate |
+/// | `ArachneBeads` | Per layer: final bead centerlines |
+/// | `InteriorRegion` | Per layer: inside-wall region for infill/surfaces |
+/// | `SolidSurface` | Per layer: `layer.solid_regions` after surface generation |
+/// | `Infill` | Per layer: infill + surface fill paths |
+#[cfg(not(target_arch = "wasm32"))]
+pub fn process_mesh_debug(
+    mesh: &Mesh,
+    params: &SlicingParams,
+    logger: &dyn ProcessLogger,
+    debug: &mut crate::debug::DebugGeometry,
+) -> Vec<SliceLayer> {
+    use crate::debug::DebugStage;
+
+    logger.log_info(&format!(
+        "debug pipeline: processing mesh with {} triangles",
+        mesh.faces.len()
+    ));
+
+    let mut layers = slice_mesh(mesh, params.layer_height);
+    logger.log_info(&format!("sliced into {} layers", layers.len()));
+
+    // Snapshot raw contours.
+    for (i, layer) in layers.iter().enumerate() {
+        debug.push(DebugStage::RawContours, i, layer.z, layer.paths.clone());
+    }
+
+    if logger.is_cancelled() {
+        return layers;
+    }
+
+    // Arachne — sequential, with debug snapshots captured per layer.
+    logger.log_debug("generating Arachne walls (debug mode, sequential)");
+    let arachne_params = crate::arachne::ArachneParams::from_slicing_params(params);
+    crate::arachne::generate_arachne_walls_debug(&mut layers, &arachne_params, debug);
+    logger.log_debug("Arachne wall generation complete");
+
+    if logger.is_cancelled() {
+        return layers;
+    }
+
+    // Pre-strip infill region snapshot (same logic as process_mesh).
+    let pre_strip_infill_regions: Option<Vec<Paths>> = if params.infill_density > 0.0
+        && (params.only_one_wall_first_layer || params.only_one_wall_top)
+    {
+        Some(
+            layers
+                .iter()
+                .map(|layer| {
+                    calculate_interior_region(
+                        layer,
+                        0.0,
+                        params.nozzle_diameter_mm,
+                        params.wall_count,
+                    )
+                })
+                .collect(),
+        )
+    } else {
+        None
+    };
+
+    if params.only_one_wall_first_layer || params.only_one_wall_top {
+        apply_single_wall_restrictions(&mut layers, params);
+    }
+
+    // Interior regions — snapshot each one.
+    let interior_regions: Vec<Paths> = if params.top_layers > 0 || params.bottom_layers > 0 {
+        let regions: Vec<Paths> = layers
+            .iter()
+            .map(|layer| {
+                calculate_interior_region(
+                    layer,
+                    params.infill_overlap_percent,
+                    params.nozzle_diameter_mm,
+                    params.wall_count,
+                )
+            })
+            .collect();
+        for (i, (layer, region)) in layers.iter().zip(regions.iter()).enumerate() {
+            debug.push(DebugStage::InteriorRegion, i, layer.z, region.clone());
+        }
+        regions
+    } else {
+        vec![]
+    };
+
+    // Surfaces.
+    if params.top_layers > 0 || params.bottom_layers > 0 {
+        generate_top_bottom_surfaces_with_interior(
+            &mut layers,
+            &SurfaceConfig {
+                top_layers: params.top_layers,
+                bottom_layers: params.bottom_layers,
+                layer_height: params.layer_height,
+                infill_angle: params.surface_infill_angle,
+                nozzle_diameter_mm: params.nozzle_diameter_mm,
+                min_infill_extrusion_mm: params.min_infill_extrusion_mm,
+                bridge_flow_ratio: params.bridge_flow_ratio,
+                bridge_min_area_mm2: params.bridge_min_area_mm2,
+                bridge_noise_filter_mm: params.bridge_noise_filter_mm,
+                bridge_anchor_mm: params.bridge_anchor_mm,
+            },
+            Some(&interior_regions),
+        );
+        classify_overhang_perimeters(&mut layers, params.nozzle_diameter_mm);
+
+        // Snapshot solid surface regions.
+        for (i, layer) in layers.iter().enumerate() {
+            debug.push(
+                DebugStage::SolidSurface,
+                i,
+                layer.z,
+                layer.solid_regions.clone(),
+            );
+        }
+    }
+
+    // Infill.
+    if params.infill_density > 0.0 {
+        let infill_pattern = params.infill_pattern;
+        add_infill_to_layers(
+            &mut layers,
+            params.infill_density,
+            infill_pattern,
+            params.infill_base_angle,
+            params.nozzle_diameter_mm,
+            params.infill_perimeter_gap_mm,
+            pre_strip_infill_regions.as_deref(),
+        );
+
+        // Snapshot infill paths (Infill, TopSurface, BottomSurface roles).
+        for (layer_index, layer) in layers.iter().enumerate() {
+            let infill_paths: Vec<clipper2::Path> = layer
+                .paths
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| {
+                    matches!(
+                        layer.role_for_path(*i),
+                        ExtrusionRole::Infill
+                            | ExtrusionRole::TopSurface
+                            | ExtrusionRole::BottomSurface
+                            | ExtrusionRole::Bridge
+                    )
+                })
+                .map(|(_, p)| p.clone())
+                .collect();
+            if !infill_paths.is_empty() {
+                debug.push(
+                    DebugStage::Infill,
+                    layer_index,
+                    layer.z,
+                    clipper2::Paths::new(infill_paths),
+                );
+            }
+        }
+    }
+
+    logger.log_debug(&format!(
+        "debug geometry: {} records captured across {} layers",
+        debug.len(),
+        layers.len()
+    ));
 
     layers
 }

@@ -198,6 +198,14 @@ pub struct SliceCommand {
     /// When omitted, uses the value from settings (default: nearest).
     #[arg(long, value_name = "POLICY")]
     pub seam_position: Option<String>,
+
+    /// Dump internal geometry at every pipeline stage to this directory for
+    /// visual debugging.  Produces per-layer `layer_NNNN.svg` files
+    /// (Inkscape / browser) with each pipeline stage as a coloured group.
+    /// Enables sequential (non-parallel) Arachne so intermediate inflate
+    /// steps can be captured.  Has no effect on the G-code output.
+    #[arg(long, value_name = "DIR")]
+    pub debug_geometry: Option<PathBuf>,
 }
 
 /// Result payload emitted by the `slice` command.
@@ -448,7 +456,38 @@ impl SliceCommand {
 
         // Run the unified slicing pipeline. All step-level logging is handled
         // inside process_mesh and routed through `logger`.
-        let layers = crate::core::process_mesh(&mesh, &slice_params, &logger);
+        let layers = if let Some(ref debug_dir) = self.debug_geometry {
+            std::fs::create_dir_all(debug_dir).map_err(|e| {
+                format!(
+                    "Failed to create debug directory '{}': {}",
+                    debug_dir.display(),
+                    e
+                )
+            })?;
+            logger.log_info(&format!(
+                "debug geometry enabled — writing to {}",
+                debug_dir.display()
+            ));
+            let mut debug_geometry = crate::debug::DebugGeometry::new();
+            let layers =
+                crate::core::process_mesh_debug(&mesh, &slice_params, &logger, &mut debug_geometry);
+            crate::debug::svg::write_svgs(&debug_geometry, debug_dir)
+                .map_err(|e| format!("Failed to write debug SVGs: {}", e))?;
+            let svg_count = debug_geometry
+                .records
+                .iter()
+                .map(|r| r.layer_index)
+                .collect::<std::collections::HashSet<_>>()
+                .len();
+            logger.log_info(&format!(
+                "debug geometry written: {} SVG files ({} records)",
+                svg_count,
+                debug_geometry.len()
+            ));
+            layers
+        } else {
+            crate::core::process_mesh(&mesh, &slice_params, &logger)
+        };
 
         // Resolve per-flavor lifecycle marker config from config.
         // CLI flags override the enabled field.
@@ -578,6 +617,7 @@ mod tests {
             align_face: None,
             mesh_quality: None,
             seam_position: None,
+            debug_geometry: None,
         };
         assert_eq!(cmd.layer_height, Some(0.2));
         assert_eq!(cmd.gcode_flavor.as_deref(), Some("marlin"));
@@ -608,6 +648,7 @@ mod tests {
             align_face: None,
             mesh_quality: None,
             seam_position: None,
+            debug_geometry: None,
         };
         assert!(cmd.gcode_flavor.is_none());
     }
@@ -637,6 +678,7 @@ mod tests {
             align_face: None,
             mesh_quality: None,
             seam_position: None,
+            debug_geometry: None,
         };
         assert_eq!(cmd.gcode_flavor.as_deref(), Some("klipper"));
     }
@@ -666,6 +708,7 @@ mod tests {
             align_face: None,
             mesh_quality: None,
             seam_position: None,
+            debug_geometry: None,
         };
         assert_eq!(
             cmd.start_print_gcode.as_deref(),
@@ -699,6 +742,7 @@ mod tests {
             align_face: None,
             mesh_quality: None,
             seam_position: None,
+            debug_geometry: None,
         };
         assert!(cmd_on.lifecycle_markers);
         assert!(!cmd_on.no_lifecycle_markers);
@@ -726,6 +770,7 @@ mod tests {
             align_face: None,
             mesh_quality: None,
             seam_position: None,
+            debug_geometry: None,
         };
         assert!(!cmd_off.lifecycle_markers);
         assert!(cmd_off.no_lifecycle_markers);

@@ -41,6 +41,8 @@ use crate::core::{ExtrusionRole, SliceLayer};
 
 // Re-export public types
 pub use beads::compute_arachne_beads;
+#[cfg(not(target_arch = "wasm32"))]
+pub use beads::compute_arachne_beads_debug;
 pub use types::{ArachneParams, ArachneSubTimings, Bead};
 
 // ── Per-run timing accumulators (CPU time Σ across all worker threads) ────────
@@ -82,6 +84,39 @@ pub fn generate_arachne_walls(
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
+
+/// Generate Arachne walls for every layer, capturing intermediate geometry for
+/// visual debugging.
+///
+/// This is the debug-mode counterpart to [`generate_arachne_walls`].  It runs
+/// **sequentially** (not in parallel) so that intermediate Clipper2 results can
+/// be pushed into `debug` without any synchronisation overhead.
+///
+/// For each layer the following snapshots are recorded in `debug`:
+///
+/// * [`DebugStage::ArachneNormalisedInput`] — the EvenOdd-union-normalised
+///   perimeter contours fed to the bead algorithm.
+/// * [`DebugStage::ArachneInflateStep`] — every intermediate `shrink` result
+///   at each bead depth, keyed by `bead_k`.
+/// * [`DebugStage::ArachneBeads`] — the final bead centerline paths.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn generate_arachne_walls_debug(
+    layers: &mut [SliceLayer],
+    params: &ArachneParams,
+    debug: &mut crate::debug::DebugGeometry,
+) -> ArachneSubTimings {
+    ARACHNE_COLLAPSE_NS.store(0, Ordering::Relaxed);
+    ARACHNE_BEAD_SHRINK_NS.store(0, Ordering::Relaxed);
+
+    for (layer_index, layer) in layers.iter_mut().enumerate() {
+        generate_arachne_walls_for_layer_debug(layer, params, layer_index, debug);
+    }
+
+    ArachneSubTimings {
+        collapse_depth_ms: ARACHNE_COLLAPSE_NS.load(Ordering::Relaxed) / 1_000_000,
+        bead_shrink_ms: ARACHNE_BEAD_SHRINK_NS.load(Ordering::Relaxed) / 1_000_000,
+    }
+}
 
 /// Replace the perimeter paths in a single layer with Arachne beads.
 fn generate_arachne_walls_for_layer(layer: &mut SliceLayer, params: &ArachneParams) {
@@ -137,6 +172,99 @@ fn generate_arachne_walls_for_layer(layer: &mut SliceLayer, params: &ArachnePara
     let beads = compute_arachne_beads(&normalised, params);
 
     // Rebuild the layer: Arachne wall beads first, then non-perimeter paths.
+    layer.paths = Paths::new(vec![]);
+    layer.path_roles = Vec::new();
+    layer.path_widths = Vec::new();
+
+    for bead in beads {
+        layer.paths.push(bead.path);
+        let role = if bead.is_outer {
+            ExtrusionRole::OuterWall
+        } else {
+            ExtrusionRole::InnerWall
+        };
+        layer.path_roles.push(role);
+        layer.path_widths.push(Some(bead.width_mm));
+    }
+
+    for (path, role, width) in non_perimeter {
+        layer.paths.push(path);
+        layer.path_roles.push(role);
+        layer.path_widths.push(width);
+    }
+}
+
+/// Debug variant of [`generate_arachne_walls_for_layer`].
+#[cfg(not(target_arch = "wasm32"))]
+fn generate_arachne_walls_for_layer_debug(
+    layer: &mut SliceLayer,
+    params: &ArachneParams,
+    layer_index: usize,
+    debug: &mut crate::debug::DebugGeometry,
+) {
+    let raw_perimeters: Vec<Path> = layer
+        .paths
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| {
+            let role = layer.role_for_path(*i);
+            role == ExtrusionRole::OuterWall || role == ExtrusionRole::InnerWall
+        })
+        .map(|(_, p)| p.clone())
+        .collect();
+
+    if raw_perimeters.is_empty() {
+        return;
+    }
+
+    let non_perimeter: Vec<(Path, ExtrusionRole, Option<f64>)> = layer
+        .paths
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| {
+            let role = layer.role_for_path(*i);
+            role != ExtrusionRole::OuterWall && role != ExtrusionRole::InnerWall
+        })
+        .map(|(i, p)| (p.clone(), layer.role_for_path(i), layer.width_for_path(i)))
+        .collect();
+
+    let normalised = union(
+        Paths::new(raw_perimeters),
+        Paths::new(vec![]),
+        FillRule::EvenOdd,
+    )
+    .unwrap_or_default();
+
+    debug.push(
+        crate::debug::DebugStage::ArachneNormalisedInput,
+        layer_index,
+        layer.z,
+        normalised.clone(),
+    );
+
+    let mut inflate_steps: Vec<(usize, Paths)> = Vec::new();
+    let beads = compute_arachne_beads_debug(&normalised, params, &mut inflate_steps);
+
+    for (bead_k, paths) in inflate_steps {
+        debug.push(
+            crate::debug::DebugStage::ArachneInflateStep { bead_k },
+            layer_index,
+            layer.z,
+            paths,
+        );
+    }
+
+    // Collect final bead paths for the ArachneBeads snapshot.
+    let bead_paths: Vec<Path> = beads.iter().map(|b| b.path.clone()).collect();
+    if !bead_paths.is_empty() {
+        debug.push(
+            crate::debug::DebugStage::ArachneBeads,
+            layer_index,
+            layer.z,
+            Paths::new(bead_paths),
+        );
+    }
+
     layer.paths = Paths::new(vec![]);
     layer.path_roles = Vec::new();
     layer.path_widths = Vec::new();

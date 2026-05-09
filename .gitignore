@@ -28,3 +28,5 @@ ui-desktop/src-tauri/gen/
 docs/.vitepress/dist/
 docs/.vitepress/cache/
 
+# Debug
+.debug/

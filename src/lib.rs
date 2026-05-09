@@ -36,6 +36,9 @@ pub mod gcode_viewer;
 mod cpp_shims;
 
 #[cfg(not(target_arch = "wasm32"))]
+pub mod debug;
+
+#[cfg(not(target_arch = "wasm32"))]
 pub mod config;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod ws_protocol;

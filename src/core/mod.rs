@@ -9,6 +9,8 @@ mod walls;
 
 pub use infill::add_infill_to_layers;
 pub use pipeline::process_mesh;
+#[cfg(not(target_arch = "wasm32"))]
+pub use pipeline::process_mesh_debug;
 pub use slicer::slice_mesh;
 pub use surfaces::{
     generate_top_bottom_surfaces, generate_top_bottom_surfaces_with_interior, SurfaceConfig,
